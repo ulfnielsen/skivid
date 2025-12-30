@@ -1,0 +1,13 @@
+.DS_Store
+client_secret_*.json
+token.json
+testvid/
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+# Virtual environments
+.venv
