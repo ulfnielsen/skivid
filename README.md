@@ -60,6 +60,7 @@ python resize_video.py \
 	-e 0.5 \
 	path/to/*.mp4
 ```
+- Each clip shows `[current/total] Resizing …` plus a live `ffmpeg <file>: XX%` line pulled from ffmpeg's progress feed so you can track long exports without opening another window.
 - Use `--overwrite-output` if you need to regenerate existing `_resized` files; by default the script skips them and raises an error so you can investigate before clobbering outputs.
 Python API:
 ```python
