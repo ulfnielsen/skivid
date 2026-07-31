@@ -148,7 +148,8 @@ public final class ViewerModel: ObservableObject {
     public func chooseDirectory() async {
         guard let url = await folderPicker.pickFolder(
             startingAt: directory,
-            title: "Choose organized video directory"
+            title: "Choose organized video directory",
+            confirmLabel: "Open"
         ) else {
             return
         }

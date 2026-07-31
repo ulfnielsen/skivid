@@ -185,6 +185,10 @@ final class ViewerModelIntentTests: XCTestCase {
         await model.chooseDirectory()
 
         XCTAssertEqual(picker.pickFolderCallCount, 1)
+        // The viewer's panel keeps its own wording; only the sorting panel says
+        // "Choose folder containing raw videos" / "Choose".
+        XCTAssertEqual(picker.lastPickFolderTitle, "Choose organized video directory")
+        XCTAssertEqual(picker.lastPickFolderConfirmLabel, "Open")
         XCTAssertEqual(model.athletes.count, 1)
         XCTAssertEqual(model.athletes.first?.name, "Idun")
     }

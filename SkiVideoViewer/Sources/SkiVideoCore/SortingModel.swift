@@ -112,7 +112,8 @@ public final class SortingModel: ObservableObject {
         guard let folderPicker,
               let url = await folderPicker.pickFolder(
                   startingAt: nil,
-                  title: "Choose folder containing raw videos"
+                  title: "Choose folder containing raw videos",
+                  confirmLabel: "Choose"
               )
         else { return }
         sourcePath = url.path

@@ -129,6 +129,7 @@ final class SortingFlowTests: XCTestCase {
 
         XCTAssertEqual(picker.pickFolderCallCount, 1)
         XCTAssertEqual(picker.lastPickFolderTitle, "Choose folder containing raw videos")
+        XCTAssertEqual(picker.lastPickFolderConfirmLabel, "Choose")
         XCTAssertEqual(model.sourcePath, root.path)
     }
 

@@ -11,10 +11,10 @@ import UniformTypeIdentifiers
 /// it, and by the phase 3 XCUITest.
 @MainActor
 final class AppKitFolderPicker: FolderPicker {
-    func pickFolder(startingAt: URL?, title: String) async -> URL? {
+    func pickFolder(startingAt: URL?, title: String, confirmLabel: String) async -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
-        panel.prompt = "Open"
+        panel.prompt = confirmLabel
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false

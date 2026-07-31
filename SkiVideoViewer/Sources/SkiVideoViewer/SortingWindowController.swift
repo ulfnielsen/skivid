@@ -27,11 +27,16 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
                 }
             }
         )
+        // The sorting sheet keeps focus in the athlete field, so its arrows have
+        // to reach the model through the field editor. Scoped to this instance:
+        // the viewer's own input source keeps the exemption.
+        let input = AppKitInputSource()
+        input.arrowsBypassTextFieldFocus = true
         let rootView = SortingSheet(
             isPresented: presented,
             openResizedLibrary: openResizedLibrary,
             mediaPipeline: FFmpegMediaPipeline(),
-            input: AppKitInputSource(),
+            input: input,
             folderPicker: AppKitFolderPicker(),
             // The macOS convention the model used to hardcode. The core cannot
             // assume a home-directory layout, so the platform supplies it.

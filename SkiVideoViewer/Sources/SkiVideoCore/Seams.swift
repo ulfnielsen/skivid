@@ -46,7 +46,9 @@ public protocol PlaybackInputSource: AnyObject {
 
 @MainActor
 public protocol FolderPicker: AnyObject {
-    func pickFolder(startingAt: URL?, title: String) async -> URL?
+    /// `confirmLabel` names the accept button. macOS puts it on the panel's
+    /// prompt; a platform without one is free to ignore it.
+    func pickFolder(startingAt: URL?, title: String, confirmLabel: String) async -> URL?
     func pickFile(ofType type: UTType, title: String) async -> URL?
 }
 

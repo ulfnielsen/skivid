@@ -11,6 +11,21 @@ final class AppKitInputSource: PlaybackInputSource {
     private var resignObserver: Any?
     private var isEnabled = true
 
+    /// Lets the Left/Right arrows through even while a text field holds focus.
+    ///
+    /// Off by default: the viewer's athlete-search field must keep the blanket
+    /// exemption below, or arrow keys could not move the insertion point.
+    ///
+    /// The sorting window is the opposite case. It parks focus in the athlete
+    /// TextField and keeps putting it back (`SortingSheet`'s `.onAppear` and
+    /// `.onChange(of:)`), while advertising "←/→ seek 5s" — and SwiftUI's macOS
+    /// field editor is an `NSTextView`, so the exemption would swallow the
+    /// feature outright. The monitor this seam replaced had no exemption at all;
+    /// this flag restores exactly the two keys it bound, and no others. Space in
+    /// particular must keep the exemption, or an athlete named "Anna Marie"
+    /// cannot be typed.
+    var arrowsBypassTextFieldFocus = false
+
     /// Which arrow key is physically down. Deliberately *not* the same fact as
     /// `ViewerModel.heldDirection`, which is scrub state: the model clears its
     /// copy from `endArrow(performTap:false)` whenever the library changes
@@ -47,6 +62,13 @@ final class AppKitInputSource: PlaybackInputSource {
         if !enabled { cancelHold() }
     }
 
+    /// Only the two arrows the sorting window's monitor used to bind, and only
+    /// on an instance that asked for it. Both key-down and key-up bypass, so a
+    /// consumed press is always matched by a consumed release.
+    private func bypassesTextFieldFocus(_ event: NSEvent) -> Bool {
+        arrowsBypassTextFieldFocus && (event.keyCode == 123 || event.keyCode == 124)
+    }
+
     private func cancelHold() {
         guard let direction = heldDirection else { return }
         heldDirection = nil
@@ -59,7 +81,9 @@ final class AppKitInputSource: PlaybackInputSource {
 
     func handle(_ event: NSEvent) -> Bool {
         guard isEnabled else { return false }
-        if event.window?.firstResponder is NSTextView { return false }
+        if event.window?.firstResponder is NSTextView, !bypassesTextFieldFocus(event) {
+            return false
+        }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             return false
         }
