@@ -26,6 +26,24 @@ final class AppKitInputSource: PlaybackInputSource {
     /// cannot be typed.
     var arrowsBypassTextFieldFocus = false
 
+    /// Lets Left/Right *auto-repeat* fire a fresh `.scrubBegan` while held.
+    ///
+    /// Off by default, and it must stay off for the viewer: its hold-to-slow-scrub
+    /// state machine (`ViewerModel.beginArrow`/`endArrow`) is armed by
+    /// `.scrubBegan` and disarmed by the paired `.scrubEnded`, so a repeated
+    /// begin would re-enter the hold and break the pairing.
+    ///
+    /// The sorting window is again the opposite case. The monitor this seam
+    /// replaced bound Left/Right with *no* `isARepeat` guard, so holding an arrow
+    /// repeat-fired `seek(±5)` at the system key-repeat rate — that is how the
+    /// window fast-scans a clip. `SortingModel.handle` acts on `.scrubBegan`
+    /// only and ignores `.scrubEnded`, so one repeated begin is exactly one
+    /// `seek(±5)` and nothing else: the old behaviour, reproduced.
+    ///
+    /// Arrow-only on purpose, matching the two keys that monitor bound. Space,
+    /// the clip arrows and the page keys keep their repeat suppression.
+    var arrowsRepeat = false
+
     /// Which arrow key is physically down. Deliberately *not* the same fact as
     /// `ViewerModel.heldDirection`, which is scrub state: the model clears its
     /// copy from `endArrow(performTap:false)` whenever the library changes
@@ -117,13 +135,22 @@ final class AppKitInputSource: PlaybackInputSource {
         // The `heldDirection == nil` guard mirrors the one `ViewerModel.beginArrow`
         // has always had. Without it a second arrow pressed mid-hold would steal
         // `heldDirection`, and its release would then end a scrub it never began.
+        //
+        // A repeat under `arrowsRepeat` deliberately leaves `heldDirection`
+        // alone: the key is already down and its press/release pairing is already
+        // recorded, so re-entering the hold-begin path would corrupt it. Repeats
+        // stay consumed either way — that was already true before the flag.
         case 123: // Left Arrow
-            if !event.isARepeat, heldDirection == nil {
+            if event.isARepeat {
+                if arrowsRepeat { emit(.scrubBegan(.backward)) }
+            } else if heldDirection == nil {
                 heldDirection = .backward
                 emit(.scrubBegan(.backward))
             }
         case 124: // Right Arrow
-            if !event.isARepeat, heldDirection == nil {
+            if event.isARepeat {
+                if arrowsRepeat { emit(.scrubBegan(.forward)) }
+            } else if heldDirection == nil {
                 heldDirection = .forward
                 emit(.scrubBegan(.forward))
             }
