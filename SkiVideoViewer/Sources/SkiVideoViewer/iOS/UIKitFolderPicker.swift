@@ -29,7 +29,9 @@ final class UIKitFolderPicker: NSObject, FolderPicker {
         guard let url = await present(picker) else { return nil }
         // Without the scope the URL is unreadable, so a scan would report an
         // empty folder rather than a failure. Reporting nil instead makes the
-        // caller treat it as a cancelled pick and keep the folder it has.
+        // caller treat it as a cancelled pick. `access` holds every scope it
+        // has acquired until the session ends, so a failure here leaves the
+        // already-open folder both selected and still readable.
         guard access.begin(url) else { return nil }
         return url
     }
@@ -43,17 +45,43 @@ final class UIKitFolderPicker: NSObject, FolderPicker {
     }
 
     private func present(_ picker: UIDocumentPickerViewController) async -> URL? {
-        guard let presenter = Self.topViewController() else { return nil }
         picker.allowsMultipleSelection = false
         picker.delegate = self
         return await withCheckedContinuation { continuation in
             // A pick already in flight would otherwise be overwritten and
             // never resumed, hanging its caller forever. Resolving it as a
-            // cancel is the only safe handling.
+            // cancel is the only safe handling. `finish` clears `activePicker`
+            // first, so the dismissal below cannot resume anything.
+            let superseded = activePicker
             finish(nil)
+
             self.continuation = continuation
             self.activePicker = picker
-            presenter.present(picker, animated: true)
+
+            // The presenter has to be resolved after the superseded picker is
+            // off screen, or it resolves to that picker — leaving it stranded
+            // under the new one.
+            let show = { [weak self] in
+                guard let self else { return }
+                // `viewIfLoaded` rather than `view`: an unloaded view is by
+                // definition not in a window, and this avoids forcing a view
+                // load as a side effect of a guard. A presenter outside the
+                // window hierarchy would refuse the presentation silently, and
+                // `present` reports no failure, so the continuation would hang.
+                guard let presenter = Self.topViewController(),
+                      presenter.viewIfLoaded?.window != nil
+                else {
+                    self.finish(nil)
+                    return
+                }
+                presenter.present(picker, animated: true)
+            }
+
+            if let presenting = superseded?.presentingViewController {
+                presenting.dismiss(animated: false, completion: show)
+            } else {
+                show()
+            }
         }
     }
 
