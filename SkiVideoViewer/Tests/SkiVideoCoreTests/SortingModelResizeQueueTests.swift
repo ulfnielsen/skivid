@@ -1,7 +1,6 @@
 import Foundation
-import SkiVideoCore
 import XCTest
-@testable import SkiVideoViewer
+@testable import SkiVideoCore
 
 /// Records how many pipeline jobs are in flight simultaneously. The resize
 /// queue promises "Only one ffmpeg job runs at once" in the UI copy, and the

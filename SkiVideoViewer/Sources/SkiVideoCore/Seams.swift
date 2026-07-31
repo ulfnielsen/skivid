@@ -46,7 +46,7 @@ public protocol PlaybackInputSource: AnyObject {
 
 @MainActor
 public protocol FolderPicker: AnyObject {
-    func pickFolder(startingAt: URL?) async -> URL?
+    func pickFolder(startingAt: URL?, title: String) async -> URL?
     func pickFile(ofType type: UTType, title: String) async -> URL?
 }
 

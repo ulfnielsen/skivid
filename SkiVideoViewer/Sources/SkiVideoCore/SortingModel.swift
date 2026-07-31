@@ -1,28 +1,33 @@
-import AppKit
 import AVFoundation
 import Foundation
-import SkiVideoCore
 import UniformTypeIdentifiers
 
+/// Platform-agnostic state for the sort-and-resize workflow. Folder selection,
+/// keyboard input and transcoding all reach it through the seams in
+/// `Seams.swift`, so an iPadOS target can present the same model.
+///
+/// Access levels are deliberately narrow: `public` marks exactly what the app
+/// target's `SortingSheet` and `SortingWindowController` touch. Members used
+/// only by this module or by tests stay internal.
 @MainActor
-final class SortingModel: ObservableObject {
-    @Published var sourcePath = ""
-    @Published var namesPath: String
-    @Published var eventDate = Date()
-    @Published var eventTitle = ""
-    @Published var athleteQuery = ""
-    @Published private(set) var athleteNames: [String] = []
+public final class SortingModel: ObservableObject {
+    @Published public var sourcePath = ""
+    @Published public var namesPath: String
+    @Published public var eventDate = Date()
+    @Published public var eventTitle = ""
+    @Published public var athleteQuery = ""
+    @Published public private(set) var athleteNames: [String] = []
     @Published private(set) var rawVideos: [URL] = []
     @Published private(set) var currentIndex = 0
-    @Published private(set) var isSorting = false
-    @Published private(set) var queuedResizes = 0
-    @Published private(set) var completedResizes = 0
-    @Published private(set) var failedResizes: [String] = []
-    @Published private(set) var status = "Choose a folder of raw clips."
-    @Published var errorMessage: String?
-    @Published private(set) var completedOutputDirectory: URL?
+    @Published public private(set) var isSorting = false
+    @Published public private(set) var queuedResizes = 0
+    @Published public private(set) var completedResizes = 0
+    @Published public private(set) var failedResizes: [String] = []
+    @Published public private(set) var status = "Choose a folder of raw clips."
+    @Published public var errorMessage: String?
+    @Published public private(set) var completedOutputDirectory: URL?
 
-    let player = AVPlayer()
+    public let player = AVPlayer()
     private let resizeQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.name = "ch.ski.video-viewer.resize"
@@ -35,30 +40,53 @@ final class SortingModel: ObservableObject {
     private var resizedDirectory: URL?
     private var eventFolder = ""
     private var taggingFinished = false
-    private var keyboardMonitor: Any?
     private let mediaPipeline: MediaPipeline
 
-    init(mediaPipeline: MediaPipeline) {
+    /// Optional because a unit-test model needs neither. A sorting session
+    /// without an input source simply has no keyboard control, and one without
+    /// a folder picker cannot open the two "Choose…" panels.
+    private let input: PlaybackInputSource?
+    private let folderPicker: FolderPicker?
+
+    /// `defaultNamesURL` is injected rather than derived: `~/Ski/athletes.txt`
+    /// is a macOS convention, and the core must not assume a home-directory
+    /// layout. Nil, or a path that does not exist, leaves the field empty.
+    public init(
+        mediaPipeline: MediaPipeline,
+        input: PlaybackInputSource? = nil,
+        folderPicker: FolderPicker? = nil,
+        defaultNamesURL: URL? = nil
+    ) {
         self.mediaPipeline = mediaPipeline
-        let defaultNames = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Ski/athletes.txt")
-        namesPath = FileManager.default.fileExists(atPath: defaultNames.path) ? defaultNames.path : ""
+        self.input = input
+        self.folderPicker = folderPicker
+        namesPath = defaultNamesURL.map { url in
+            FileManager.default.fileExists(atPath: url.path) ? url.path : ""
+        } ?? ""
         reloadNames()
+        input?.onIntent = { [weak self] intent in
+            self?.handle(intent)
+        }
+        // The `NSEvent` monitor this replaced was installed by `beginSorting`
+        // and removed by `stopPlayback`, so the setup screen never intercepted
+        // keys. An input source that is live from construction would, hence the
+        // explicit disable here.
+        input?.setEnabled(false)
     }
 
-    var currentVideo: URL? {
+    public var currentVideo: URL? {
         rawVideos.indices.contains(currentIndex) ? rawVideos[currentIndex] : nil
     }
 
-    var matchingAthletes: [String] {
+    public var matchingAthletes: [String] {
         SortingLibrary.matches(for: athleteQuery, names: athleteNames)
     }
 
-    var resolvedAthlete: String? {
+    public var resolvedAthlete: String? {
         matchingAthletes.count == 1 ? matchingAthletes[0] : nil
     }
 
-    var newAthleteCandidate: String? {
+    public var newAthleteCandidate: String? {
         let candidate = athleteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !candidate.isEmpty,
               SortingLibrary.matches(for: candidate, names: athleteNames).isEmpty,
@@ -72,7 +100,7 @@ final class SortingModel: ObservableObject {
         return candidate
     }
 
-    var progressLabel: String {
+    public var progressLabel: String {
         let remaining = rawVideos.count
         if taggingFinished {
             return "Tagging complete · resizing \(completedResizes) of \(queuedResizes)"
@@ -80,43 +108,57 @@ final class SortingModel: ObservableObject {
         return "\(remaining) clip\(remaining == 1 ? "" : "s") left to tag · \(queuedResizes - completedResizes) waiting to resize"
     }
 
-    func chooseSourceDirectory() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose folder containing raw videos"
-        panel.prompt = "Choose"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            sourcePath = url.path
-            if let firstVideo = try? SortingLibrary.rawVideos(in: url).first {
-                eventDate = SortingLibrary.suggestedEventDate(from: firstVideo)
-            }
+    public func chooseSourceDirectory() async {
+        guard let folderPicker,
+              let url = await folderPicker.pickFolder(
+                  startingAt: nil,
+                  title: "Choose folder containing raw videos"
+              )
+        else { return }
+        sourcePath = url.path
+        if let firstVideo = try? SortingLibrary.rawVideos(in: url).first {
+            eventDate = SortingLibrary.suggestedEventDate(from: firstVideo)
         }
     }
 
-    func chooseNamesFile() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose athlete-name list"
-        panel.prompt = "Choose"
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.plainText]
-        if panel.runModal() == .OK, let url = panel.url {
-            namesPath = url.path
-            reloadNames()
-        }
+    public func chooseNamesFile() async {
+        guard let folderPicker,
+              let url = await folderPicker.pickFile(
+                  ofType: .plainText,
+                  title: "Choose athlete-name list"
+              )
+        else { return }
+        namesPath = url.path
+        reloadNames()
     }
 
-    func reloadNames() {
+    public func reloadNames() {
         let url = namesPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : URL(fileURLWithPath: namesPath)
         athleteNames = SortingLibrary.athleteNames(from: url)
     }
 
-    func beginSorting() {
+    /// Internal: the model subscribes itself to `input.onIntent`, so nothing
+    /// outside the module drives it directly.
+    ///
+    /// The sorting window's `NSEvent` monitor bound exactly two keys — Left and
+    /// Right — and acted on key-down only. Acting on `.scrubBegan` and ignoring
+    /// `.scrubEnded` reproduces that: it never had hold-to-scrub. The `isSorting`
+    /// guard is the one the old monitor's closure carried.
+    func handle(_ intent: PlaybackIntent) {
+        guard isSorting else { return }
+        switch intent {
+        case .scrubBegan(.backward):
+            seek(seconds: -5)
+        case .scrubBegan(.forward):
+            seek(seconds: 5)
+        default:
+            break
+        }
+    }
+
+    public func beginSorting() {
         do {
             let source = URL(fileURLWithPath: sourcePath.trimmingCharacters(in: .whitespacesAndNewlines))
             let videos = try SortingLibrary.rawVideos(in: source)
@@ -135,18 +177,18 @@ final class SortingModel: ObservableObject {
             taggingFinished = false
             isSorting = true
             status = "Tag this clip, then press Return. Left/Right seek 5 seconds. Resizing runs one at a time."
-            startKeyboardMonitoring()
+            input?.setEnabled(true)
             loadCurrentVideo()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func selectSuggestedAthlete(_ name: String) {
+    public func selectSuggestedAthlete(_ name: String) {
         athleteQuery = name
     }
 
-    func tagCurrentVideo() {
+    public func tagCurrentVideo() {
         if athleteQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             skipCurrentVideo()
             return
@@ -185,7 +227,7 @@ final class SortingModel: ObservableObject {
         }
     }
 
-    func addNewAthleteAndTag() {
+    public func addNewAthleteAndTag() {
         guard let candidate = newAthleteCandidate else { return }
         do {
             let athlete = try SortingLibrary.athleteFolderName(candidate)
@@ -201,23 +243,23 @@ final class SortingModel: ObservableObject {
         }
     }
 
-    func skipCurrentVideo() {
+    public func skipCurrentVideo() {
         guard currentVideo != nil else { return }
         removeCurrentVideo()
     }
 
-    func moveCurrentVideo(by offset: Int) {
+    public func moveCurrentVideo(by offset: Int) {
         guard !rawVideos.isEmpty else { return }
         currentIndex = (currentIndex + offset + rawVideos.count) % rawVideos.count
         loadCurrentVideo()
     }
 
-    func stopPlayback() {
+    public func stopPlayback() {
         player.pause()
-        if let keyboardMonitor {
-            NSEvent.removeMonitor(keyboardMonitor)
-            self.keyboardMonitor = nil
-        }
+        // Stands in for the `NSEvent.removeMonitor` this used to do: the source
+        // must stop both delivering *and* swallowing key events, so they reach
+        // the main window's input source again.
+        input?.setEnabled(false)
     }
 
     private func removeCurrentVideo() {
@@ -282,7 +324,10 @@ final class SortingModel: ObservableObject {
             // Blocks this operation's thread, not the main thread, so the queue
             // still runs exactly one resize at a time.
             semaphore.wait()
-            let result = box.result ?? .failure(ViewerError.noVideos)
+            // Unreachable: the semaphore is only signalled once the box holds a
+            // result. The fallback exists so that if it ever did fire, the user
+            // would read about the resize rather than about missing videos.
+            let result = box.result ?? .failure(SortingError.resizeProducedNoResult)
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -314,31 +359,6 @@ final class SortingModel: ObservableObject {
             target = min(target, duration)
         }
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
-    }
-
-    private func startKeyboardMonitoring() {
-        guard keyboardMonitor == nil else { return }
-        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.isSorting,
-                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty
-            else { return event }
-            switch event.keyCode {
-            case 123:
-                self.seek(seconds: -5)
-                return nil
-            case 124:
-                self.seek(seconds: 5)
-                return nil
-            default:
-                return event
-            }
-        }
-    }
-
-    deinit {
-        if let keyboardMonitor {
-            NSEvent.removeMonitor(keyboardMonitor)
-        }
     }
 }
 

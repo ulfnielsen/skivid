@@ -6,6 +6,9 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
     private var closingWindows: [NSWindow] = []
     private var onClose: (() -> Void)?
 
+    /// `@MainActor` because it now builds the two `@MainActor` seam instances
+    /// the sorting model needs. Every caller is already on the main actor.
+    @MainActor
     func show(
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
@@ -27,7 +30,13 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         let rootView = SortingSheet(
             isPresented: presented,
             openResizedLibrary: openResizedLibrary,
-            mediaPipeline: FFmpegMediaPipeline()
+            mediaPipeline: FFmpegMediaPipeline(),
+            input: AppKitInputSource(),
+            folderPicker: AppKitFolderPicker(),
+            // The macOS convention the model used to hardcode. The core cannot
+            // assume a home-directory layout, so the platform supplies it.
+            defaultNamesURL: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Ski/athletes.txt")
         )
         let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let window = NSWindow(

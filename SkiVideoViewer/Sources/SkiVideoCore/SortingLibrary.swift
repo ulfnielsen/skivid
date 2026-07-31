@@ -91,6 +91,11 @@ public enum SortingError: LocalizedError {
     case missingEventTitle
     case missingAthlete
     case outputExists(String)
+    /// The resize job finished without recording either success or failure.
+    /// Unreachable in practice — the semaphore in `SortingModel.enqueueResize`
+    /// is only signalled after the result has been stored — but a resize that
+    /// somehow lands here must not be reported as a missing-videos error.
+    case resizeProducedNoResult
 
     public var errorDescription: String? {
         switch self {
@@ -100,6 +105,8 @@ public enum SortingError: LocalizedError {
             return "Enter or select an athlete name."
         case let .outputExists(path):
             return "A file already exists at \(path). It was not overwritten."
+        case .resizeProducedNoResult:
+            return "The resize finished without reporting a result. The clip was moved but not resized."
         }
     }
 }

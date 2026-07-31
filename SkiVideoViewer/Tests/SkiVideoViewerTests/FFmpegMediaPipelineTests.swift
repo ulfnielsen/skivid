@@ -5,8 +5,27 @@ import XCTest
 final class FFmpegMediaPipelineTests: XCTestCase {
     private var workingDirectory: URL!
 
+    /// Every test here shells out to ffmpeg. Without it the fixture generation
+    /// fails and `testFailureSurfacesFFmpegStderr` would "pass" on env's own
+    /// "ffmpeg: No such file or directory". Make the dependency explicit.
+    private static var ffmpegIsInstalled: Bool = {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["ffmpeg", "-hide_banner", "-version"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }()
+
     override func setUp() async throws {
         try await super.setUp()
+        try XCTSkipUnless(Self.ffmpegIsInstalled, "ffmpeg is not on PATH")
         workingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -110,9 +129,22 @@ final class FFmpegMediaPipelineTests: XCTestCase {
             )
             XCTFail("expected a failure for a missing source")
         } catch {
+            let message = error.localizedDescription
+            XCTAssertFalse(message.isEmpty, "the ffmpeg error message must reach the caller")
+            // ffmpeg's own diagnostic names the input it could not open. Asserting
+            // on it is what separates a genuine ffmpeg failure from env failing to
+            // find ffmpeg at all, which reports the same "No such file or directory".
+            XCTAssertTrue(
+                message.contains(missing.lastPathComponent),
+                "expected ffmpeg's diagnostic about \(missing.lastPathComponent), got: \(message)"
+            )
             XCTAssertFalse(
-                error.localizedDescription.isEmpty,
-                "the ffmpeg error message must reach the caller"
+                message.contains("env: ffmpeg"),
+                "this is env failing to find ffmpeg, not ffmpeg reporting a bad input: \(message)"
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: destination.path),
+                "a failed resize must not leave a partial output behind"
             )
         }
     }

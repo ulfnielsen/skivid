@@ -10,11 +10,21 @@ struct SortingSheet: View {
     init(
         isPresented: Binding<Bool>,
         openResizedLibrary: @escaping (URL) -> Void,
-        mediaPipeline: MediaPipeline
+        mediaPipeline: MediaPipeline,
+        input: PlaybackInputSource,
+        folderPicker: FolderPicker,
+        defaultNamesURL: URL?
     ) {
         _isPresented = isPresented
         self.openResizedLibrary = openResizedLibrary
-        _model = StateObject(wrappedValue: SortingModel(mediaPipeline: mediaPipeline))
+        _model = StateObject(
+            wrappedValue: SortingModel(
+                mediaPipeline: mediaPipeline,
+                input: input,
+                folderPicker: folderPicker,
+                defaultNamesURL: defaultNamesURL
+            )
+        )
     }
 
     var body: some View {
@@ -55,7 +65,9 @@ struct SortingSheet: View {
                     Text("Raw clips")
                     HStack {
                         TextField("Choose a source folder…", text: $model.sourcePath)
-                        Button("Choose…") { model.chooseSourceDirectory() }
+                        Button("Choose…") {
+                            Task { await model.chooseSourceDirectory() }
+                        }
                     }
                 }
                 GridRow {
@@ -72,7 +84,9 @@ struct SortingSheet: View {
                     HStack {
                         TextField("Optional athletes.txt", text: $model.namesPath)
                             .onSubmit { model.reloadNames() }
-                        Button("Choose…") { model.chooseNamesFile() }
+                        Button("Choose…") {
+                            Task { await model.chooseNamesFile() }
+                        }
                     }
                 }
             }
