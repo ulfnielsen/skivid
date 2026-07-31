@@ -36,8 +36,10 @@ final class SortingModel: ObservableObject {
     private var eventFolder = ""
     private var taggingFinished = false
     private var keyboardMonitor: Any?
+    private let mediaPipeline: MediaPipeline
 
-    init() {
+    init(mediaPipeline: MediaPipeline) {
+        self.mediaPipeline = mediaPipeline
         let defaultNames = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Ski/athletes.txt")
         namesPath = FileManager.default.fileExists(atPath: defaultNames.path) ? defaultNames.path : ""
@@ -259,15 +261,29 @@ final class SortingModel: ObservableObject {
 
     private func enqueueResize(source: URL, destination: URL, athlete: String) {
         queuedResizes += 1
+        let pipeline = mediaPipeline
         resizeQueue.addOperation { [weak self] in
-            let result: Result<Void, Error>
-            do {
-                try Self.writeAthleteMetadata(athlete, to: source)
-                try Self.resize(source: source, destination: destination, athlete: athlete)
-                result = .success(())
-            } catch {
-                result = .failure(error)
+            let semaphore = DispatchSemaphore(value: 0)
+            let box = ResultBox()
+            Task.detached {
+                do {
+                    try await pipeline.writeMetadata(athlete: athlete, to: source)
+                    try await pipeline.resize(
+                        source: source,
+                        destination: destination,
+                        athlete: athlete
+                    )
+                    box.result = .success(())
+                } catch {
+                    box.result = .failure(error)
+                }
+                semaphore.signal()
             }
+            // Blocks this operation's thread, not the main thread, so the queue
+            // still runs exactly one resize at a time.
+            semaphore.wait()
+            let result = box.result ?? .failure(ViewerError.noVideos)
+
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.completedResizes += 1
@@ -319,62 +335,15 @@ final class SortingModel: ObservableObject {
         }
     }
 
-    nonisolated private static func writeAthleteMetadata(_ athlete: String, to source: URL) throws {
-        let temporary = source.deletingLastPathComponent().appendingPathComponent(
-            ".metadata-\(UUID().uuidString).\(source.pathExtension)"
-        )
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        try runFFmpeg([
-            "-i", source.path,
-            // Camera files can contain telemetry/data tracks that MP4 cannot remux.
-            // Preserve the playable streams and the container metadata, but omit
-            // those proprietary tracks from the tagged copy.
-            "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-c", "copy",
-            "-metadata", "title=\(athlete)",
-            "-metadata", "artist=\(athlete)",
-            "-metadata", "comment=Athlete: \(athlete)",
-            temporary.path,
-        ])
-        _ = try FileManager.default.replaceItemAt(source, withItemAt: temporary)
-    }
-
-    nonisolated private static func resize(source: URL, destination: URL, athlete: String) throws {
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try runFFmpeg([
-            "-i", source.path,
-            "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease",
-            "-metadata", "title=\(athlete)",
-            "-metadata", "artist=\(athlete)",
-            "-metadata", "comment=Athlete: \(athlete)",
-            destination.path,
-        ])
-    }
-
-    nonisolated private static func runFFmpeg(_ arguments: [String]) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"] + arguments
-        let errors = Pipe()
-        process.standardError = errors
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let data = errors.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw NSError(
-                domain: "SkiVideoViewer.Resize",
-                code: Int(process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "ffmpeg failed"]
-            )
-        }
-    }
-
     deinit {
         if let keyboardMonitor {
             NSEvent.removeMonitor(keyboardMonitor)
         }
     }
+}
+
+/// Carries the outcome of an `async` pipeline job back to the `OperationQueue`
+/// thread that is blocked waiting for it.
+private final class ResultBox: @unchecked Sendable {
+    var result: Result<Void, Error>?
 }

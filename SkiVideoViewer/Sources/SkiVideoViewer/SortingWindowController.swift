@@ -26,7 +26,8 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         )
         let rootView = SortingSheet(
             isPresented: presented,
-            openResizedLibrary: openResizedLibrary
+            openResizedLibrary: openResizedLibrary,
+            mediaPipeline: FFmpegMediaPipeline()
         )
         let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let window = NSWindow(

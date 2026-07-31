@@ -1,10 +1,21 @@
+import SkiVideoCore
 import SwiftUI
 
 struct SortingSheet: View {
-    @StateObject private var model = SortingModel()
+    @StateObject private var model: SortingModel
     @Binding var isPresented: Bool
     let openResizedLibrary: (URL) -> Void
     @FocusState private var athleteFieldIsFocused: Bool
+
+    init(
+        isPresented: Binding<Bool>,
+        openResizedLibrary: @escaping (URL) -> Void,
+        mediaPipeline: MediaPipeline
+    ) {
+        _isPresented = isPresented
+        self.openResizedLibrary = openResizedLibrary
+        _model = StateObject(wrappedValue: SortingModel(mediaPipeline: mediaPipeline))
+    }
 
     var body: some View {
         Group {
