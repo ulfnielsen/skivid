@@ -1,0 +1,33 @@
+name: SkiVideoViewer
+options:
+  bundleIdPrefix: ch.ski
+  deploymentTarget:
+    macOS: "13.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  SkiVideoCore:
+    path: .
+
+targets:
+  SkiVideoViewer-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/SkiVideoViewer/Shared
+      - path: Sources/SkiVideoViewer/macOS
+    dependencies:
+      - package: SkiVideoCore
+        product: SkiVideoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer
+        PRODUCT_NAME: SkiVideoViewer
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "8"
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: false
