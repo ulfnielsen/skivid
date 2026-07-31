@@ -1,3 +1,4 @@
+import SkiVideoCore
 import SwiftUI
 
 struct ComparisonView: View {

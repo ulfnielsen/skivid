@@ -10,6 +10,18 @@ final class AppKitInputSource: PlaybackInputSource {
     private var monitor: Any?
     private var resignObserver: Any?
     private var isEnabled = true
+
+    /// Which arrow key is physically down. Deliberately *not* the same fact as
+    /// `ViewerModel.heldDirection`, which is scrub state: the model clears its
+    /// copy from `endArrow(performTap:false)` whenever the library changes
+    /// (`openDirectory`, `selectAthlete`, `changeVideo`, `connectGoogleDrive`)
+    /// while the key is still held, and this copy must survive that so the
+    /// eventual key-up is still consumed rather than leaking to the app.
+    ///
+    /// Collapsing the two would mean this source querying the model, reversing
+    /// the seam's dependency direction. `AppKitInputToModelTests
+    /// .testReleasingASecondArrowMidHoldDoesNotEndTheScrub` is what pins the
+    /// two copies together; neither file's own tests can see them drift.
     private var heldDirection: ScrubDirection?
 
     init() {

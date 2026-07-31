@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import SkiVideoCore
 import UniformTypeIdentifiers
 
 enum ComparisonSide {
@@ -34,18 +35,6 @@ enum OverlayBlend: String, CaseIterable, Identifiable {
         case .difference: return "Difference"
         }
     }
-}
-
-struct ComparisonVideoChoice: Identifiable {
-    let id: String
-    let name: String
-    let playbackURL: URL
-}
-
-struct ComparisonAthleteChoice: Identifiable {
-    let id: String
-    let name: String
-    let videos: [ComparisonVideoChoice]
 }
 
 @MainActor

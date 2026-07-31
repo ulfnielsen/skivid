@@ -1,27 +1,33 @@
 import AVFoundation
 import Foundation
-import SkiVideoCore
 import UniformTypeIdentifiers
 
+/// Platform-agnostic playback state. Everything platform-specific reaches it
+/// through the seams in `Seams.swift`, so the same model backs the macOS app
+/// and, in phase 2, an iPadOS one.
+///
+/// Access levels are deliberately narrow: `public` marks exactly what the app
+/// target's views and `App` struct touch. Members used only by tests stay
+/// internal and are reached with `@testable import SkiVideoCore`.
 @MainActor
-final class ViewerModel: ObservableObject {
-    @Published private(set) var directory: URL?
-    @Published private(set) var athletes: [AthleteGroup] = []
-    @Published var selectedAthleteID: String?
-    @Published var athleteQuery = ""
-    @Published var driveFolderID: String
-    @Published var clientSecretsPath: String
-    @Published private(set) var isConnectingToDrive = false
-    @Published private(set) var isUsingGoogleDrive = false
+public final class ViewerModel: ObservableObject {
+    @Published public private(set) var directory: URL?
+    @Published public private(set) var athletes: [AthleteGroup] = []
+    @Published public var selectedAthleteID: String?
+    @Published public var athleteQuery = ""
+    @Published public var driveFolderID: String
+    @Published public var clientSecretsPath: String
+    @Published public private(set) var isConnectingToDrive = false
+    @Published public private(set) var isUsingGoogleDrive = false
+    /// Internal: no view reads it, but the intent tests assert on it.
     @Published private(set) var videoIndex = 0
-    @Published private(set) var status = "Choose an organized video directory"
-    @Published var errorMessage: String?
+    @Published public private(set) var status = "Choose an organized video directory"
+    @Published public var errorMessage: String?
 
-    let player = AVPlayer()
+    public let player = AVPlayer()
 
     private var activeAthleteID: String?
     private var hasStarted = false
-    private var keyboardControlsEnabled = true
     private var heldDirection: ScrubDirection?
     private var holdWorkItem: DispatchWorkItem?
     private var reverseTimer: Timer?
@@ -61,7 +67,9 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    public func handle(_ intent: PlaybackIntent) {
+    /// Internal: the model subscribes itself to `input.onIntent`, so no caller
+    /// outside the module drives it directly.
+    func handle(_ intent: PlaybackIntent) {
         switch intent {
         case .togglePlayback:
             togglePlayback()
@@ -79,12 +87,12 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    var currentAthlete: AthleteGroup? {
+    public var currentAthlete: AthleteGroup? {
         guard let activeAthleteID else { return nil }
         return athletes.first { $0.id == activeAthleteID }
     }
 
-    var filteredAthletes: [AthleteGroup] {
+    public var filteredAthletes: [AthleteGroup] {
         let query = normalizedName(athleteQuery)
         guard !query.isEmpty else { return athletes }
         return athletes.filter { normalizedName($0.name).contains(query) }
@@ -99,12 +107,12 @@ final class ViewerModel: ObservableObject {
         return athlete.videos[videoIndex]
     }
 
-    var currentPlaybackURL: URL? {
+    public var currentPlaybackURL: URL? {
         guard let currentVideo else { return nil }
         return driveMediaByURL[currentVideo]?.streamingURL ?? currentVideo
     }
 
-    var comparisonLibrary: [ComparisonAthleteChoice] {
+    public var comparisonLibrary: [ComparisonAthleteChoice] {
         athletes.map { athlete in
             ComparisonAthleteChoice(
                 id: athlete.id,
@@ -120,12 +128,12 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    var clipDescription: String {
+    public var clipDescription: String {
         guard let athlete = currentAthlete, let currentVideo else { return "" }
         return "Clip \(videoIndex + 1) of \(athlete.videos.count) · \(currentVideo.lastPathComponent)"
     }
 
-    func start(initialDirectory: URL?) {
+    public func start(initialDirectory: URL?) {
         guard !hasStarted else { return }
         hasStarted = true
         if let initialDirectory {
@@ -137,22 +145,21 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    func chooseDirectory() async {
+    public func chooseDirectory() async {
         guard let url = await folderPicker.pickFolder(startingAt: directory) else {
             return
         }
         openDirectory(url)
     }
 
-    func setKeyboardControlsEnabled(_ enabled: Bool) {
-        keyboardControlsEnabled = enabled
+    public func setKeyboardControlsEnabled(_ enabled: Bool) {
         input.setEnabled(enabled)
         if !enabled {
             endArrow(performTap: false)
         }
     }
 
-    func chooseClientSecretsFile() async {
+    public func chooseClientSecretsFile() async {
         guard let url = await folderPicker.pickFile(
             ofType: .json,
             title: "Choose Google OAuth Client Secret"
@@ -161,7 +168,7 @@ final class ViewerModel: ObservableObject {
         UserDefaults.standard.set(clientSecretsPath, forKey: "driveClientSecretsPath")
     }
 
-    func connectGoogleDrive() {
+    public func connectGoogleDrive() {
         let folderID = driveFolderID.trimmingCharacters(in: .whitespacesAndNewlines)
         let clientSecretsPath = clientSecretsPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !folderID.isEmpty, !clientSecretsPath.isEmpty else {
@@ -205,7 +212,7 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    func openDirectory(_ url: URL) {
+    public func openDirectory(_ url: URL) {
         do {
             let scannedAthletes = try VideoLibrary.scan(url)
             guard !scannedAthletes.isEmpty else { throw ViewerError.noVideos }
@@ -223,7 +230,7 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    func selectAthlete(_ id: String?) {
+    public func selectAthlete(_ id: String?) {
         guard let id,
               id != activeAthleteID,
               athletes.contains(where: { $0.id == id })
@@ -238,7 +245,7 @@ final class ViewerModel: ObservableObject {
     }
 
     @discardableResult
-    func changeVideo(by offset: Int) -> Bool {
+    public func changeVideo(by offset: Int) -> Bool {
         guard let athlete = currentAthlete, !athlete.videos.isEmpty else {
             return false
         }
@@ -260,12 +267,12 @@ final class ViewerModel: ObservableObject {
         return true
     }
 
-    func selectFirstMatchingAthlete() {
+    public func selectFirstMatchingAthlete() {
         guard let athlete = filteredAthletes.first else { return }
         selectAthlete(athlete.id)
     }
 
-    func togglePlayback() {
+    public func togglePlayback() {
         guard currentVideo != nil else { return }
         if let heldDirection, holdStarted {
             if player.rate == 0 {

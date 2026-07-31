@@ -1,20 +1,23 @@
 import AppKit
-import SkiVideoCore
 import XCTest
+@testable import SkiVideoCore
 @testable import SkiVideoViewer
 
-/// Drives a real `AppKitInputSource` into a real `ViewerModel`, so the
-/// key-code mapping and the playback state machine are exercised together.
-/// `AppKitInputSourceTests` covers the mapping in isolation; nothing else
-/// covers the pair, which is how the mid-hold `heldDirection` regression got
-/// past the first round of tests.
+/// Drives a real `AppKitInputSource` into a real `ViewerModel`. This file owns
+/// **only** the assertions that need both halves at once; everything provable
+/// about the model alone lives in `SkiVideoCoreTests/ViewerModelIntentTests`
+/// and everything provable about the key mapping alone lives in
+/// `AppKitInputSourceTests`. Task 6 moved `ViewerModel` into `SkiVideoCore`,
+/// so the tap/double-tap/clip-index coverage that used to be duplicated here
+/// was removed in favour of the platform-agnostic copies.
 ///
-/// This lives in the app test target rather than `SkiVideoCoreTests` because
-/// `ViewerModel` is still an app-target type until Task 6, and
-/// `@testable import SkiVideoViewer` reaches it today. `makeStack()` passes a
-/// real `AppKitFolderPicker` only to satisfy the initializer; none of these
-/// tests call `chooseDirectory()`, so `runModal()` is never invoked. Picker
-/// wiring itself is covered by `FolderPickerWiringTests`.
+/// What survives is the pair: `AppKitInputSource` and `ViewerModel` each keep
+/// their own `heldDirection`, and these two tests are the structural guard
+/// against those two copies drifting apart again.
+///
+/// `makeStack()` passes a real `AppKitFolderPicker` only to satisfy the
+/// initializer; nothing here calls `chooseDirectory()`, so `runModal()` is
+/// never invoked.
 @MainActor
 final class AppKitInputToModelTests: XCTestCase {
     private var temporaryDirectory: URL?
@@ -23,9 +26,6 @@ final class AppKitInputToModelTests: XCTestCase {
     /// does not depend on how fast the test host runs.
     private final class Clock {
         private(set) var current = Date(timeIntervalSince1970: 1_000)
-        func advance(by interval: TimeInterval) {
-            current = current.addingTimeInterval(interval)
-        }
         var now: () -> Date { { [self] in current } }
     }
 
@@ -57,18 +57,17 @@ final class AppKitInputToModelTests: XCTestCase {
     /// A long hold threshold keeps every arrow press in this file a *tap*: the
     /// hold work item is scheduled on the main queue and these tests never
     /// yield, but being explicit keeps them immune to that detail.
-    private func makeStack() throws -> (ViewerModel, AppKitInputSource, Clock) {
+    private func makeStack() throws -> (ViewerModel, AppKitInputSource) {
         let source = AppKitInputSource()
-        let clock = Clock()
         let model = ViewerModel(
             input: source,
             folderPicker: AppKitFolderPicker(),
             oauthPresenter: StubOAuthPresenter(),
-            now: clock.now,
+            now: Clock().now,
             holdThreshold: 60
         )
         model.openDirectory(try makeLibrary())
-        return (model, source, clock)
+        return (model, source)
     }
 
     private func key(
@@ -94,48 +93,16 @@ final class AppKitInputToModelTests: XCTestCase {
         _ = source.handle(key(124, type: .keyUp))
     }
 
-    func testSingleTapSeeksOneSecond() throws {
-        let (model, source, _) = try makeStack()
-
-        tapRightArrow(source)
-
-        XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
-        XCTAssertEqual(model.status, "Forward 1 seconds")
-    }
-
-    /// The one sanctioned behaviour change in this task: the double-tap seek
-    /// was 4.0 seconds while the status text it set already said "5 seconds".
-    func testDoubleTapWithinWindowSeeksFiveSecondsMatchingItsStatusText() throws {
-        let (model, source, clock) = try makeStack()
-
-        tapRightArrow(source)
-        clock.advance(by: 0.2)   // inside the 0.38s window
-        tapRightArrow(source)
-
-        XCTAssertEqual(
-            model.lastSeekOffset ?? .nan, 5.0, accuracy: 0.0001,
-            "the seek must match the status text, which has always claimed 5 seconds"
-        )
-        XCTAssertEqual(model.status, "Forward 5 seconds")
-    }
-
-    func testTapsOutsideTheWindowStaySingleTaps() throws {
-        let (model, source, clock) = try makeStack()
-
-        tapRightArrow(source)
-        clock.advance(by: 0.5)   // outside the 0.38s window
-        tapRightArrow(source)
-
-        XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
-        XCTAssertEqual(model.status, "Forward 1 seconds")
-    }
-
     /// End-to-end form of the mid-hold regression: with Left held, pressing and
     /// releasing Right must change nothing, and releasing Left must still seek
     /// backward one second. Before the fix the Right *release* ended the scrub
     /// early and the Left release did nothing at all.
+    ///
+    /// This is the one assertion that pins `AppKitInputSource.heldDirection`
+    /// and `ViewerModel.heldDirection` to each other. Neither file's own tests
+    /// can catch them drifting.
     func testReleasingASecondArrowMidHoldDoesNotEndTheScrub() throws {
-        let (model, source, _) = try makeStack()
+        let (model, source) = try makeStack()
 
         _ = source.handle(key(123))                  // press and hold Left
         _ = source.handle(key(124))                  // press Right mid-hold
@@ -149,20 +116,10 @@ final class AppKitInputToModelTests: XCTestCase {
         XCTAssertEqual(model.status, "Back 1 seconds")
     }
 
-    func testClipKeysAdvanceAndWrapTheVideoIndex() throws {
-        let (model, source, _) = try makeStack()
-
-        XCTAssertEqual(model.videoIndex, 0)
-        _ = source.handle(key(125))   // Down Arrow
-        XCTAssertEqual(model.videoIndex, 1)
-        _ = source.handle(key(125))
-        XCTAssertEqual(model.videoIndex, 0, "should wrap")
-        _ = source.handle(key(126))   // Up Arrow
-        XCTAssertEqual(model.videoIndex, 1, "should wrap backwards")
-    }
-
+    /// `ViewerModelIntentTests` proves the model forwards the flag to whatever
+    /// source it holds; this proves the *real* source honours it end to end.
     func testDisablingKeyboardControlsStopsTheSource() throws {
-        let (model, source, _) = try makeStack()
+        let (model, source) = try makeStack()
 
         model.setKeyboardControlsEnabled(false)
         tapRightArrow(source)

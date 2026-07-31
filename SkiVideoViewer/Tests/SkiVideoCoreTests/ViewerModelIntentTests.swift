@@ -2,6 +2,13 @@ import AVFoundation
 import XCTest
 @testable import SkiVideoCore
 
+/// The platform-agnostic contract of `ViewerModel`: intents in, playback and
+/// library state out, with every seam faked. Nothing here touches AppKit, so
+/// this is the suite an iPadOS target inherits unchanged.
+///
+/// `SkiVideoViewerTests/AppKitInputToModelTests` covers only what this cannot:
+/// a real `AppKitInputSource` driving a real model. Assertions are not
+/// duplicated between the two files.
 @MainActor
 final class ViewerModelIntentTests: XCTestCase {
     private var temporaryDirectory: URL!
@@ -29,9 +36,6 @@ final class ViewerModelIntentTests: XCTestCase {
         }
     }
 
-    /// Tasks 4 and 5 add the `folderPicker` and `oauthPresenter` parameters.
-    /// This helper is written with them already present so the tests written
-    /// here survive those tasks unchanged.
     private func makeModel() throws -> (ViewerModel, FakeInputSource, TestClock) {
         let input = FakeInputSource()
         let clock = TestClock()
@@ -155,5 +159,42 @@ final class ViewerModelIntentTests: XCTestCase {
 
         XCTAssertEqual(picker.pickFolderCallCount, 1)
         XCTAssertTrue(model.athletes.isEmpty)
+    }
+
+    func testChooseClientSecretsFileStoresWhatThePickerReturns() async throws {
+        let picker = FakeFolderPicker()
+        let secretsURL = URL(fileURLWithPath: "/tmp/does-not-need-to-exist-client_secret.json")
+        picker.fileToReturn = secretsURL
+        let model = ViewerModel(
+            input: FakeInputSource(),
+            folderPicker: picker,
+            oauthPresenter: FakeOAuthPresenter()
+        )
+
+        await model.chooseClientSecretsFile()
+
+        XCTAssertEqual(picker.pickFileCallCount, 1)
+        XCTAssertEqual(model.clientSecretsPath, secretsURL.path)
+        XCTAssertEqual(
+            picker.lastPickFileTitle,
+            "Choose Google OAuth Client Secret",
+            "regression guard: the panel title the user sees must survive routing through the FolderPicker seam"
+        )
+    }
+
+    func testChooseClientSecretsFileDoesNothingWhenCancelled() async throws {
+        let picker = FakeFolderPicker()
+        picker.fileToReturn = nil
+        let model = ViewerModel(
+            input: FakeInputSource(),
+            folderPicker: picker,
+            oauthPresenter: FakeOAuthPresenter()
+        )
+        let pathBefore = model.clientSecretsPath
+
+        await model.chooseClientSecretsFile()
+
+        XCTAssertEqual(picker.pickFileCallCount, 1)
+        XCTAssertEqual(model.clientSecretsPath, pathBefore)
     }
 }

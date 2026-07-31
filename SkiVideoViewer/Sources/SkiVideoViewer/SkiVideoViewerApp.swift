@@ -1,4 +1,5 @@
 import AppKit
+import SkiVideoCore
 import SwiftUI
 
 final class ApplicationDelegate: NSObject, NSApplicationDelegate {

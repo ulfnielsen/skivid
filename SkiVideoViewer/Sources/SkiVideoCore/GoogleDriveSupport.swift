@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import Security
-import SkiVideoCore
 
 struct DriveMedia: Hashable {
     let fileID: String
@@ -30,14 +29,17 @@ struct DriveLibrary {
     let mediaByURL: [URL: DriveMedia]
 }
 
-enum DriveError: LocalizedError {
+/// Public because the platform `OAuthPresenter` implementations throw it —
+/// `DriveMedia`, `DriveLibrary` and `GoogleDriveClient` stay internal, since
+/// only `ViewerModel` touches them and it now lives in this module too.
+public enum DriveError: LocalizedError {
     case missingConfiguration
     case invalidClientSecrets
     case oauthCallback(String)
     case tokenExchange(String)
     case api(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .missingConfiguration:
             return "Choose an OAuth client-secret JSON file and enter a Shared Drive folder ID."
