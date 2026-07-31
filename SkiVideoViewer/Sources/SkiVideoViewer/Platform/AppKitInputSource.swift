@@ -160,7 +160,28 @@ final class AppKitInputSource: PlaybackInputSource {
         return true
     }
 
+    /// Safety net. `ComparisonModel.close()` and `SortingModel.stopPlayback()`
+    /// are what normally disable a source, and both run from SwiftUI's
+    /// `onDisappear`. If that is ever missed, nothing else disables it — and it
+    /// now consumes more keycodes than the monitors it replaced — so tear down
+    /// unconditionally here as well.
+    ///
+    /// This is `setEnabled(false)` plus the two removals, not instead of them.
+    /// It cannot literally call `setEnabled`: `deinit` is nonisolated and that
+    /// method is main-actor isolated, so its effects are inlined. The
+    /// `.scrubEnded` that `cancelHold` would emit is deliberately not sent — the
+    /// consumer owns this source, so it is already gone or going by the time
+    /// this runs, and `onIntent` is a main-actor closure that `deinit` has no
+    /// guarantee of being on the main thread to call.
+    ///
+    /// Nothing double-removes. `isEnabled`/`heldDirection` are plain state; the
+    /// two AppKit registrations are removed in exactly one place (here), reached
+    /// once because `deinit` runs once, and both are `nil`-guarded. The normal
+    /// teardown paths only ever call `setEnabled(false)`, which touches no
+    /// registration, so they cannot race or duplicate this.
     deinit {
+        isEnabled = false
+        heldDirection = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
     }

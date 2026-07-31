@@ -365,6 +365,25 @@ final class AppKitInputSourceTests: XCTestCase {
         }
     }
 
+    // MARK: - Teardown
+
+    /// `deinit` is the safety net for a source whose window never delivered
+    /// `onDisappear` — it stops the source consuming keys app-wide even then.
+    /// That only helps if `deinit` is actually reached, so pin the thing that
+    /// would silently disable it: the monitor and the resign observer must keep
+    /// capturing `self` weakly. A strong capture leaks the source, and a leaked
+    /// source swallows Space and the arrows for the rest of the session.
+    func testSourceDeallocatesSoItsTeardownIsReached() {
+        weak var weakSource: AppKitInputSource?
+        autoreleasepool {
+            let source = AppKitInputSource()
+            source.onIntent = { _ in }
+            _ = source.handle(key(123))  // dealloc with a hold still outstanding
+            weakSource = source
+        }
+        XCTAssertNil(weakSource, "a retained source outlives its window and keeps eating keys")
+    }
+
     func testUnhandledKeyIsNotConsumed() {
         let source = AppKitInputSource()
         XCTAssertFalse(source.handle(key(0)), "'a' must pass through to the app")
