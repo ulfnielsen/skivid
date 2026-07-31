@@ -11,8 +11,10 @@ import XCTest
 ///
 /// This lives in the app test target rather than `SkiVideoCoreTests` because
 /// `ViewerModel` is still an app-target type until Task 6, and
-/// `@testable import SkiVideoViewer` reaches it today — no dependency on
-/// Task 4's `folderPicker` or Task 6's move.
+/// `@testable import SkiVideoViewer` reaches it today. `makeStack()` passes a
+/// real `AppKitFolderPicker` only to satisfy the initializer; none of these
+/// tests call `chooseDirectory()`, so `runModal()` is never invoked. Picker
+/// wiring itself is covered by `FolderPickerWiringTests`.
 @MainActor
 final class AppKitInputToModelTests: XCTestCase {
     private var temporaryDirectory: URL?
@@ -58,7 +60,12 @@ final class AppKitInputToModelTests: XCTestCase {
     private func makeStack() throws -> (ViewerModel, AppKitInputSource, Clock) {
         let source = AppKitInputSource()
         let clock = Clock()
-        let model = ViewerModel(input: source, now: clock.now, holdThreshold: 60)
+        let model = ViewerModel(
+            input: source,
+            folderPicker: AppKitFolderPicker(),
+            now: clock.now,
+            holdThreshold: 60
+        )
         model.openDirectory(try makeLibrary())
         return (model, source, clock)
     }

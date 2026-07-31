@@ -19,7 +19,7 @@ struct GoogleDriveSheet: View {
                     TextField("Choose client-secret JSON…", text: $model.clientSecretsPath)
                         .textFieldStyle(.roundedBorder)
                     Button("Choose…") {
-                        model.chooseClientSecretsFile()
+                        Task { await model.chooseClientSecretsFile() }
                     }
                 }
             }

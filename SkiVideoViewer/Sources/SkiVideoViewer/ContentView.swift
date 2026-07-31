@@ -63,7 +63,7 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("Open Folder…") {
-                    model.chooseDirectory()
+                    Task { await model.chooseDirectory() }
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }

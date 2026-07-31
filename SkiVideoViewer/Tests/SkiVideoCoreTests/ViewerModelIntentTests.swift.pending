@@ -117,4 +117,39 @@ final class ViewerModelIntentTests: XCTestCase {
         model.setKeyboardControlsEnabled(false)
         XCTAssertFalse(input.isEnabled)
     }
+
+    func testChooseDirectoryOpensWhatThePickerReturns() async throws {
+        let input = FakeInputSource()
+        let picker = FakeFolderPicker()
+        picker.folderToReturn = try makeLibrary()
+        let model = ViewerModel(
+            input: input,
+            folderPicker: picker,
+            now: Date.init,
+            holdThreshold: 0.02
+        )
+
+        await model.chooseDirectory()
+
+        XCTAssertEqual(picker.pickFolderCallCount, 1)
+        XCTAssertEqual(model.athletes.count, 1)
+        XCTAssertEqual(model.athletes.first?.name, "Idun")
+    }
+
+    func testChooseDirectoryDoesNothingWhenCancelled() async throws {
+        let input = FakeInputSource()
+        let picker = FakeFolderPicker()
+        picker.folderToReturn = nil
+        let model = ViewerModel(
+            input: input,
+            folderPicker: picker,
+            now: Date.init,
+            holdThreshold: 0.02
+        )
+
+        await model.chooseDirectory()
+
+        XCTAssertEqual(picker.pickFolderCallCount, 1)
+        XCTAssertTrue(model.athletes.isEmpty)
+    }
 }

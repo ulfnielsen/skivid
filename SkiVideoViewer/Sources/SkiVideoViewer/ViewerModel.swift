@@ -1,7 +1,7 @@
-import AppKit
 import AVFoundation
 import Foundation
 import SkiVideoCore
+import UniformTypeIdentifiers
 
 @MainActor
 final class ViewerModel: ObservableObject {
@@ -34,6 +34,7 @@ final class ViewerModel: ObservableObject {
     private var driveMediaByURL: [URL: DriveMedia] = [:]
 
     private let input: PlaybackInputSource
+    private let folderPicker: FolderPicker
     private let now: () -> Date
     private let holdThreshold: TimeInterval
 
@@ -42,10 +43,12 @@ final class ViewerModel: ObservableObject {
 
     public init(
         input: PlaybackInputSource,
+        folderPicker: FolderPicker,
         now: @escaping () -> Date = Date.init,
         holdThreshold: TimeInterval = 0.22
     ) {
         self.input = input
+        self.folderPicker = folderPicker
         self.now = now
         self.holdThreshold = holdThreshold
         driveFolderID = UserDefaults.standard.string(forKey: "driveFolderID") ?? ""
@@ -125,23 +128,17 @@ final class ViewerModel: ObservableObject {
         if let initialDirectory {
             openDirectory(initialDirectory)
         } else if directory == nil {
-            DispatchQueue.main.async { [weak self] in
-                self?.chooseDirectory()
+            Task { [weak self] in
+                await self?.chooseDirectory()
             }
         }
     }
 
-    func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose organized video directory"
-        panel.prompt = "Open"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = directory
-        if panel.runModal() == .OK, let url = panel.url {
-            openDirectory(url)
+    func chooseDirectory() async {
+        guard let url = await folderPicker.pickFolder(startingAt: directory) else {
+            return
         }
+        openDirectory(url)
     }
 
     func setKeyboardControlsEnabled(_ enabled: Bool) {
@@ -152,18 +149,10 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    func chooseClientSecretsFile() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Google OAuth Client Secret"
-        panel.prompt = "Choose"
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.json]
-        if panel.runModal() == .OK, let url = panel.url {
-            clientSecretsPath = url.path
-            UserDefaults.standard.set(clientSecretsPath, forKey: "driveClientSecretsPath")
-        }
+    func chooseClientSecretsFile() async {
+        guard let url = await folderPicker.pickFile(ofType: .json) else { return }
+        clientSecretsPath = url.path
+        UserDefaults.standard.set(clientSecretsPath, forKey: "driveClientSecretsPath")
     }
 
     func connectGoogleDrive() {
