@@ -5,12 +5,14 @@ Unapologetically vibe coded terminal-driven workflow for reviewing ski videos, t
 ### Components
 - `rename.py`: launches mpv for quick preview, captures keyboard controls in the terminal, and moves tagged files into per-athlete folders.
 - `resize_video.py`: ffmpeg-powered helper to resize/brighten/expose multiple clips. Provides both a CLI and importable API.
+- `SkiVideoViewer/`: native macOS SwiftUI app for browsing athlete folders and reviewing clips.
 - `upload_to_drive.py`: mirrors a local video folder (with subdirectories) into Google Drive using a service-account credential.
 
 ### Requirements
 - Python 3.11+ (tested with macOS 14 and Ubuntu 22.04)
 - [mpv](https://mpv.io) media player (for video preview)
 - [ffmpeg](https://ffmpeg.org) 4.x or newer (for resizing)
+- Xcode Command Line Tools with Swift (for the native video viewer)
 - Google Drive uploads rely on `google-api-python-client`, `google-auth`, and `google-auth-httplib2` (installed automatically when syncing the project dependencies)
 - Optional: `readline`/`libedit` already bundled on macOS; GNU readline on Linux improves tab completion.
 
@@ -60,8 +62,9 @@ python resize_video.py \
 	-e 0.5 \
 	path/to/*.mp4
 ```
+- Pass a directory such as `~/Ski/Neuss2026/organized` to scan all of its subdirectories recursively. Resized clips are written with their original names and folder structure under the sibling directory `~/Ski/Neuss2026/organized_resize`. Common video extensions are matched case-insensitively.
 - Each clip shows `[current/total] Resizing …` plus a live `ffmpeg <file>: XX%` line pulled from ffmpeg's progress feed so you can track long exports without opening another window.
-- Use `--overwrite-output` if you need to regenerate existing `_resized` files; by default the script skips them and raises an error so you can investigate before clobbering outputs.
+- Use `--overwrite-output` if you need to regenerate existing output files; by default the script skips them and raises an error so you can investigate before clobbering outputs.
 Python API:
 ```python
 from resize_video import resize_videos
@@ -71,6 +74,24 @@ resize_videos([
 		"run2.mp4",
 ], brighten_percent=5.0, replace=False)
 ```
+
+#### Viewing Organized Videos
+
+Launch the native macOS viewer with a directory, or omit the directory to use its folder picker. The launcher builds `SkiVideoViewer.app` on first use, then opens it as a normal Mac app:
+
+```bash
+./SkiVideoViewer/run.sh ~/Ski/Neuss2026/organized_resize
+```
+
+To build the `.app` without opening it, run `./SkiVideoViewer/build_app.sh`.
+
+The app groups videos by their immediate parent folder and lists those athletes in the sidebar. Use the **Jump to athlete** field (or ⌘F) to filter names as you type and load the first match. Up/Down selects the previous/next clip for the chosen athlete; Page Up/Down switches athletes. Space plays or pauses. A Left/Right tap seeks one second, a double-tap seeks five seconds total, and holding Left/Right plays slowly backward/forward.
+
+Use **Sort & Resize…** to bring the terminal sorter workflow into the app. Choose a flat folder of raw clips, set an event title, and optionally choose `athletes.txt` for name autocomplete; the event date is taken from the first video file. Type a name and press Return to tag each clip; it moves to `organized/<event>/<athlete>`. The athlete name is written into the organized file's title, artist, and comment metadata, and is also written to the matching resized copy under `organized_resize`. The athlete field remains focused for continuous typing and matching; Left/Right seek the preview by five seconds. The resize queue is intentionally limited to **one ffmpeg process at a time**, even if you tag clips rapidly. When the queue finishes, choose **Open Resized Library** to load the result directly into the viewer.
+
+Use **Open Google Drive…** in the toolbar to configure an authenticated Shared Drive source. Choose a Google desktop OAuth client-secret JSON file and enter the folder ID you want to browse. The refresh token is kept in macOS Keychain; videos play directly from Drive with on-demand byte-range requests.
+
+Use **Compare Videos…** to open a maximized side-by-side review window. The currently selected viewer clip is loaded on the left when possible; choose either video from the comparison window. Seek, scrub, and play each side independently until the desired moments line up, then choose **Set Sync Points**. From that point, the shared controls start both players on the same host-clock time, play at normal or 0.25× speed, pause/stop, seek both by the same amount, or return both to their captured sync points. Space toggles synchronized play/pause and Left/Right moves both by one second. Switch the layout picker to **Overlay** to draw the two clips superimposed in one frame: the opacity slider fades between left and right, and **Difference** mode renders matching pixels black so divergence stands out. Overlay keeps both per-side scrubbers, so you can still align the clips in time and set sync points while watching them stacked. The clips are drawn into the same rect with no spatial alignment, so difference mode is only readable when both runs were filmed from about the same camera position.
 
 #### Uploading Folder Trees to Google Drive
 Prerequisites (common):
@@ -112,4 +133,3 @@ python upload_to_drive.py \
 - mpv logs are written to `/tmp/mpv-sorter-<pid>.log` if you need to troubleshoot playback.
 - For best performance, pin the terminal window (where you launch `rename.py`) to keep keyboard focus there; mpv ignores VO keyboard events by default.
 - When using Google Drive uploads, store credentials securely (e.g., outside the repo); treat both OAuth tokens and service-account keys as secrets.
-
