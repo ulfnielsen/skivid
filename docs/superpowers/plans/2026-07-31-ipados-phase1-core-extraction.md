@@ -29,8 +29,15 @@ XCTest. macOS 13+.
   file to `SkiVideoCore` without adding access modifiers will not compile.
 - No behaviour changes. This phase is a pure refactor; any user-visible
   difference is a bug, except the one incidental fix in Task 3.
-- `xcodebuild` requires `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
-  Phase 1 does not need it — `swift build` and `swift test` suffice.
+- **Every shell that runs `swift build` or `swift test` must first run
+  `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.** The
+  machine's active developer directory is the Command Line Tools, which ship no
+  XCTest — without the export, `swift test` fails with
+  `error: no such module 'XCTest'` before running a single test. Verified
+  against this repo. The command blocks below include the export; keep it when
+  adapting them.
+- Baseline before any work: 10 tests, 0 failures. Any lower count is a
+  regression, not a starting point.
 
 ## Deviation from the spec, deliberate
 
@@ -140,6 +147,7 @@ final class CorePurityTests: XCTestCase {
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -252,6 +260,7 @@ and change its `@testable import SkiVideoViewer` to `@testable import SkiVideoCo
 - [ ] **Step 6: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -261,6 +270,7 @@ existing `VideoLibraryTests`.
 - [ ] **Step 7: Verify the app still builds**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && ./build_app.sh
 ```
 
@@ -394,6 +404,7 @@ Add `@testable import SkiVideoCore` to the top of `CorePurityTests.swift`.
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -488,6 +499,7 @@ public protocol MediaPipeline: Sendable {
 - [ ] **Step 4: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -871,6 +883,7 @@ In `Sources/SkiVideoViewer/ContentView.swift`, change the model's construction.
 - [ ] **Step 5: Build and smoke-test**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
 ```
 
@@ -1047,6 +1060,7 @@ Each becomes `Task { await model.chooseDirectory() }`.
 - [ ] **Step 5: Build and smoke-test**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh
 ```
 
@@ -1203,6 +1217,7 @@ Expected: no output.
 - [ ] **Step 5: Build and test the Drive flow**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh
 ```
 
@@ -1251,6 +1266,7 @@ git mv Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift.pending \
 - [ ] **Step 2: Run the build to enumerate what must become public**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift build 2>&1 | grep -c "error:"
 ```
 
@@ -1282,6 +1298,7 @@ Repeat `swift build` until the error count is zero.
 - [ ] **Step 4: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -1291,6 +1308,7 @@ Expected: PASS, including all of `ViewerModelIntentTests` and the purity test �
 - [ ] **Step 5: Verify the app**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
 ```
 
@@ -1423,6 +1441,7 @@ input source simply has no keyboard control, which is correct for a unit test.
 - [ ] **Step 5: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -1432,6 +1451,7 @@ purity test.
 - [ ] **Step 6: Verify the comparison window**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
 ```
 
@@ -1605,6 +1625,7 @@ private final class ResultBox: @unchecked Sendable {
 - [ ] **Step 4: Build and run a real sort**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh
 ```
 
@@ -1728,6 +1749,7 @@ Add `public` to each type and member the errors name.
 - [ ] **Step 5: Run the full suite**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -1745,6 +1767,7 @@ Expected: the file listing, then no grep output.
 - [ ] **Step 7: Full manual regression**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
 ```
 
