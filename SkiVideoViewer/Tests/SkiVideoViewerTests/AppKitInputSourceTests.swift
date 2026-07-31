@@ -47,6 +47,8 @@ final class AppKitInputSourceTests: XCTestCase {
 
     func testArrowsEmitClipSteps() {
         let intents = capture([key(126), key(125)])
+        XCTAssertEqual(intents.count, 2)
+        guard intents.count == 2 else { return }
         guard case let .clip(up) = intents[0], case let .clip(down) = intents[1] else {
             return XCTFail("expected two clip intents, got \(intents)")
         }
@@ -56,6 +58,8 @@ final class AppKitInputSourceTests: XCTestCase {
 
     func testPageKeysEmitAthleteSteps() {
         let intents = capture([key(116), key(121)])
+        XCTAssertEqual(intents.count, 2)
+        guard intents.count == 2 else { return }
         guard case let .athlete(up) = intents[0], case let .athlete(down) = intents[1] else {
             return XCTFail("expected two athlete intents, got \(intents)")
         }
@@ -113,27 +117,34 @@ final class AppKitInputSourceTests: XCTestCase {
         XCTAssertFalse(performTap, "a cancelled hold must not seek")
     }
 
-    /// Added beyond the brief's set: the `where heldDirection == …` guards mean
-    /// a key-up for the arrow that is *not* held must be ignored entirely, so a
-    /// stray release cannot end someone else's scrub.
-    func testKeyUpForTheOppositeArrowDoesNotEndTheHold() {
+    /// Regression test for the guard that `ViewerModel.beginArrow` has always
+    /// had (`heldDirection == nil`) and that must survive the move into the
+    /// input source. Pressing a second arrow mid-hold must not steal
+    /// `heldDirection`, or that arrow's *release* ends a scrub it never began —
+    /// and the real held arrow's release then does nothing.
+    func testSecondArrowPressedMidHoldNeitherStartsNorEndsAScrub() {
         let source = AppKitInputSource()
         var captured: [PlaybackIntent] = []
         source.onIntent = { captured.append($0) }
 
-        _ = source.handle(key(123))                          // hold Left
+        _ = source.handle(key(123))                          // press and hold Left
+        XCTAssertEqual(captured.count, 1, "only Left's scrubBegan so far")
+
+        _ = source.handle(key(124))                          // press Right mid-hold
+        XCTAssertEqual(captured.count, 1, "Right must not begin a second scrub")
+
         XCTAssertFalse(
             source.handle(key(124, type: .keyUp)),
             "releasing Right while Left is held is not ours to consume"
         )
-        XCTAssertEqual(captured.count, 1, "only the scrubBegan should have been emitted")
+        XCTAssertEqual(captured.count, 1, "Right's release must not end Left's scrub")
 
         _ = source.handle(key(123, type: .keyUp))            // release Left
         XCTAssertEqual(captured.count, 2)
         guard case let .scrubEnded(direction, performTap) = captured[1] else {
             return XCTFail("expected a scrubEnded, got \(captured)")
         }
-        XCTAssertEqual(direction, .backward)
+        XCTAssertEqual(direction, .backward, "Left's release ends Left's scrub")
         XCTAssertTrue(performTap)
     }
 

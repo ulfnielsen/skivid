@@ -78,13 +78,16 @@ final class AppKitInputSource: PlaybackInputSource {
             if !event.isARepeat { emit(.athlete(.previous)) }
         case 121: // Page Down
             if !event.isARepeat { emit(.athlete(.next)) }
+        // The `heldDirection == nil` guard mirrors the one `ViewerModel.beginArrow`
+        // has always had. Without it a second arrow pressed mid-hold would steal
+        // `heldDirection`, and its release would then end a scrub it never began.
         case 123: // Left Arrow
-            if !event.isARepeat {
+            if !event.isARepeat, heldDirection == nil {
                 heldDirection = .backward
                 emit(.scrubBegan(.backward))
             }
         case 124: // Right Arrow
-            if !event.isARepeat {
+            if !event.isARepeat, heldDirection == nil {
                 heldDirection = .forward
                 emit(.scrubBegan(.forward))
             }
