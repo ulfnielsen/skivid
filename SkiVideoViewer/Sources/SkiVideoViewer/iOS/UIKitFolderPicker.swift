@@ -62,7 +62,14 @@ final class UIKitFolderPicker: NSObject, FolderPicker {
             // off screen, or it resolves to that picker — leaving it stranded
             // under the new one.
             let show = { [weak self] in
-                guard let self else { return }
+                // A third pick can supersede this one while its dismissal is
+                // still animating, leaving this closure queued behind a
+                // completion that no longer matters. Presenting then would put
+                // an orphan modal on screen, and `finish` below would resume
+                // the *newer* pick's continuation. Returning early dangles
+                // nothing: the superseding `present` already resumed this
+                // pick's continuation before replacing `activePicker`.
+                guard let self, self.activePicker === picker else { return }
                 // `viewIfLoaded` rather than `view`: an unloaded view is by
                 // definition not in a window, and this avoids forcing a view
                 // load as a side effect of a guard. A presenter outside the
