@@ -26,14 +26,16 @@ final class FolderPickerWiringTests: XCTestCase {
         var fileToReturn: URL?
         private(set) var pickFolderCallCount = 0
         private(set) var pickFileCallCount = 0
+        private(set) var lastPickFileTitle: String?
 
         func pickFolder(startingAt: URL?) async -> URL? {
             pickFolderCallCount += 1
             return folderToReturn
         }
 
-        func pickFile(ofType: UTType) async -> URL? {
+        func pickFile(ofType: UTType, title: String) async -> URL? {
             pickFileCallCount += 1
+            lastPickFileTitle = title
             return fileToReturn
         }
     }
@@ -95,6 +97,11 @@ final class FolderPickerWiringTests: XCTestCase {
 
         XCTAssertEqual(picker.pickFileCallCount, 1)
         XCTAssertEqual(model.clientSecretsPath, secretsURL.path)
+        XCTAssertEqual(
+            picker.lastPickFileTitle,
+            "Choose Google OAuth Client Secret",
+            "regression guard: the panel title the user sees must survive routing through the FolderPicker seam"
+        )
     }
 
     func testChooseClientSecretsFileDoesNothingWhenCancelled() async throws {

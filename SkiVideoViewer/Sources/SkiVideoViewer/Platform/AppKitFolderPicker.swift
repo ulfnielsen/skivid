@@ -22,9 +22,9 @@ final class AppKitFolderPicker: FolderPicker {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    func pickFile(ofType type: UTType) async -> URL? {
+    func pickFile(ofType type: UTType, title: String) async -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Choose a file"
+        panel.title = title
         panel.prompt = "Choose"
         panel.canChooseDirectories = false
         panel.canChooseFiles = true

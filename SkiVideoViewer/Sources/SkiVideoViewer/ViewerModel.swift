@@ -150,7 +150,10 @@ final class ViewerModel: ObservableObject {
     }
 
     func chooseClientSecretsFile() async {
-        guard let url = await folderPicker.pickFile(ofType: .json) else { return }
+        guard let url = await folderPicker.pickFile(
+            ofType: .json,
+            title: "Choose Google OAuth Client Secret"
+        ) else { return }
         clientSecretsPath = url.path
         UserDefaults.standard.set(clientSecretsPath, forKey: "driveClientSecretsPath")
     }
