@@ -24,15 +24,98 @@ struct ComparisonView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 1) {
-                videoPane(side: .left)
-                Divider()
-                videoPane(side: .right)
+            layoutPicker
+
+            switch model.layout {
+            case .sideBySide:
+                HStack(spacing: 1) {
+                    videoPane(side: .left)
+                    Divider()
+                    videoPane(side: .right)
+                }
+            case .overlay:
+                overlayLayout
             }
+
             synchronizedControls
         }
         .frame(minWidth: 1000, minHeight: 680)
         .onDisappear { model.close() }
+    }
+
+    private var layoutPicker: some View {
+        HStack {
+            Picker("", selection: $model.layout) {
+                ForEach(ComparisonLayout.allCases) { layout in
+                    Text(layout.title).tag(layout)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 260)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private var overlayLayout: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 1) {
+                paneHeader(side: .left)
+                Divider()
+                paneHeader(side: .right)
+            }
+
+            OverlayPlayerView(
+                bottomPlayer: model.leftPlayer,
+                topPlayer: model.rightPlayer,
+                topOpacity: model.topLayerOpacity,
+                blend: model.blend
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            overlayControls
+
+            HStack(spacing: 1) {
+                paneTransport(side: .left)
+                Divider()
+                paneTransport(side: .right)
+            }
+        }
+    }
+
+    private var overlayControls: some View {
+        HStack(spacing: 14) {
+            Text("Left")
+                .foregroundStyle(.secondary)
+            Slider(value: $model.overlayOpacity, in: 0...1)
+                .frame(minWidth: 180)
+                .disabled(model.blend == .difference)
+            Text("Right")
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: $model.blend) {
+                ForEach(OverlayBlend.allCases) { blend in
+                    Text(blend.title).tag(blend)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 200)
+
+            Text(
+                model.blend == .difference
+                    ? "Difference blending uses full opacity · black where the clips match"
+                    : "Right video drawn over left · drag toward a side to favour that clip"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(12)
+        .background(.bar)
     }
 
     private func videoPane(side: ComparisonSide) -> some View {
