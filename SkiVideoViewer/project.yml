@@ -57,11 +57,16 @@ targets:
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: true
+        # Partial plist merged into the generated one. It carries
+        # UIFileSharingEnabled, which has no INFOPLIST_KEY_* equivalent —
+        # Xcode only honours the INFOPLIST_KEY_ names in
+        # CoreBuildSystem.xcspec, and that one is absent, so setting it here
+        # reached the build settings but never the built plist.
+        INFOPLIST_FILE: iPad-Info.plist
         TARGETED_DEVICE_FAMILY: "2"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
         INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_UIFileSharingEnabled: true
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: true
         CODE_SIGNING_REQUIRED: false
         CODE_SIGNING_ALLOWED: false
