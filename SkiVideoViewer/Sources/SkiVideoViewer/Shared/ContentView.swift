@@ -28,7 +28,9 @@ struct ContentView: View {
         } detail: {
             detail
         }
+        #if os(macOS)
         .frame(minWidth: 980, minHeight: 640)
+        #endif
         .toolbar {
             if secondaryScreens.canPresent {
                 ToolbarItem {
