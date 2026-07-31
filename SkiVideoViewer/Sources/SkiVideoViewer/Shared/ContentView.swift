@@ -30,61 +30,10 @@ struct ContentView: View {
         }
         #if os(macOS)
         .frame(minWidth: 980, minHeight: 640)
+        // macOS resolves a toolbar on the split view into the window toolbar.
+        // iPadOS drops it — see `detail`, which carries the same content there.
+        .toolbar { toolbarContent }
         #endif
-        .toolbar {
-            if secondaryScreens.canPresent {
-                ToolbarItem {
-                    Button {
-                        model.setKeyboardControlsEnabled(false)
-                        secondaryScreens.presentComparison(
-                            initialLeftVideo: model.currentPlaybackURL,
-                            openLibrary: model.comparisonLibrary,
-                            onClose: {
-                                model.setKeyboardControlsEnabled(true)
-                            }
-                        )
-                    } label: {
-                        Label("Compare Videos…", systemImage: "rectangle.split.2x1")
-                    }
-                }
-                ToolbarItem {
-                    Button {
-                        model.setKeyboardControlsEnabled(false)
-                        secondaryScreens.presentSorting(
-                            openResizedLibrary: { outputDirectory in
-                                model.openDirectory(outputDirectory)
-                            },
-                            onClose: {
-                                model.setKeyboardControlsEnabled(true)
-                            }
-                        )
-                    } label: {
-                        Label("Sort & Resize…", systemImage: "tag")
-                    }
-                }
-            }
-            ToolbarItem {
-                Button {
-                    isShowingGoogleDriveSheet = true
-                } label: {
-                    Label("Open Google Drive…", systemImage: "externaldrive.connected.to.line.below")
-                }
-            }
-            ToolbarItem {
-                Button {
-                    athleteSearchIsFocused = true
-                } label: {
-                    Label("Find Athlete", systemImage: "magnifyingglass")
-                }
-                .keyboardShortcut("f", modifiers: .command)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Open Folder…") {
-                    Task { await model.chooseDirectory() }
-                }
-                .keyboardShortcut("o", modifiers: .command)
-            }
-        }
         .onAppear {
             model.start(initialDirectory: initialDirectory)
         }
@@ -109,6 +58,69 @@ struct ContentView: View {
             }
         } message: {
             Text(model.errorMessage ?? "Unknown error")
+        }
+    }
+
+    /// One definition, two attachment points. A `.toolbar` on the
+    /// `NavigationSplitView` populates the macOS window toolbar but renders
+    /// nothing on iPadOS, where the items have to hang off the detail column's
+    /// navigation bar instead. Verified on an iPad Pro 11-inch (M5) simulator:
+    /// attached to the split view the bar shows only the title; attached to
+    /// `detail` all three items appear. Sharing the builder keeps the two
+    /// platforms from drifting apart.
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if secondaryScreens.canPresent {
+            ToolbarItem {
+                Button {
+                    model.setKeyboardControlsEnabled(false)
+                    secondaryScreens.presentComparison(
+                        initialLeftVideo: model.currentPlaybackURL,
+                        openLibrary: model.comparisonLibrary,
+                        onClose: {
+                            model.setKeyboardControlsEnabled(true)
+                        }
+                    )
+                } label: {
+                    Label("Compare Videos…", systemImage: "rectangle.split.2x1")
+                }
+            }
+            ToolbarItem {
+                Button {
+                    model.setKeyboardControlsEnabled(false)
+                    secondaryScreens.presentSorting(
+                        openResizedLibrary: { outputDirectory in
+                            model.openDirectory(outputDirectory)
+                        },
+                        onClose: {
+                            model.setKeyboardControlsEnabled(true)
+                        }
+                    )
+                } label: {
+                    Label("Sort & Resize…", systemImage: "tag")
+                }
+            }
+        }
+        ToolbarItem {
+            Button {
+                isShowingGoogleDriveSheet = true
+            } label: {
+                Label("Open Google Drive…", systemImage: "externaldrive.connected.to.line.below")
+            }
+        }
+        ToolbarItem {
+            Button {
+                athleteSearchIsFocused = true
+            } label: {
+                Label("Find Athlete", systemImage: "magnifyingglass")
+            }
+            .keyboardShortcut("f", modifiers: .command)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button("Open Folder…") {
+                Task { await model.chooseDirectory() }
+            }
+            .keyboardShortcut("o", modifiers: .command)
         }
     }
 
@@ -217,6 +229,14 @@ struct ContentView: View {
             }
         }
         .navigationTitle(model.directory?.lastPathComponent ?? (model.isUsingGoogleDrive ? "Google Drive" : "Ski Video Viewer"))
+        // iPadOS renders a toolbar attached to a column, not one attached to
+        // the split view, so the items hang off the detail column's navigation
+        // bar here. macOS keeps its attachment in `body`; putting the macOS
+        // toolbar here too would move its buttons within the window toolbar,
+        // and no automated check in this repo would catch that.
+        #if os(iOS)
+        .toolbar { toolbarContent }
+        #endif
     }
 
     private func emptyState(
