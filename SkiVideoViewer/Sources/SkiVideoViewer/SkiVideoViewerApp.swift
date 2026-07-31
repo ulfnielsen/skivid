@@ -14,7 +14,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SkiVideoViewerApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
-    @StateObject private var model = ViewerModel()
+    @StateObject private var model = ViewerModel(input: AppKitInputSource())
     private let initialDirectory: URL?
 
     init() {

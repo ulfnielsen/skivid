@@ -1,0 +1,120 @@
+import AVFoundation
+import XCTest
+@testable import SkiVideoCore
+
+@MainActor
+final class ViewerModelIntentTests: XCTestCase {
+    private var temporaryDirectory: URL!
+
+    /// `VideoLibrary.scan` only inspects file extensions, so empty files are
+    /// enough to populate the model. No playable media is required.
+    private func makeLibrary() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let athlete = root.appendingPathComponent("Idun", isDirectory: true)
+        try FileManager.default.createDirectory(at: athlete, withIntermediateDirectories: true)
+        for name in ["a.mp4", "b.mp4"] {
+            FileManager.default.createFile(
+                atPath: athlete.appendingPathComponent(name).path,
+                contents: Data()
+            )
+        }
+        temporaryDirectory = root
+        return root
+    }
+
+    override func tearDown() async throws {
+        if let temporaryDirectory {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+    }
+
+    /// Task 4 adds the `folderPicker` parameter. This helper is written with it
+    /// already present so the tests written here survive that task unchanged.
+    private func makeModel() throws -> (ViewerModel, FakeInputSource, TestClock) {
+        let input = FakeInputSource()
+        let clock = TestClock()
+        let model = ViewerModel(
+            input: input,
+            folderPicker: FakeFolderPicker(),
+            now: clock.now,
+            holdThreshold: 0.02
+        )
+        model.openDirectory(try makeLibrary())
+        return (model, input, clock)
+    }
+
+    func testSingleTapSeeksOneSecond() throws {
+        let (model, input, _) = try makeModel()
+
+        input.emit(.scrubBegan(.forward))
+        input.emit(.scrubEnded(.forward, performTap: true))
+
+        XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(model.status, "Forward 1 seconds")
+    }
+
+    func testDoubleTapWithinWindowSeeksFiveSeconds() throws {
+        let (model, input, clock) = try makeModel()
+
+        input.emit(.scrubBegan(.forward))
+        input.emit(.scrubEnded(.forward, performTap: true))
+
+        clock.advance(by: 0.2)   // inside the 0.38s window
+
+        input.emit(.scrubBegan(.forward))
+        input.emit(.scrubEnded(.forward, performTap: true))
+
+        XCTAssertEqual(model.lastSeekOffset ?? .nan, 5.0, accuracy: 0.0001)
+        XCTAssertEqual(model.status, "Forward 5 seconds")
+    }
+
+    func testTapsOutsideWindowAreNotTreatedAsDoubleTap() throws {
+        let (model, input, clock) = try makeModel()
+
+        input.emit(.scrubBegan(.forward))
+        input.emit(.scrubEnded(.forward, performTap: true))
+
+        clock.advance(by: 0.5)   // outside the 0.38s window
+
+        input.emit(.scrubBegan(.forward))
+        input.emit(.scrubEnded(.forward, performTap: true))
+
+        XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
+    }
+
+    func testHoldEntersSlowScrub() async throws {
+        let (model, input, _) = try makeModel()
+
+        input.emit(.scrubBegan(.forward))
+        try await Task.sleep(nanoseconds: 60_000_000)   // past the 0.02s threshold
+
+        XCTAssertEqual(model.status, "Slow forward")
+    }
+
+    func testCancelledScrubDoesNotSeek() throws {
+        let (model, input, _) = try makeModel()
+
+        input.emit(.scrubBegan(.backward))
+        input.emit(.scrubEnded(.backward, performTap: false))
+
+        XCTAssertNil(model.lastSeekOffset)
+    }
+
+    func testClipIntentAdvancesVideoIndex() throws {
+        let (model, input, _) = try makeModel()
+
+        XCTAssertEqual(model.videoIndex, 0)
+        input.emit(.clip(.next))
+        XCTAssertEqual(model.videoIndex, 1)
+        input.emit(.clip(.next))
+        XCTAssertEqual(model.videoIndex, 0, "should wrap")
+    }
+
+    func testDisablingInputIsForwardedToTheSource() throws {
+        let (model, input, _) = try makeModel()
+
+        model.setKeyboardControlsEnabled(false)
+        XCTAssertFalse(input.isEnabled)
+    }
+}

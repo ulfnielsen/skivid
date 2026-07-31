@@ -5,11 +5,6 @@ import SkiVideoCore
 
 @MainActor
 final class ViewerModel: ObservableObject {
-    enum Direction: Int {
-        case backward = -1
-        case forward = 1
-    }
-
     @Published private(set) var directory: URL?
     @Published private(set) var athletes: [AthleteGroup] = []
     @Published var selectedAthleteID: String?
@@ -26,23 +21,56 @@ final class ViewerModel: ObservableObject {
 
     private var activeAthleteID: String?
     private var hasStarted = false
-    private var keyboardMonitor: Any?
-    private var resignObserver: Any?
     private var keyboardControlsEnabled = true
-    private var heldDirection: Direction?
+    private var heldDirection: ScrubDirection?
     private var holdWorkItem: DispatchWorkItem?
     private var reverseTimer: Timer?
     private var holdStarted = false
     private var holdPausedManually = false
     private var wasPlayingBeforeHold = false
     private var rateBeforeHold: Float = 1
-    private var lastTapDirection: Direction?
+    private var lastTapDirection: ScrubDirection?
     private var lastTapTime = Date.distantPast
     private var driveMediaByURL: [URL: DriveMedia] = [:]
 
-    init() {
+    private let input: PlaybackInputSource
+    private let now: () -> Date
+    private let holdThreshold: TimeInterval
+
+    /// Exposed so tests can assert on seeks without a playable asset.
+    private(set) var lastSeekOffset: Double?
+
+    public init(
+        input: PlaybackInputSource,
+        now: @escaping () -> Date = Date.init,
+        holdThreshold: TimeInterval = 0.22
+    ) {
+        self.input = input
+        self.now = now
+        self.holdThreshold = holdThreshold
         driveFolderID = UserDefaults.standard.string(forKey: "driveFolderID") ?? ""
         clientSecretsPath = UserDefaults.standard.string(forKey: "driveClientSecretsPath") ?? ""
+        self.input.onIntent = { [weak self] intent in
+            self?.handle(intent)
+        }
+    }
+
+    public func handle(_ intent: PlaybackIntent) {
+        switch intent {
+        case .togglePlayback:
+            togglePlayback()
+        case let .clip(step):
+            changeVideo(by: step.offset)
+        case let .athlete(step):
+            changeAthlete(by: step.offset)
+        case let .scrubBegan(direction):
+            beginArrow(direction)
+        case let .scrubEnded(_, performTap):
+            endArrow(performTap: performTap)
+        case .focusAthleteSearch, .openFolder:
+            // Handled by the view layer, which owns focus and the picker.
+            break
+        }
     }
 
     var currentAthlete: AthleteGroup? {
@@ -92,7 +120,6 @@ final class ViewerModel: ObservableObject {
     }
 
     func start(initialDirectory: URL?) {
-        startKeyboardMonitoring()
         guard !hasStarted else { return }
         hasStarted = true
         if let initialDirectory {
@@ -119,6 +146,7 @@ final class ViewerModel: ObservableObject {
 
     func setKeyboardControlsEnabled(_ enabled: Bool) {
         keyboardControlsEnabled = enabled
+        input.setEnabled(enabled)
         if !enabled {
             endArrow(performTap: false)
         }
@@ -260,7 +288,7 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    func beginArrow(_ direction: Direction) {
+    func beginArrow(_ direction: ScrubDirection) {
         guard currentVideo != nil, heldDirection == nil else { return }
         heldDirection = direction
         holdStarted = false
@@ -269,7 +297,7 @@ final class ViewerModel: ObservableObject {
             self?.startHold()
         }
         holdWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdThreshold, execute: workItem)
     }
 
     func endArrow(performTap: Bool = true) {
@@ -309,6 +337,7 @@ final class ViewerModel: ObservableObject {
     }
 
     private func seek(seconds: Double) {
+        lastSeekOffset = seconds
         guard player.currentItem != nil else { return }
         let currentSeconds = player.currentTime().seconds
         let safeCurrent = currentSeconds.isFinite ? currentSeconds : 0
@@ -321,15 +350,15 @@ final class ViewerModel: ObservableObject {
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
-    private func performArrowTap(_ direction: Direction) {
-        let now = Date()
+    private func performArrowTap(_ direction: ScrubDirection) {
+        let timestamp = now()
         let isDoubleTap = lastTapDirection == direction
-            && now.timeIntervalSince(lastTapTime) <= 0.38
-        let seconds = isDoubleTap ? 4.0 : 1.0
+            && timestamp.timeIntervalSince(lastTapTime) <= 0.38
+        let seconds = isDoubleTap ? 5.0 : 1.0
         seek(seconds: Double(direction.rawValue) * seconds)
         status = "\(direction == .forward ? "Forward" : "Back") \(isDoubleTap ? 5 : 1) seconds"
         lastTapDirection = isDoubleTap ? nil : direction
-        lastTapTime = isDoubleTap ? .distantPast : now
+        lastTapTime = isDoubleTap ? .distantPast : timestamp
     }
 
     private func startHold() {
@@ -342,7 +371,7 @@ final class ViewerModel: ObservableObject {
         resumeHeldPlayback(direction)
     }
 
-    private func resumeHeldPlayback(_ direction: Direction) {
+    private func resumeHeldPlayback(_ direction: ScrubDirection) {
         switch direction {
         case .forward:
             player.playImmediately(atRate: 0.35)
@@ -364,7 +393,7 @@ final class ViewerModel: ObservableObject {
         }
     }
 
-    private func pauseHeldPlayback(_ direction: Direction) {
+    private func pauseHeldPlayback(_ direction: ScrubDirection) {
         if direction == .backward {
             reverseTimer?.invalidate()
             reverseTimer = nil
@@ -373,81 +402,10 @@ final class ViewerModel: ObservableObject {
         status = "Slow \(direction == .forward ? "forward" : "backward") paused"
     }
 
-    private func startKeyboardMonitoring() {
-        guard keyboardMonitor == nil else { return }
-        keyboardMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .keyUp]
-        ) { [weak self] event in
-            guard let self else { return event }
-            return self.handleKeyEvent(event) ? nil : event
-        }
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.endArrow(performTap: false)
-            }
-        }
-    }
-
-    private func handleKeyEvent(_ event: NSEvent) -> Bool {
-        guard keyboardControlsEnabled else { return false }
-        if event.window?.firstResponder is NSTextView {
-            return false
-        }
-        if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
-            return false
-        }
-
-        if event.type == .keyUp {
-            switch event.keyCode {
-            case 123 where heldDirection == .backward:
-                endArrow()
-                return true
-            case 124 where heldDirection == .forward:
-                endArrow()
-                return true
-            default:
-                return false
-            }
-        }
-
-        switch event.keyCode {
-        case 49: // Space
-            if !event.isARepeat { togglePlayback() }
-        case 126: // Up Arrow
-            if !event.isARepeat { changeVideo(by: -1) }
-        case 125: // Down Arrow
-            if !event.isARepeat { changeVideo(by: 1) }
-        case 116: // Page Up
-            if !event.isARepeat { changeAthlete(by: -1) }
-        case 121: // Page Down
-            if !event.isARepeat { changeAthlete(by: 1) }
-        case 123: // Left Arrow
-            if !event.isARepeat { beginArrow(.backward) }
-        case 124: // Right Arrow
-            if !event.isARepeat { beginArrow(.forward) }
-        default:
-            return false
-        }
-        return true
-    }
-
     private func normalizedName(_ name: String) -> String {
         name.folding(
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: .current
         )
-    }
-
-    deinit {
-        if let keyboardMonitor {
-            NSEvent.removeMonitor(keyboardMonitor)
-        }
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-        }
     }
 }
