@@ -22,13 +22,6 @@ import XCTest
 final class AppKitInputToModelTests: XCTestCase {
     private var temporaryDirectory: URL?
 
-    /// Deterministic stand-in for `Date.init` so the 0.38s double-tap window
-    /// does not depend on how fast the test host runs.
-    private final class Clock {
-        private(set) var current = Date(timeIntervalSince1970: 1_000)
-        var now: () -> Date { { [self] in current } }
-    }
-
     override func tearDown() async throws {
         if let temporaryDirectory {
             try? FileManager.default.removeItem(at: temporaryDirectory)
@@ -63,7 +56,9 @@ final class AppKitInputToModelTests: XCTestCase {
             input: source,
             folderPicker: AppKitFolderPicker(),
             oauthPresenter: StubOAuthPresenter(),
-            now: Clock().now,
+            // Frozen: no test here spans the 0.38s double-tap window, and a
+            // fixed date keeps that true however slowly the host runs.
+            now: { Date(timeIntervalSince1970: 1_000) },
             holdThreshold: 60
         )
         model.openDirectory(try makeLibrary())

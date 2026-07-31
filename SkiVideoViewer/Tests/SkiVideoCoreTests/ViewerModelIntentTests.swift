@@ -87,6 +87,7 @@ final class ViewerModelIntentTests: XCTestCase {
         input.emit(.scrubEnded(.forward, performTap: true))
 
         XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(model.status, "Forward 1 seconds")
     }
 
     func testHoldEntersSlowScrub() async throws {
@@ -107,14 +108,25 @@ final class ViewerModelIntentTests: XCTestCase {
         XCTAssertNil(model.lastSeekOffset)
     }
 
-    func testClipIntentAdvancesVideoIndex() throws {
+    /// Both directions matter. `changeVideo(by:)` wraps with
+    /// `(videoIndex + offset + count) % count`, and the `+ count` term exists
+    /// only so Swift's `%` behaves for a negative offset. Without a
+    /// `.clip(.previous)` step here, dropping that term leaves every forward
+    /// assertion passing while the previous-clip button in `ContentView`
+    /// (`model.changeVideo(by: -1)`) computes an out-of-bounds -1.
+    func testClipIntentStepsAndWrapsTheVideoIndexInBothDirections() throws {
         let (model, input, _) = try makeModel()
 
         XCTAssertEqual(model.videoIndex, 0)
         input.emit(.clip(.next))
         XCTAssertEqual(model.videoIndex, 1)
         input.emit(.clip(.next))
-        XCTAssertEqual(model.videoIndex, 0, "should wrap")
+        XCTAssertEqual(model.videoIndex, 0, "should wrap forward")
+
+        input.emit(.clip(.previous))
+        XCTAssertEqual(model.videoIndex, 1, "should wrap backward, not to -1")
+        input.emit(.clip(.previous))
+        XCTAssertEqual(model.videoIndex, 0)
     }
 
     func testDisablingInputIsForwardedToTheSource() throws {
