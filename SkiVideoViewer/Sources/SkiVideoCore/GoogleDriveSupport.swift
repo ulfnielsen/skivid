@@ -38,6 +38,7 @@ public enum DriveError: LocalizedError {
     case oauthCallback(String)
     case tokenExchange(String)
     case api(String)
+    case secureRandomnessUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -47,6 +48,8 @@ public enum DriveError: LocalizedError {
             return "That file is not a valid Google desktop OAuth client-secret JSON file."
         case let .oauthCallback(message), let .tokenExchange(message), let .api(message):
             return message
+        case .secureRandomnessUnavailable:
+            return "Could not generate a secure random value for Google sign-in. Please try again."
         }
     }
 }
@@ -240,8 +243,8 @@ private enum GoogleOAuth {
         }
 
         let redirectURI = try await presenter.prepareRedirectURI()
-        let state = randomURLSafeString(byteCount: 24)
-        let verifier = randomURLSafeString(byteCount: 48)
+        let state = try randomURLSafeString(byteCount: 24)
+        let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
         var components = URLComponents(string: client.authURI)!
         components.queryItems = [
@@ -334,9 +337,12 @@ private enum GoogleOAuth {
         }
     }
 
-    private static func randomURLSafeString(byteCount: Int) -> String {
+    private static func randomURLSafeString(byteCount: Int) throws -> String {
         var bytes = [UInt8](repeating: 0, count: byteCount)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw DriveError.secureRandomnessUnavailable
+        }
         return Data(bytes).base64URLEncodedString()
     }
 }
