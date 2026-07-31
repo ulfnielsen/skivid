@@ -42,14 +42,28 @@ xcrun simctl install "$DEVICE" "$APP"
 xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" 2>/dev/null || true
 
 echo "==> launching"
-xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+pid=$(xcrun simctl launch "$DEVICE" "$BUNDLE_ID" | sed 's/.*: *//')
+echo "==> pid: $pid"
 
 sleep 4
 xcrun simctl io "$DEVICE" screenshot "$OUT"
 echo "==> screenshot: $OUT"
 
 # The app must still be running; a launch-then-crash would leave no process.
-if xcrun simctl spawn "$DEVICE" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
+# Checked by PID and retried: when an install has just replaced a running app,
+# `launchctl list` was once observed not to list the new job yet, and a single
+# grep reported a false crash on an app that was demonstrably alive.
+alive=""
+for _ in 1 2 3 4 5; do
+  if xcrun simctl spawn "$DEVICE" launchctl procinfo "$pid" >/dev/null 2>&1 ||
+     xcrun simctl spawn "$DEVICE" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
+    alive=yes
+    break
+  fi
+  sleep 1
+done
+
+if [ -n "$alive" ]; then
   echo "==> RUNNING"
 else
   echo "==> WARNING: process not found after launch — check the screenshot"
