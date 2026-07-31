@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import SkiVideoCore
 import UniformTypeIdentifiers
 
 @MainActor

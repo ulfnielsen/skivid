@@ -1,7 +1,7 @@
 import Foundation
 
-enum SortingLibrary {
-    static func rawVideos(in directory: URL) throws -> [URL] {
+public enum SortingLibrary {
+    public static func rawVideos(in directory: URL) throws -> [URL] {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -24,7 +24,7 @@ enum SortingLibrary {
         }
     }
 
-    static func eventFolder(date: Date, title: String) throws -> String {
+    public static func eventFolder(date: Date, title: String) throws -> String {
         let cleanedTitle = title
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: "-", options: .regularExpression)
@@ -38,13 +38,13 @@ enum SortingLibrary {
         return "\(formatter.string(from: date))_\(cleanedTitle)"
     }
 
-    static func suggestedEventDate(from video: URL) -> Date {
+    public static func suggestedEventDate(from video: URL) -> Date {
         let keys: Set<URLResourceKey> = [.creationDateKey, .contentModificationDateKey]
         let values = try? video.resourceValues(forKeys: keys)
         return values?.creationDate ?? values?.contentModificationDate ?? Date()
     }
 
-    static func athleteFolderName(_ athlete: String) throws -> String {
+    public static func athleteFolderName(_ athlete: String) throws -> String {
         let cleaned = athlete
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/", with: "-")
@@ -53,7 +53,7 @@ enum SortingLibrary {
         return cleaned
     }
 
-    static func athleteNames(from url: URL?) -> [String] {
+    public static func athleteNames(from url: URL?) -> [String] {
         guard let url, let contents = try? String(contentsOf: url, encoding: .utf8) else {
             return []
         }
@@ -66,7 +66,7 @@ enum SortingLibrary {
         }
     }
 
-    static func bestAthleteName(for query: String, names: [String]) -> String {
+    public static func bestAthleteName(for query: String, names: [String]) -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = normalized(trimmed)
         if let exact = names.first(where: { normalized($0) == key }) {
@@ -76,7 +76,7 @@ enum SortingLibrary {
         return matches.count == 1 ? matches[0] : trimmed
     }
 
-    static func matches(for query: String, names: [String]) -> [String] {
+    public static func matches(for query: String, names: [String]) -> [String] {
         let key = normalized(query)
         guard !key.isEmpty else { return Array(names.prefix(8)) }
         return names.filter { normalized($0).contains(key) }.prefix(8).map { $0 }
@@ -87,12 +87,12 @@ enum SortingLibrary {
     }
 }
 
-enum SortingError: LocalizedError {
+public enum SortingError: LocalizedError {
     case missingEventTitle
     case missingAthlete
     case outputExists(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .missingEventTitle:
             return "Enter an event title before starting the sort."

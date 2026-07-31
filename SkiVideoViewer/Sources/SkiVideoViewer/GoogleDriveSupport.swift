@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import Network
 import Security
+import SkiVideoCore
 
 struct DriveMedia: Hashable {
     let fileID: String

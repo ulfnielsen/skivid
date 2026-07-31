@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import SkiVideoViewer
+@testable import SkiVideoCore
 
 final class VideoLibraryTests: XCTestCase {
     func testGroupsNestedVideosByAthleteFolder() throws {

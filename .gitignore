@@ -11,3 +11,6 @@ wheels/
 *.egg-info
 # Virtual environments
 .venv
+# Swift package build artifacts
+.build/
+*.app/

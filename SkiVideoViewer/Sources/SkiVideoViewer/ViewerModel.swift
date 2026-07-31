@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import SkiVideoCore
 
 @MainActor
 final class ViewerModel: ObservableObject {

@@ -1,17 +1,23 @@
 import Foundation
 
-struct AthleteGroup: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let videos: [URL]
+public struct AthleteGroup: Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let videos: [URL]
+
+    public init(id: String, name: String, videos: [URL]) {
+        self.id = id
+        self.name = name
+        self.videos = videos
+    }
 }
 
-enum VideoLibrary {
-    static let supportedExtensions: Set<String> = [
+public enum VideoLibrary {
+    public static let supportedExtensions: Set<String> = [
         "mp4", "mov", "m4v", "avi", "mkv", "webm",
     ]
 
-    static func scan(_ root: URL) throws -> [AthleteGroup] {
+    public static func scan(_ root: URL) throws -> [AthleteGroup] {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(
             atPath: root.path,
@@ -70,12 +76,12 @@ enum VideoLibrary {
     }
 }
 
-enum ViewerError: LocalizedError {
+public enum ViewerError: LocalizedError {
     case invalidDirectory(String)
     case cannotReadDirectory(String)
     case noVideos
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case let .invalidDirectory(path):
             return "Video directory not found: \(path)"
