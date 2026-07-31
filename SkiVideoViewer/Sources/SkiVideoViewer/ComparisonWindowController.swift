@@ -7,6 +7,9 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
     private var closingWindows: [NSWindow] = []
     private var onClose: (() -> Void)?
 
+    /// `@MainActor` because it now builds the two `@MainActor` seam instances
+    /// the comparison model needs. Every caller is already on the main actor.
+    @MainActor
     func show(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
@@ -27,7 +30,9 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
         )
         let root = ComparisonView(
             initialLeftVideo: initialLeftVideo,
-            openLibrary: openLibrary
+            openLibrary: openLibrary,
+            input: AppKitInputSource(),
+            folderPicker: AppKitFolderPicker()
         ) { [weak window] in
             window?.performClose(nil)
         }

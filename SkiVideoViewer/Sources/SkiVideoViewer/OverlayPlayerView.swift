@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import CoreImage
+import SkiVideoCore
 import SwiftUI
 
 /// Draws two players into the same rect: `bottomPlayer` underneath,

@@ -1,21 +1,19 @@
-import AppKit
 import AVFoundation
 import Foundation
-import SkiVideoCore
 import UniformTypeIdentifiers
 
-enum ComparisonSide {
+public enum ComparisonSide {
     case left
     case right
 }
 
-enum ComparisonLayout: String, CaseIterable, Identifiable {
+public enum ComparisonLayout: String, CaseIterable, Identifiable {
     case sideBySide
     case overlay
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .sideBySide: return "Side-by-side"
         case .overlay: return "Overlay"
@@ -23,13 +21,13 @@ enum ComparisonLayout: String, CaseIterable, Identifiable {
     }
 }
 
-enum OverlayBlend: String, CaseIterable, Identifiable {
+public enum OverlayBlend: String, CaseIterable, Identifiable {
     case blend
     case difference
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .blend: return "Blend"
         case .difference: return "Difference"
@@ -37,23 +35,30 @@ enum OverlayBlend: String, CaseIterable, Identifiable {
     }
 }
 
+/// Platform-agnostic state for the two-video comparison window. Like
+/// `ViewerModel`, everything platform-specific reaches it through the seams in
+/// `Seams.swift`, so an iPadOS target can present the same model.
+///
+/// Access levels are deliberately narrow: `public` marks exactly what the app
+/// target's `ComparisonView`, `OverlayPlayerView` and `ComparisonWindowController`
+/// touch. Members used only by this module or by tests stay internal.
 @MainActor
-final class ComparisonModel: ObservableObject {
-    @Published private(set) var leftName = "Choose left video"
-    @Published private(set) var rightName = "Choose right video"
-    @Published private(set) var leftTime = 0.0
-    @Published private(set) var rightTime = 0.0
-    @Published private(set) var leftDuration = 0.0
-    @Published private(set) var rightDuration = 0.0
-    @Published private(set) var isSynced = false
-    @Published private(set) var status = "Choose two videos and align them independently."
-    @Published var layout: ComparisonLayout = .sideBySide
-    @Published var overlayOpacity: Double = 0.5
-    @Published var blend: OverlayBlend = .blend
+public final class ComparisonModel: ObservableObject {
+    @Published public private(set) var leftName = "Choose left video"
+    @Published public private(set) var rightName = "Choose right video"
+    @Published public private(set) var leftTime = 0.0
+    @Published public private(set) var rightTime = 0.0
+    @Published public private(set) var leftDuration = 0.0
+    @Published public private(set) var rightDuration = 0.0
+    @Published public private(set) var isSynced = false
+    @Published public private(set) var status = "Choose two videos and align them independently."
+    @Published public var layout: ComparisonLayout = .sideBySide
+    @Published public var overlayOpacity: Double = 0.5
+    @Published public var blend: OverlayBlend = .blend
 
-    let leftPlayer = AVPlayer()
-    let rightPlayer = AVPlayer()
-    let openLibrary: [ComparisonAthleteChoice]
+    public let leftPlayer = AVPlayer()
+    public let rightPlayer = AVPlayer()
+    public let openLibrary: [ComparisonAthleteChoice]
 
     private var leftSyncPoint = CMTime.zero
     private var rightSyncPoint = CMTime.zero
@@ -61,41 +66,76 @@ final class ComparisonModel: ObservableObject {
     private var rightTimeObserver: Any?
     private var leftDurationObserver: NSKeyValueObservation?
     private var rightDurationObserver: NSKeyValueObservation?
-    private var keyboardMonitor: Any?
     private var playbackGeneration = 0
 
-    init(initialLeftVideo: URL? = nil, openLibrary: [ComparisonAthleteChoice] = []) {
+    /// Optional because a unit-test model needs neither. A comparison window
+    /// without an input source simply has no keyboard control, and one without
+    /// a folder picker cannot open the "Choose File…" panel.
+    private let input: PlaybackInputSource?
+    private let folderPicker: FolderPicker?
+
+    public init(
+        initialLeftVideo: URL? = nil,
+        openLibrary: [ComparisonAthleteChoice] = [],
+        input: PlaybackInputSource? = nil,
+        folderPicker: FolderPicker? = nil
+    ) {
         self.openLibrary = openLibrary
+        self.input = input
+        self.folderPicker = folderPicker
         leftPlayer.automaticallyWaitsToMinimizeStalling = false
         rightPlayer.automaticallyWaitsToMinimizeStalling = false
         installTimeObservers()
-        startKeyboardMonitoring()
+        input?.onIntent = { [weak self] intent in
+            self?.handle(intent)
+        }
         if let initialLeftVideo {
             load(initialLeftVideo, side: .left)
         }
     }
 
-    var hasTwoVideos: Bool {
+    public var hasTwoVideos: Bool {
         leftPlayer.currentItem != nil && rightPlayer.currentItem != nil
     }
 
     /// Difference blending only reads correctly at full opacity, so the slider
     /// is ignored (and disabled in the UI) while difference mode is active.
-    var topLayerOpacity: Double {
+    public var topLayerOpacity: Double {
         blend == .difference ? 1.0 : overlayOpacity
     }
 
-    func chooseVideo(side: ComparisonSide) {
-        let panel = NSOpenPanel()
-        panel.title = side == .left ? "Choose left comparison video" : "Choose right comparison video"
-        panel.prompt = "Choose"
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.movie]
-        if panel.runModal() == .OK, let url = panel.url {
-            load(url, side: side)
+    /// Internal: the model subscribes itself to `input.onIntent`, so nothing
+    /// outside the module drives it directly.
+    ///
+    /// The comparison window's `NSEvent` monitor bound exactly three keys —
+    /// Space, Left and Right — and acted on key-down only. Acting on
+    /// `.scrubBegan` and ignoring `.scrubEnded` reproduces that: it never had
+    /// hold-to-scrub. The remaining intents were passed through to the app by
+    /// the old monitor and stay unhandled here.
+    func handle(_ intent: PlaybackIntent) {
+        switch intent {
+        case .togglePlayback:
+            if leftPlayer.rate == 0 && rightPlayer.rate == 0 {
+                playSynced()
+            } else {
+                pauseBoth()
+            }
+        case .scrubBegan(.backward):
+            seekSynced(by: -1)
+        case .scrubBegan(.forward):
+            seekSynced(by: 1)
+        default:
+            break
         }
+    }
+
+    public func chooseVideo(side: ComparisonSide) async {
+        guard let folderPicker else { return }
+        let title = side == .left
+            ? "Choose left comparison video"
+            : "Choose right comparison video"
+        guard let url = await folderPicker.pickFile(ofType: .movie, title: title) else { return }
+        load(url, side: side)
     }
 
     func load(_ url: URL, side: ComparisonSide) {
@@ -117,7 +157,7 @@ final class ComparisonModel: ObservableObject {
         clearSync(message: "Align both videos, then set the sync points.")
     }
 
-    func load(_ choice: ComparisonVideoChoice, side: ComparisonSide) {
+    public func load(_ choice: ComparisonVideoChoice, side: ComparisonSide) {
         load(choice.playbackURL, side: side)
         switch side {
         case .left:
@@ -127,7 +167,7 @@ final class ComparisonModel: ObservableObject {
         }
     }
 
-    func toggleIndividual(_ side: ComparisonSide) {
+    public func toggleIndividual(_ side: ComparisonSide) {
         if isSynced {
             if leftPlayer.rate == 0 && rightPlayer.rate == 0 {
                 playSynced()
@@ -145,7 +185,7 @@ final class ComparisonModel: ObservableObject {
         }
     }
 
-    func playIndividual(_ side: ComparisonSide, rate: Float) {
+    public func playIndividual(_ side: ComparisonSide, rate: Float) {
         if isSynced {
             playSynced(rate: rate)
             return
@@ -155,7 +195,7 @@ final class ComparisonModel: ObservableObject {
         status = "Playing \(side == .left ? "left" : "right") at \(String(format: "%.2g", rate))×"
     }
 
-    func seek(_ side: ComparisonSide, by seconds: Double) {
+    public func seek(_ side: ComparisonSide, by seconds: Double) {
         if isSynced {
             seekSynced(by: seconds)
             return
@@ -173,7 +213,7 @@ final class ComparisonModel: ObservableObject {
         seek(player(for: side), to: seconds)
     }
 
-    func scrub(_ side: ComparisonSide, to seconds: Double) {
+    public func scrub(_ side: ComparisonSide, to seconds: Double) {
         guard isSynced else {
             seek(player(for: side), to: seconds)
             return
@@ -194,7 +234,7 @@ final class ComparisonModel: ObservableObject {
         status = "Scrubbing together"
     }
 
-    func setSyncPoints() {
+    public func setSyncPoints() {
         guard hasTwoVideos else {
             status = "Choose both videos before setting sync points."
             return
@@ -206,13 +246,13 @@ final class ComparisonModel: ObservableObject {
         status = "Synchronized from L \(Self.timecode(leftTime)) and R \(Self.timecode(rightTime))."
     }
 
-    func removeSync() {
+    public func removeSync() {
         pauseBoth()
         isSynced = false
         status = "Independent controls restored. Align the videos and set new sync points when ready."
     }
 
-    func playSynced(rate: Float = 1) {
+    public func playSynced(rate: Float = 1) {
         guard isSynced else {
             status = "Set the sync points first."
             return
@@ -238,7 +278,7 @@ final class ComparisonModel: ObservableObject {
         }
     }
 
-    func pauseBoth() {
+    public func pauseBoth() {
         playbackGeneration += 1
         leftPlayer.pause()
         rightPlayer.pause()
@@ -247,7 +287,7 @@ final class ComparisonModel: ObservableObject {
         }
     }
 
-    func seekSynced(by seconds: Double) {
+    public func seekSynced(by seconds: Double) {
         guard isSynced else {
             status = "Set the sync points first."
             return
@@ -260,7 +300,7 @@ final class ComparisonModel: ObservableObject {
         status = "Both moved \(seconds >= 0 ? "+" : "")\(Int(seconds)) seconds"
     }
 
-    func returnToSyncPoints() {
+    public func returnToSyncPoints() {
         guard isSynced else { return }
         pauseBoth()
         leftPlayer.seek(to: leftSyncPoint, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -268,7 +308,7 @@ final class ComparisonModel: ObservableObject {
         status = "Returned to the sync points"
     }
 
-    func close() {
+    public func close() {
         leftPlayer.pause()
         rightPlayer.pause()
         if let leftTimeObserver {
@@ -281,13 +321,14 @@ final class ComparisonModel: ObservableObject {
         }
         leftDurationObserver = nil
         rightDurationObserver = nil
-        if let keyboardMonitor {
-            NSEvent.removeMonitor(keyboardMonitor)
-            self.keyboardMonitor = nil
-        }
+        // Stands in for the `NSEvent.removeMonitor` this used to do: the source
+        // must stop both delivering *and* swallowing key events, so they reach
+        // the main window's input source again.
+        input?.onIntent = nil
+        input?.setEnabled(false)
     }
 
-    static func timecode(_ seconds: Double) -> String {
+    public static func timecode(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "00:00.0" }
         let minutes = Int(seconds) / 60
         let remainder = seconds - Double(minutes * 60)
@@ -363,31 +404,6 @@ final class ComparisonModel: ObservableObject {
             leftDurationObserver = observation
         case .right:
             rightDurationObserver = observation
-        }
-    }
-
-    private func startKeyboardMonitoring() {
-        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self,
-                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty
-            else { return event }
-            switch event.keyCode {
-            case 49 where !event.isARepeat: // Space
-                if self.leftPlayer.rate == 0 && self.rightPlayer.rate == 0 {
-                    self.playSynced()
-                } else {
-                    self.pauseBoth()
-                }
-                return nil
-            case 123 where !event.isARepeat: // Left
-                self.seekSynced(by: -1)
-                return nil
-            case 124 where !event.isARepeat: // Right
-                self.seekSynced(by: 1)
-                return nil
-            default:
-                return event
-            }
         }
     }
 }

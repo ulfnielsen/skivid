@@ -24,15 +24,17 @@ final class FakeFolderPicker: FolderPicker {
     private(set) var pickFolderCallCount = 0
     private(set) var pickFileCallCount = 0
     private(set) var lastPickFileTitle: String?
+    private(set) var lastPickFileType: UTType?
 
     func pickFolder(startingAt: URL?) async -> URL? {
         pickFolderCallCount += 1
         return folderToReturn
     }
 
-    func pickFile(ofType: UTType, title: String) async -> URL? {
+    func pickFile(ofType type: UTType, title: String) async -> URL? {
         pickFileCallCount += 1
         lastPickFileTitle = title
+        lastPickFileType = type
         return fileToReturn
     }
 }

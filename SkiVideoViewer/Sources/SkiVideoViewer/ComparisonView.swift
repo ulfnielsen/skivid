@@ -12,12 +12,16 @@ struct ComparisonView: View {
     init(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
+        input: PlaybackInputSource,
+        folderPicker: FolderPicker,
         closeWindow: @escaping () -> Void
     ) {
         _model = StateObject(
             wrappedValue: ComparisonModel(
                 initialLeftVideo: initialLeftVideo,
-                openLibrary: openLibrary
+                openLibrary: openLibrary,
+                input: input,
+                folderPicker: folderPicker
             )
         )
         self.closeWindow = closeWindow
@@ -156,7 +160,7 @@ struct ComparisonView: View {
                     }
                 }
             }
-            Button("Choose File…") { model.chooseVideo(side: side) }
+            Button("Choose File…") { Task { await model.chooseVideo(side: side) } }
         }
         .padding(12)
         .background(.bar)

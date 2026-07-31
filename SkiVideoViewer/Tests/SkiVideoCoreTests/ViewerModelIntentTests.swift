@@ -15,16 +15,18 @@ final class ViewerModelIntentTests: XCTestCase {
 
     /// `VideoLibrary.scan` only inspects file extensions, so empty files are
     /// enough to populate the model. No playable media is required.
-    private func makeLibrary() throws -> URL {
+    private func makeLibrary(athletes: [String] = ["Idun"]) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let athlete = root.appendingPathComponent("Idun", isDirectory: true)
-        try FileManager.default.createDirectory(at: athlete, withIntermediateDirectories: true)
-        for name in ["a.mp4", "b.mp4"] {
-            FileManager.default.createFile(
-                atPath: athlete.appendingPathComponent(name).path,
-                contents: Data()
-            )
+        for athleteName in athletes {
+            let athlete = root.appendingPathComponent(athleteName, isDirectory: true)
+            try FileManager.default.createDirectory(at: athlete, withIntermediateDirectories: true)
+            for name in ["a.mp4", "b.mp4"] {
+                FileManager.default.createFile(
+                    atPath: athlete.appendingPathComponent(name).path,
+                    contents: Data()
+                )
+            }
         }
         temporaryDirectory = root
         return root
@@ -36,7 +38,9 @@ final class ViewerModelIntentTests: XCTestCase {
         }
     }
 
-    private func makeModel() throws -> (ViewerModel, FakeInputSource, TestClock) {
+    private func makeModel(
+        athletes: [String] = ["Idun"]
+    ) throws -> (ViewerModel, FakeInputSource, TestClock) {
         let input = FakeInputSource()
         let clock = TestClock()
         let model = ViewerModel(
@@ -46,7 +50,7 @@ final class ViewerModelIntentTests: XCTestCase {
             now: clock.now,
             holdThreshold: 0.02
         )
-        model.openDirectory(try makeLibrary())
+        model.openDirectory(try makeLibrary(athletes: athletes))
         return (model, input, clock)
     }
 
@@ -127,6 +131,36 @@ final class ViewerModelIntentTests: XCTestCase {
         XCTAssertEqual(model.videoIndex, 1, "should wrap backward, not to -1")
         input.emit(.clip(.previous))
         XCTAssertEqual(model.videoIndex, 0)
+    }
+
+    /// The athlete twin of the clip test above, and load-bearing for the same
+    /// reason: `changeAthlete(by:)` wraps with
+    /// `(currentIndex + offset + athletes.count) % athletes.count`. Page Up
+    /// reaches it as `.athlete(.previous)`, and without the `+ count` term
+    /// Swift's `%` yields -1 from the first athlete, so `athletes[-1]` is read
+    /// out of bounds. Both directions are asserted because a forward-only test
+    /// passes with the term removed.
+    func testAthleteIntentStepsAndWrapsTheAthleteInBothDirections() throws {
+        let (model, input, _) = try makeModel(athletes: ["Alma", "Idun", "Sindre"])
+
+        XCTAssertEqual(model.athletes.map(\.name), ["Alma", "Idun", "Sindre"])
+        XCTAssertEqual(model.currentAthlete?.name, "Alma")
+
+        input.emit(.athlete(.next))
+        XCTAssertEqual(model.currentAthlete?.name, "Idun")
+        input.emit(.athlete(.next))
+        XCTAssertEqual(model.currentAthlete?.name, "Sindre")
+        input.emit(.athlete(.next))
+        XCTAssertEqual(model.currentAthlete?.name, "Alma", "should wrap forward")
+
+        input.emit(.athlete(.previous))
+        XCTAssertEqual(
+            model.currentAthlete?.name,
+            "Sindre",
+            "should wrap backward to the last athlete, not index -1"
+        )
+        input.emit(.athlete(.previous))
+        XCTAssertEqual(model.currentAthlete?.name, "Idun")
     }
 
     func testDisablingInputIsForwardedToTheSource() throws {
