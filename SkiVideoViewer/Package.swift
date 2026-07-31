@@ -16,7 +16,10 @@ let package = Package(
         .target(name: "SkiVideoCore"),
         .executableTarget(
             name: "SkiVideoViewer",
-            dependencies: ["SkiVideoCore"]
+            dependencies: ["SkiVideoCore"],
+            // The iPad shell is built by the Xcode project, not by SwiftPM.
+            // SwiftPM would otherwise try to compile UIKit sources for macOS.
+            exclude: ["iOS"]
         ),
         .testTarget(
             name: "SkiVideoCoreTests",
