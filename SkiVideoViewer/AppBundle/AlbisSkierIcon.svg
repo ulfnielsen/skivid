@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="badge">
+      <circle cx="512" cy="512" r="454"/>
+    </clipPath>
+    <filter id="white-logo" color-interpolation-filters="sRGB">
+      <feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1 0"/>
+    </filter>
+  </defs>
+  <circle cx="512" cy="512" r="466" fill="#94151c"/>
+  <g clip-path="url(#badge)">
+    <image x="0" y="0" width="1024" height="1024" xlink:href="SkierArtwork.png"/>
+    <image x="312" y="120" width="400" height="155" preserveAspectRatio="xMidYMid meet" filter="url(#white-logo)" xlink:href="AlbisLogo.svg"/>
+  </g>
+  <circle cx="512" cy="512" r="454" fill="none" stroke="#f7d8d8" stroke-width="12"/>
+</svg>
