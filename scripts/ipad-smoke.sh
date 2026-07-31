@@ -19,6 +19,18 @@ BUNDLE_ID="ch.ski.video-viewer.ipad"
 script_dir=$(cd "$(dirname "$0")" && pwd)
 cd "$script_dir/../SkiVideoViewer"
 
+# SkiVideoViewer.xcodeproj is gitignored — project.yml is the source of truth —
+# so on a fresh clone there is no scheme to build and xcodebuild fails with
+# "does not contain a scheme named SkiVideoViewer-iPad". Regenerate every run so
+# the project can never lag behind project.yml either.
+if ! command -v xcodegen >/dev/null 2>&1; then
+  echo "xcodegen not found. This script generates SkiVideoViewer.xcodeproj from" >&2
+  echo "project.yml; install XcodeGen first: brew install xcodegen" >&2
+  exit 1
+fi
+echo "==> generating SkiVideoViewer.xcodeproj from project.yml"
+xcodegen generate
+
 echo "==> building for $DEVICE"
 xcodebuild -scheme SkiVideoViewer-iPad \
   -destination "platform=iOS Simulator,name=$DEVICE" \
