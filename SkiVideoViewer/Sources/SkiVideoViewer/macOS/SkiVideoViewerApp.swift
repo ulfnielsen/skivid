@@ -21,6 +21,7 @@ struct SkiVideoViewerApp: App {
         oauthPresenter: AppKitOAuthPresenter()
     )
     private let initialDirectory: URL?
+    private let secondaryScreens = MacSecondaryScreenPresenter()
 
     init() {
         if let argument = CommandLine.arguments.dropFirst().first {
@@ -33,7 +34,11 @@ struct SkiVideoViewerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model, initialDirectory: initialDirectory)
+            ContentView(
+                model: model,
+                initialDirectory: initialDirectory,
+                secondaryScreens: secondaryScreens
+            )
         }
         .defaultSize(width: 1200, height: 760)
         .commands {

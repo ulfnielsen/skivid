@@ -6,8 +6,20 @@ struct ContentView: View {
     let initialDirectory: URL?
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
-    @StateObject private var sortingWindow = SortingWindowController()
-    @StateObject private var comparisonWindow = ComparisonWindowController()
+    /// The platform's Compare and Sort presentation. macOS opens windows; a
+    /// platform that cannot present them reports `canPresent == false` and the
+    /// toolbar buttons disappear rather than becoming dead controls.
+    private let secondaryScreens: SecondaryScreenPresenter
+
+    init(
+        model: ViewerModel,
+        initialDirectory: URL?,
+        secondaryScreens: SecondaryScreenPresenter
+    ) {
+        _model = ObservedObject(wrappedValue: model)
+        self.initialDirectory = initialDirectory
+        self.secondaryScreens = secondaryScreens
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -18,33 +30,35 @@ struct ContentView: View {
         }
         .frame(minWidth: 980, minHeight: 640)
         .toolbar {
-            ToolbarItem {
-                Button {
-                    model.setKeyboardControlsEnabled(false)
-                    comparisonWindow.show(
-                        initialLeftVideo: model.currentPlaybackURL,
-                        openLibrary: model.comparisonLibrary,
-                        onClose: {
-                            model.setKeyboardControlsEnabled(true)
-                        }
-                    )
-                } label: {
-                    Label("Compare Videos…", systemImage: "rectangle.split.2x1")
+            if secondaryScreens.canPresent {
+                ToolbarItem {
+                    Button {
+                        model.setKeyboardControlsEnabled(false)
+                        secondaryScreens.presentComparison(
+                            initialLeftVideo: model.currentPlaybackURL,
+                            openLibrary: model.comparisonLibrary,
+                            onClose: {
+                                model.setKeyboardControlsEnabled(true)
+                            }
+                        )
+                    } label: {
+                        Label("Compare Videos…", systemImage: "rectangle.split.2x1")
+                    }
                 }
-            }
-            ToolbarItem {
-                Button {
-                    model.setKeyboardControlsEnabled(false)
-                    sortingWindow.show(
-                        openResizedLibrary: { outputDirectory in
-                            model.openDirectory(outputDirectory)
-                        },
-                        onClose: {
-                            model.setKeyboardControlsEnabled(true)
-                        }
-                    )
-                } label: {
-                    Label("Sort & Resize…", systemImage: "tag")
+                ToolbarItem {
+                    Button {
+                        model.setKeyboardControlsEnabled(false)
+                        secondaryScreens.presentSorting(
+                            openResizedLibrary: { outputDirectory in
+                                model.openDirectory(outputDirectory)
+                            },
+                            onClose: {
+                                model.setKeyboardControlsEnabled(true)
+                            }
+                        )
+                    } label: {
+                        Label("Sort & Resize…", systemImage: "tag")
+                    }
                 }
             }
             ToolbarItem {
