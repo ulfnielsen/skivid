@@ -44,14 +44,13 @@ targets:
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      # ComparisonView depends on OverlayPlayerView, which is an
-      # NSViewRepresentable in macOS/. Compare reaches iPad in phase 5, which
-      # supplies a UIKit overlay view; until then the iPad target cannot
-      # compile this file and nothing on iPad reaches it
-      # (NoSecondaryScreenPresenter.canPresent == false).
+      # Shared/ compiles on both platforms with no exclusions — that is the
+      # invariant the directory name promises. ComparisonView lives in macOS/
+      # because it depends on OverlayPlayerView, an NSViewRepresentable;
+      # nothing on iPad reaches Compare
+      # (NoSecondaryScreenPresenter.canPresent == false). Phase 5 adds a UIKit
+      # overlay view and moves ComparisonView back into Shared/.
       - path: Sources/SkiVideoViewer/Shared
-        excludes:
-          - ComparisonView.swift
       - path: Sources/SkiVideoViewer/iOS
     dependencies:
       - package: SkiVideoCore
