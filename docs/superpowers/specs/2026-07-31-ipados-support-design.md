@@ -38,6 +38,9 @@ Verified by reading the current sources.
 - `NSWindow` + `NSHostingView` secondary windows —
   `ComparisonWindowController.swift:21`, `SortingWindowController.swift:32`.
 - `NativePlayerView` is `NSViewRepresentable` around `AVPlayerView`.
+- `OverlayPlayerView` is `NSViewRepresentable` around an `NSView` hosting two
+  `AVPlayerLayer`s, and uses `CALayer.compositingFilter` for difference blending
+  (`OverlayPlayerView.swift:9,32,93`).
 - `NSWorkspace.shared.open` — `GoogleDriveSupport.swift:254`.
 
 **Hard blockers**
@@ -287,13 +290,43 @@ viewer's keyboard controls (`ContentView.swift:26-27, 41-42`).
 
 Layout changes for iPad:
 
-- `ContentView.swift:18` sets `.frame(minWidth: 980, minHeight: 640)`. An 11"
-  iPad in portrait is 834pt wide, so this is compiled out on iOS.
+- `ContentView.swift:18` sets `.frame(minWidth: 980, minHeight: 640)` and
+  `ComparisonView.swift:42` sets `.frame(minWidth: 1000, minHeight: 680)`. An
+  11" iPad in portrait is 834pt wide, so both are compiled out on iOS.
 - `NavigationSplitView` adapts natively; the sidebar becomes an overlay in
   portrait, which is now the primary way to switch athletes.
 - The five toolbar items collapse into a single menu at compact width.
 - `ComparisonView`'s `sideBySide` layout stacks vertically in portrait. Its
-  `overlay` layout already works at any size.
+  `overlay` layout already works at any size, and its segmented layout picker
+  and opacity slider are touch-friendly as they stand.
+
+### Overlay player
+
+`OverlayPlayerView` needs a UIKit counterpart. The structural port is
+mechanical: `NSView` to `UIView`, `NSRect` to `CGRect`, `NSColor` to `UIColor`,
+`layout()` to `layoutSubviews()`, and `wantsLayer` dropped because `UIView` is
+always layer-backed. `AVPlayerLayer`, `CALayer` and `CATransaction` — including
+the `setDisableActions(true)` guard against implicitly animated frame changes —
+are identical on both platforms. Roughly 15 lines of a 98-line file differ.
+
+**The difference blend is the open question.** `OverlayPlayerView.swift:93` sets
+`topLayer.compositingFilter = CIFilter(name: "CIDifferenceBlendMode")`. The iOS
+SDK declares `compositingFilter` at `CALayer.h:660` with no unavailability
+annotation, so it compiles — but Core Animation on iOS has historically not
+executed the layer filter pipeline, and whether it renders cannot be confirmed
+without running on device. Treated as a spike, not an assumption.
+
+If it is a no-op on iOS, the fallback is SwiftUI's own `.blendMode(.difference)`
+inside a `.compositingGroup()`, which would also let the two-layer custom view
+collapse into a `ZStack` of two single-player views shared by both platforms —
+a simplification worth taking even on macOS if it works. That path is itself
+unverified for `AVPlayerLayer` content, since video layers can be composited
+out-of-band by the display server and may not participate in SwiftUI blending.
+Second fallback is a Metal or `CIFilter`-based compositor drawing both frames,
+which is materially more work.
+
+Blend mode is the only part of the overlay feature at risk. Opacity blending
+(`OverlayPlayerView.swift:89`) is plain `CALayer.opacity` and works everywhere.
 
 ## Error handling
 
@@ -355,8 +388,12 @@ Ordered by how early they should be resolved.
 2. **`AVAssetExportPreset1920x1080` no-upscale behaviour.** Believed to match
    `force_original_aspect_ratio=decrease` but unverified. Spike with a visual A/B
    against ffmpeg output on one real clip.
-3. **Google iOS-type OAuth client from macOS.** See above; contained by the seam.
-4. **Export throughput and thermals** on a long real-world batch.
+3. **`CALayer.compositingFilter` on iOS.** Determines whether the overlay
+   difference blend survives the port unchanged, or needs the SwiftUI
+   `.blendMode` rewrite. Cheap to test: one layer, one filter, one screenshot.
+   Run it before phase 5.
+4. **Google iOS-type OAuth client from macOS.** See above; contained by the seam.
+5. **Export throughput and thermals** on a long real-world batch.
 
 ## Implementation phases
 
@@ -374,7 +411,8 @@ working and is verifiable at every step.
 3. **Xcode project and iPad app target.** Both destinations build and launch;
    iPad reaches the viewer with a picked folder and plays clips.
 4. **iPad input** — gestures, then hardware keyboard. Includes spike 1.
-5. **iPad secondary screens** — Compare and Sort, plus layout adaptation.
+5. **iPad secondary screens** — Compare and Sort, the `OverlayPlayerView` UIKit
+   counterpart, plus layout adaptation.
 6. **`ASWebAuthenticationSession` Drive auth.** Includes spike 3.
 
 Spike 1 (reverse scrub performance) should be run early and out of order if
