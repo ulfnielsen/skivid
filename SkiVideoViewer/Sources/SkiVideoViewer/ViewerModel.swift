@@ -35,6 +35,7 @@ final class ViewerModel: ObservableObject {
 
     private let input: PlaybackInputSource
     private let folderPicker: FolderPicker
+    private let oauthPresenter: OAuthPresenter
     private let now: () -> Date
     private let holdThreshold: TimeInterval
 
@@ -44,11 +45,13 @@ final class ViewerModel: ObservableObject {
     public init(
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
+        oauthPresenter: OAuthPresenter,
         now: @escaping () -> Date = Date.init,
         holdThreshold: TimeInterval = 0.22
     ) {
         self.input = input
         self.folderPicker = folderPicker
+        self.oauthPresenter = oauthPresenter
         self.now = now
         self.holdThreshold = holdThreshold
         driveFolderID = UserDefaults.standard.string(forKey: "driveFolderID") ?? ""
@@ -176,7 +179,10 @@ final class ViewerModel: ObservableObject {
         status = "Connecting to Google Drive…"
         Task {
             do {
-                let drive = try await GoogleDriveClient.connect(clientSecretsURL: clientSecretsURL)
+                let drive = try await GoogleDriveClient.connect(
+                    clientSecretsURL: clientSecretsURL,
+                    presenter: oauthPresenter
+                )
                 status = "Scanning Shared Drive…"
                 let library = try await drive.scanSharedDrive(folderID: folderID)
                 guard !library.athletes.isEmpty else { throw ViewerError.noVideos }

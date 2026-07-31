@@ -1,7 +1,5 @@
-import AppKit
 import CryptoKit
 import Foundation
-import Network
 import Security
 import SkiVideoCore
 
@@ -57,9 +55,12 @@ struct GoogleDriveClient {
 
     private let accessToken: String
 
-    static func connect(clientSecretsURL: URL) async throws -> GoogleDriveClient {
+    static func connect(
+        clientSecretsURL: URL,
+        presenter: OAuthPresenter
+    ) async throws -> GoogleDriveClient {
         let client = try GoogleOAuthClient.load(from: clientSecretsURL)
-        let token = try await GoogleOAuth.authorize(client: client)
+        let token = try await GoogleOAuth.authorize(client: client, presenter: presenter)
         return GoogleDriveClient(accessToken: token)
     }
 
@@ -223,7 +224,10 @@ private struct GoogleOAuthClient: Decodable {
 private enum GoogleOAuth {
     private static let scope = "https://www.googleapis.com/auth/drive.readonly"
 
-    static func authorize(client: GoogleOAuthClient.Details) async throws -> String {
+    static func authorize(
+        client: GoogleOAuthClient.Details,
+        presenter: OAuthPresenter
+    ) async throws -> String {
         if let refreshToken = KeychainTokenStore.load(account: client.clientID) {
             do {
                 return try await refreshAccessToken(refreshToken: refreshToken, client: client)
@@ -233,12 +237,10 @@ private enum GoogleOAuth {
             }
         }
 
-        let server = try OAuthCallbackServer()
-        let callbackPort = try await server.start()
+        let redirectURI = try await presenter.prepareRedirectURI()
         let state = randomURLSafeString(byteCount: 24)
         let verifier = randomURLSafeString(byteCount: 48)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
-        let redirectURI = "http://127.0.0.1:\(callbackPort)"
         var components = URLComponents(string: client.authURI)!
         components.queryItems = [
             URLQueryItem(name: "client_id", value: client.clientID),
@@ -252,9 +254,11 @@ private enum GoogleOAuth {
             URLQueryItem(name: "code_challenge_method", value: "S256"),
         ]
         guard let authorizationURL = components.url else { throw DriveError.invalidClientSecrets }
-        NSWorkspace.shared.open(authorizationURL)
 
-        let callback = try await server.waitForCallback()
+        let callback = try await presenter.authorize(
+            authorizationURL: authorizationURL,
+            redirectURI: redirectURI
+        )
         guard let callbackComponents = URLComponents(url: callback, resolvingAgainstBaseURL: false),
               callbackComponents.queryItems?.first(where: { $0.name == "state" })?.value == state
         else {
@@ -391,101 +395,6 @@ private enum KeychainTokenStore {
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
-    }
-}
-
-private final class OAuthCallbackServer {
-    private let listener: NWListener
-    private var port: UInt16?
-    private var startContinuation: CheckedContinuation<UInt16, Error>?
-    private var callbackContinuation: CheckedContinuation<URL, Error>?
-    private var startResult: Result<UInt16, Error>?
-    private var callbackResult: Result<URL, Error>?
-
-    init() throws {
-        // Let macOS choose an unused loopback port. This avoids a prior app launch or
-        // another process on a fixed port leaving OAuth waiting forever.
-        listener = try NWListener(using: .tcp)
-    }
-
-    func start() async throws -> UInt16 {
-        if let startResult {
-            return try startResult.get()
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            startContinuation = continuation
-            beginListening()
-        }
-    }
-
-    private func beginListening() {
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                guard let port = self.listener.port?.rawValue else {
-                    self.completeStart(.failure(DriveError.oauthCallback("Google sign-in callback did not receive a local port.")))
-                    return
-                }
-                self.port = port
-                self.completeStart(.success(port))
-            case let .failed(error):
-                let callbackError = DriveError.oauthCallback(
-                    "Could not start the local Google sign-in callback: \(error.localizedDescription)"
-                )
-                self.completeStart(.failure(callbackError))
-                self.completeCallback(.failure(callbackError))
-            default:
-                break
-            }
-        }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.receiveCallback(on: connection)
-        }
-        listener.start(queue: .main)
-    }
-
-    func waitForCallback() async throws -> URL {
-        if let callbackResult {
-            return try callbackResult.get()
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            callbackContinuation = continuation
-        }
-    }
-
-    private func receiveCallback(on connection: NWConnection) {
-        connection.start(queue: .main)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, _, _ in
-            defer { connection.cancel() }
-            guard let self, let data, let request = String(data: data, encoding: .utf8),
-                  let requestLine = request.split(separator: "\n").first,
-                  let target = requestLine.split(separator: " ").dropFirst().first,
-                  let port = self.port,
-                  let callback = URL(string: "http://127.0.0.1:\(port)\(target)")
-            else {
-                return
-            }
-            let html = "<html><body style='font-family:-apple-system;padding:2rem'><h2>Google Drive connected</h2><p>You can close this tab and return to Ski Video Viewer.</p></body></html>"
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
-            connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in })
-            self.completeCallback(.success(callback))
-        }
-    }
-
-    private func completeStart(_ result: Result<UInt16, Error>) {
-        guard startResult == nil else { return }
-        startResult = result
-        startContinuation?.resume(with: result)
-        startContinuation = nil
-    }
-
-    private func completeCallback(_ result: Result<URL, Error>) {
-        guard callbackResult == nil else { return }
-        callbackResult = result
-        listener.cancel()
-        callbackContinuation?.resume(with: result)
-        callbackContinuation = nil
     }
 }
 

@@ -37,6 +37,35 @@ final class FakeFolderPicker: FolderPicker {
     }
 }
 
+/// Stands in for the loopback server (macOS) or `ASWebAuthenticationSession`
+/// (iOS). Records the two phases so a test can assert the redirect URI reaches
+/// the authorization URL without any browser or network involvement.
+@MainActor
+final class FakeOAuthPresenter: OAuthPresenter {
+    var redirectURIToReturn = "http://127.0.0.1:49152"
+    var callbackToReturn: URL?
+    var errorToThrow: Error?
+    private(set) var prepareCallCount = 0
+    private(set) var lastAuthorizationURL: URL?
+    private(set) var lastRedirectURI: String?
+
+    func prepareRedirectURI() async throws -> String {
+        prepareCallCount += 1
+        if let errorToThrow { throw errorToThrow }
+        return redirectURIToReturn
+    }
+
+    func authorize(authorizationURL: URL, redirectURI: String) async throws -> URL {
+        lastAuthorizationURL = authorizationURL
+        lastRedirectURI = redirectURI
+        if let errorToThrow { throw errorToThrow }
+        guard let callbackToReturn else {
+            throw NSError(domain: "FakeOAuthPresenter", code: 1)
+        }
+        return callbackToReturn
+    }
+}
+
 /// Deterministic replacement for `Date.init` so double-tap window tests do not
 /// depend on wall-clock timing.
 final class TestClock: @unchecked Sendable {

@@ -63,6 +63,7 @@ final class AppKitInputToModelTests: XCTestCase {
         let model = ViewerModel(
             input: source,
             folderPicker: AppKitFolderPicker(),
+            oauthPresenter: StubOAuthPresenter(),
             now: clock.now,
             holdThreshold: 60
         )

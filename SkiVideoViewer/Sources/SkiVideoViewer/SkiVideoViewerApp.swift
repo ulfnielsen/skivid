@@ -16,7 +16,8 @@ struct SkiVideoViewerApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @StateObject private var model = ViewerModel(
         input: AppKitInputSource(),
-        folderPicker: AppKitFolderPicker()
+        folderPicker: AppKitFolderPicker(),
+        oauthPresenter: AppKitOAuthPresenter()
     )
     private let initialDirectory: URL?
 

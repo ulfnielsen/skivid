@@ -67,7 +67,11 @@ final class FolderPickerWiringTests: XCTestCase {
     func testChooseDirectoryOpensWhatThePickerReturns() async throws {
         let picker = FakeFolderPicker()
         picker.folderToReturn = try makeLibrary()
-        let model = ViewerModel(input: AppKitInputSource(), folderPicker: picker)
+        let model = ViewerModel(
+            input: AppKitInputSource(),
+            folderPicker: picker,
+            oauthPresenter: StubOAuthPresenter()
+        )
 
         await model.chooseDirectory()
 
@@ -79,7 +83,11 @@ final class FolderPickerWiringTests: XCTestCase {
     func testChooseDirectoryDoesNothingWhenCancelled() async throws {
         let picker = FakeFolderPicker()
         picker.folderToReturn = nil
-        let model = ViewerModel(input: AppKitInputSource(), folderPicker: picker)
+        let model = ViewerModel(
+            input: AppKitInputSource(),
+            folderPicker: picker,
+            oauthPresenter: StubOAuthPresenter()
+        )
 
         await model.chooseDirectory()
 
@@ -91,7 +99,11 @@ final class FolderPickerWiringTests: XCTestCase {
         let picker = FakeFolderPicker()
         let secretsURL = URL(fileURLWithPath: "/tmp/does-not-need-to-exist-client_secret.json")
         picker.fileToReturn = secretsURL
-        let model = ViewerModel(input: AppKitInputSource(), folderPicker: picker)
+        let model = ViewerModel(
+            input: AppKitInputSource(),
+            folderPicker: picker,
+            oauthPresenter: StubOAuthPresenter()
+        )
 
         await model.chooseClientSecretsFile()
 
@@ -107,7 +119,11 @@ final class FolderPickerWiringTests: XCTestCase {
     func testChooseClientSecretsFileDoesNothingWhenCancelled() async throws {
         let picker = FakeFolderPicker()
         picker.fileToReturn = nil
-        let model = ViewerModel(input: AppKitInputSource(), folderPicker: picker)
+        let model = ViewerModel(
+            input: AppKitInputSource(),
+            folderPicker: picker,
+            oauthPresenter: StubOAuthPresenter()
+        )
         let pathBefore = model.clientSecretsPath
 
         await model.chooseClientSecretsFile()

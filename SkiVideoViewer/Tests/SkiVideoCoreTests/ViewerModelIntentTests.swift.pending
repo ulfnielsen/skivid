@@ -29,14 +29,16 @@ final class ViewerModelIntentTests: XCTestCase {
         }
     }
 
-    /// Task 4 adds the `folderPicker` parameter. This helper is written with it
-    /// already present so the tests written here survive that task unchanged.
+    /// Tasks 4 and 5 add the `folderPicker` and `oauthPresenter` parameters.
+    /// This helper is written with them already present so the tests written
+    /// here survive those tasks unchanged.
     private func makeModel() throws -> (ViewerModel, FakeInputSource, TestClock) {
         let input = FakeInputSource()
         let clock = TestClock()
         let model = ViewerModel(
             input: input,
             folderPicker: FakeFolderPicker(),
+            oauthPresenter: FakeOAuthPresenter(),
             now: clock.now,
             holdThreshold: 0.02
         )
@@ -125,6 +127,7 @@ final class ViewerModelIntentTests: XCTestCase {
         let model = ViewerModel(
             input: input,
             folderPicker: picker,
+            oauthPresenter: FakeOAuthPresenter(),
             now: Date.init,
             holdThreshold: 0.02
         )
@@ -143,6 +146,7 @@ final class ViewerModelIntentTests: XCTestCase {
         let model = ViewerModel(
             input: input,
             folderPicker: picker,
+            oauthPresenter: FakeOAuthPresenter(),
             now: Date.init,
             holdThreshold: 0.02
         )
