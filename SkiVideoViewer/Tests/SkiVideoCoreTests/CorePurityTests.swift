@@ -1,4 +1,5 @@
 import XCTest
+@testable import SkiVideoCore
 
 final class CorePurityTests: XCTestCase {
     /// `Sources/SkiVideoCore` must stay portable. The iOS platform component is
@@ -33,5 +34,21 @@ final class CorePurityTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testSeamsAreReachableFromTests() {
+        // Compile-time proof that the protocols exist and the fakes conform.
+        let intents: [PlaybackIntent] = [
+            .togglePlayback,
+            .clip(.next),
+            .athlete(.previous),
+            .scrubBegan(.forward),
+            .scrubEnded(.forward, performTap: true),
+            .focusAthleteSearch,
+            .openFolder,
+        ]
+        XCTAssertEqual(intents.count, 7)
+        XCTAssertEqual(ScrubDirection.backward.rawValue, -1)
+        XCTAssertEqual(ScrubDirection.forward.rawValue, 1)
     }
 }
