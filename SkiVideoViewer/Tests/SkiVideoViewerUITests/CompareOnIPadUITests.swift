@@ -83,6 +83,20 @@ final class CompareOnIPadUITests: XCTestCase {
             "the status text must survive the deletion of the rows it lived in"
         )
 
+        // Landscape on an 11-inch is 1210pt, above the bar's 880.5pt wrap
+        // threshold, so the layout picker and the transport are on the *same*
+        // row and side-by-side costs two rows of chrome in total: the scrubber
+        // and the bar. This is the width at which the spec's "seven rows to
+        // two" claim is true, and it is asserted here so that the portrait
+        // test's opposite assertion cannot be read as the only behaviour.
+        XCTAssertTrue(
+            sharesARow(app.buttons["Side-by-side"].frame, app.buttons["Play or pause"].frame),
+            """
+            the bar must fit on one row in landscape: \
+            \(app.buttons["Side-by-side"].frame) vs \(app.buttons["Play or pause"].frame)
+            """
+        )
+
         attachScreenshot(named: "comparison-side-by-side")
 
         app.buttons["Overlay"].tap()
@@ -142,6 +156,20 @@ final class CompareOnIPadUITests: XCTestCase {
             )
         }
 
+        // Every iPad portrait width is below the 880.5pt threshold, so the bar
+        // is *always* wrapped here — the layout picker and the transport are on
+        // different rows, and side-by-side therefore costs three rows of chrome
+        // (scrubber, pickers, transport), not the spec's two. Pinned rather
+        // than left to the screenshots, because it is the difference between
+        // the redesign's headline number holding and not.
+        XCTAssertFalse(
+            sharesARow(app.buttons["Side-by-side"].frame, app.buttons["Play or pause"].frame),
+            """
+            the bar is expected to wrap to two rows below 880.5pt: \
+            \(app.buttons["Side-by-side"].frame) vs \(app.buttons["Play or pause"].frame)
+            """
+        )
+
         assertTheStatusChipClearsEverythingUnderIt(app, window: window)
 
         app.buttons["Overlay"].tap()
@@ -153,6 +181,87 @@ final class CompareOnIPadUITests: XCTestCase {
             XCTAssertTrue(
                 window.contains(button.frame),
                 "\(label) is clipped in portrait: \(button.frame) outside \(window)"
+            )
+        }
+    }
+
+    /// `Both` is the control this redesign refuses to show before it can work:
+    /// `playSynced` and `seekSynced` both bail out unless sync points are set,
+    /// so offering it while aligning is a control that can only produce a nag —
+    /// exactly what the redesign deletes. `availableTargets` is what enforces
+    /// it, and this is the only check that the view is bound to that rather
+    /// than to `ComparisonTarget.allCases`.
+    ///
+    /// The converse — `Both` *appearing* once sync points are set — is not
+    /// covered here and cannot be: `setSyncPoints()` requires two loaded clips
+    /// and a UI test cannot load one. See the task report; the headless
+    /// `ComparisonControlBarLayoutTests` drives the synced state instead.
+    func testTheControlBarOffersOnlyPerSideTargetsBeforeSyncing() {
+        let app = launchPastTheFolderPicker()
+
+        let compare = app.buttons["Compare Videos…"]
+        XCTAssertTrue(compare.waitForExistence(timeout: 30))
+        compare.tap()
+
+        XCTAssertTrue(
+            app.buttons["Left"].waitForExistence(timeout: 30),
+            "the target selector must offer Left while aligning"
+        )
+        XCTAssertTrue(app.buttons["Right"].exists)
+        XCTAssertFalse(
+            app.buttons["Both"].exists,
+            "Both cannot work before sync points are set"
+        )
+    }
+
+    /// The anchor absorbs three of the deleted text buttons and says which one
+    /// it currently is. Before anything is synced it must advertise *setting*
+    /// the sync points — an icon whose label still read "Return to sync points"
+    /// while aligning would be the icon-only bar's worst failure mode.
+    func testTheAnchorButtonAdvertisesSettingSyncPoints() {
+        let app = launchPastTheFolderPicker()
+
+        let compare = app.buttons["Compare Videos…"]
+        XCTAssertTrue(compare.waitForExistence(timeout: 30))
+        compare.tap()
+
+        XCTAssertTrue(
+            app.buttons["Set sync points"].waitForExistence(timeout: 30),
+            "the anchor must say what it does before anything is synced"
+        )
+        XCTAssertFalse(
+            app.buttons["Return to sync points"].exists,
+            "the anchor must not advertise the synced meaning while aligning"
+        )
+    }
+
+    /// One transport, and it is disabled rather than absent until there is
+    /// something to drive. Present matters because this single row replaced
+    /// three separate transports; disabled matters because the redesign's rule
+    /// is that a control which cannot work does not sit there waiting to nag.
+    func testTheTransportIsPresentAndDisabledWithoutClips() {
+        let app = launchPastTheFolderPicker()
+
+        let compare = app.buttons["Compare Videos…"]
+        XCTAssertTrue(compare.waitForExistence(timeout: 30))
+        compare.tap()
+
+        let playPause = app.buttons["Play or pause"]
+        XCTAssertTrue(playPause.waitForExistence(timeout: 30))
+        XCTAssertFalse(
+            playPause.isEnabled,
+            "transport must be disabled until two clips are loaded"
+        )
+        // The whole transport, not just its middle button: `ForEach` over
+        // `TransportAction.allCases` means one `disabled` modifier governs all
+        // six, and a regression that dropped it would drop it for all six.
+        for label in [
+            "Back 5 seconds", "Back 1 second", "Forward 1 second",
+            "Forward 5 seconds", "Play at quarter speed", "Set sync points",
+        ] {
+            XCTAssertFalse(
+                app.buttons[label].isEnabled,
+                "\(label) must be disabled until two clips are loaded"
             )
         }
     }
@@ -218,11 +327,12 @@ final class CompareOnIPadUITests: XCTestCase {
 
         let frame = chip.frame
         // The clearance below is only durable if the chip's width does not
-        // depend on the sentence in it. No UI test can drive the model to its
-        // longest status — every status writer needs two clips — so this pins
-        // the *cap* instead: 320pt of text plus 2×10pt of padding. Without it
-        // the chip sizes to its content, and the initial 46-character status
-        // happens to clear the divider while an 83-character one would not.
+        // depend on the sentence in it, and this test can only ever see the
+        // initial 46-character status: no UI route reaches a longer one
+        // without two loaded clips. So it pins the *cap* — 320pt of text plus
+        // 2×10pt of padding — while `ComparisonStatusChipTests` measures the
+        // real 83-character status against the same bound headlessly, which
+        // this comment previously (and wrongly) claimed was impossible.
         XCTAssertEqual(
             frame.width,
             340,
@@ -310,6 +420,14 @@ final class CompareOnIPadUITests: XCTestCase {
             .completed,
             "the folder picker must be dismissed before anything else is tappable"
         )
+    }
+
+    /// Whether two controls are on the same row of the bar, which is how the
+    /// wrap is observed from outside: `ViewThatFits` picks the stacked layout
+    /// below 880.5pt, and the only visible consequence is that the pickers and
+    /// the transport stop sharing a vertical band.
+    private func sharesARow(_ a: CGRect, _ b: CGRect) -> Bool {
+        a.minY < b.maxY && b.minY < a.maxY
     }
 
     private func attachScreenshot(named name: String) {
