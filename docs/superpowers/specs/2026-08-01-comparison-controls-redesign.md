@@ -49,7 +49,12 @@ controls twice**. The model unifies them by mode; the UI shows both anyway.
   while aligning and gains `Both` on sync, so no control is ever present
   without being usable.
 - **Transport** is five actions — −5s, −1s, play/pause, +1s, +5s — plus a
-  slow-motion toggle. Identical regardless of target.
+  **momentary** slow-motion action that starts playback at 0.25×. Identical
+  regardless of target. It is not a toggle: `applyTransport(.slow)` is
+  fire-and-play, the rate it sets lives on `AVPlayer` and the model publishes
+  nothing to render a toggle's state from, so an on/off icon would go stale at
+  exactly the moment playback stops. The route back to 1× is play/pause — it
+  pauses, and the next play starts at full rate.
 - **Scrubber** sits above, showing the targeted clip, or the common timeline
   when `Both`.
 
@@ -274,18 +279,32 @@ and so is structurally incapable of being `.both` itself — there is no
 hand-demote (`removeSync`, `clearSync`, and now the `didSet`) all funnel
 through the same `lastTouchedTarget`.
 
-### Staleness note for later tasks
+### The last-touched side (fixed in Task 2)
 
-`lastTouchedSide` — what a `.both`-losing demotion falls back to — is written
-in exactly two places: `applyTransport`'s per-side branch, and
-`load(_:side:)`. Every other public per-side entry point leaves it stale:
-`scrub`, `nudge`, `seek(_:by:)`, `seek(_:to:)`, `toggleIndividual`,
-`playIndividual`. A later task's control that calls one of those directly
-instead of routing through `applyTransport` — dragging the per-side scrubber,
-say — inherits the staleness, and the symptom is a demotion landing on the
-wrong side. The durable fix is to set `lastTouchedSide` inside the per-side
-methods themselves rather than in the router; not done here because it was
-outside this task's remit.
+`lastTouchedSide` — what a `.both`-losing demotion falls back to — was
+originally written in exactly two places: `applyTransport`'s per-side branch,
+and `load(_:side:)`. Every other per-side entry point left it stale, and the
+control bar made that reachable: dragging the scrubber is the only route to an
+absolute seek, since `TransportAction` has no such case. Measured symptom —
+select Right, align it by dragging, sync, clear sync, and land back on **Left**.
+
+Fixed by moving the rule into the model rather than asking each new control to
+remember it. `noteTouched(_:)` is called by `scrub`, `nudge`, `seek(_:by:)`,
+`seek(_:to:)`, `toggleIndividual` and `playIndividual`, and `target`'s own
+`didSet` records a side the moment the picker selects one — choosing `Right` is
+the clearest statement of preference there is, and on its own it used to record
+nothing.
+
+`noteTouched` refuses while `target == .both`, which is the part a naive fix
+gets wrong. `lastTouchedSide` answers one question — which side a demotion
+lands on — so it must follow only calls that name a side. While targeting
+`Both` the scrubber shows the common timeline and drags it through
+`scrub(.left, to:)`, because there is no paired overload; recording that as a
+touch on Left would reintroduce the same bug for a user who had chosen Right.
+`applyTransport` already behaved this way (its `.both` branch never wrote it);
+the direct entry points now agree. `load(_:side:)` stays unconditional:
+dropping a clip into a pane names that side whatever the target is, and it has
+to be recorded before `clearSync` demotes off `both`.
 
 ## Testing
 

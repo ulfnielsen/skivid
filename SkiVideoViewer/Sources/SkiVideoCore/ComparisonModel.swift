@@ -52,6 +52,17 @@ public enum ComparisonTarget: String, CaseIterable, Identifiable, Sendable {
         case .right: return "Right"
         }
     }
+
+    /// The single side this target names, or `nil` for `both`. Internal: it
+    /// exists so `ComparisonModel` can record which side a selection expressed
+    /// a preference for, which is nobody else's business.
+    var side: ComparisonSide? {
+        switch self {
+        case .both: return nil
+        case .left: return .left
+        case .right: return .right
+        }
+    }
 }
 
 /// One transport action, routed by `ComparisonModel.target`.
@@ -88,9 +99,19 @@ public final class ComparisonModel: ObservableObject {
     /// that selects `both` while aligning would otherwise leave a selection
     /// `availableTargets` does not contain, which SwiftUI renders as no
     /// selection at all. Assigning from inside `didSet` does not re-enter it.
+    ///
+    /// Selecting a side is itself an expression of preference — arguably the
+    /// clearest one there is — so it records the last-touched side too.
+    /// Without that, picking `Right`, syncing, and clearing sync dropped the
+    /// user back on `Left`, because nothing between those three steps had
+    /// called a per-side method.
     @Published public var target: ComparisonTarget = .left {
         didSet {
-            if !availableTargets.contains(target) { target = lastTouchedTarget }
+            guard availableTargets.contains(target) else {
+                target = lastTouchedTarget
+                return
+            }
+            if let side = target.side { lastTouchedSide = side }
         }
     }
 
@@ -101,10 +122,40 @@ public final class ComparisonModel: ObservableObject {
     /// Where `target` lands when `both` stops being available. Snapping back to
     /// Left after the user drops a clip into the right pane reads as a bug, so
     /// the demotion follows whichever side was last acted on.
+    ///
+    /// Written by `noteTouched(_:)` from every per-side entry point, by `load`,
+    /// and by `target`'s own `didSet`. It used to be written only in
+    /// `applyTransport` and `load`, which left every other route stale — the
+    /// measured symptom was that aligning the right clip by dragging the
+    /// scrubber (the only route to an absolute seek, since `TransportAction`
+    /// has no such case), then syncing and clearing sync, landed on Left.
     private var lastTouchedSide: ComparisonSide = .left
 
     private var lastTouchedTarget: ComparisonTarget {
         lastTouchedSide == .left ? .left : .right
+    }
+
+    /// Records a *side-directed* call. Every per-side method funnels through
+    /// this rather than assigning `lastTouchedSide` itself, so the rule lives
+    /// in one place.
+    ///
+    /// The guard is the whole point. `lastTouchedSide` answers exactly one
+    /// question — which side a `both` demotion should land on — so it must
+    /// only follow calls that express a preference for a side. A per-side call
+    /// made while the bar targets `both` does not: the scrubber shows the
+    /// common timeline there and drags it through `scrub(.left, to:)` because
+    /// there is no paired overload, so without the guard, dragging the common
+    /// timeline would silently reassign the landing side to Left and
+    /// reintroduce the very bug this fixes for a user who had chosen Right.
+    /// `applyTransport` has always behaved this way — its `both` branch never
+    /// writes it — and this makes the direct entry points agree.
+    ///
+    /// `load(_:side:)` deliberately does *not* use this: dropping a clip into
+    /// a pane names that side whatever the target is, and it has to be
+    /// recorded before `clearSync` demotes off `both`.
+    private func noteTouched(_ side: ComparisonSide) {
+        guard target != .both else { return }
+        lastTouchedSide = side
     }
 
     /// Readable inside the module so the tests can prove a nudge moves a sync
@@ -181,8 +232,12 @@ public final class ComparisonModel: ObservableObject {
             case .slow: playSynced(rate: 0.25)
             }
         case .left, .right:
+            // No `noteTouched` here any more. Every branch below reaches a
+            // per-side method that records the side itself, so a call here was
+            // redundant — mutation-verified: deleting it changed no test.
+            // Keeping it would have meant the rule lived in two layers, which
+            // is how it came to be missing from one of them in the first place.
             let side: ComparisonSide = target == .left ? .left : .right
-            lastTouchedSide = side
             switch action {
             // Seeks become nudges once synced: they correct this clip against
             // the other instead of moving the locked pair. `nudge` falls back
@@ -238,6 +293,9 @@ public final class ComparisonModel: ObservableObject {
 
     func load(_ url: URL, side: ComparisonSide) {
         let player = player(for: side)
+        // Not `noteTouched`: dropping a clip into a pane names that side
+        // whatever the target is, and it must be recorded before `clearSync`
+        // below demotes off `both`.
         lastTouchedSide = side
         player.pause()
         let item = AVPlayerItem(url: url)
@@ -267,6 +325,7 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func toggleIndividual(_ side: ComparisonSide) {
+        noteTouched(side)
         if isSynced {
             if leftPlayer.rate == 0 && rightPlayer.rate == 0 {
                 playSynced()
@@ -285,6 +344,7 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func playIndividual(_ side: ComparisonSide, rate: Float) {
+        noteTouched(side)
         if isSynced {
             playSynced(rate: rate)
             return
@@ -308,6 +368,7 @@ public final class ComparisonModel: ObservableObject {
     /// While aligning there is nothing to correct against, so this degrades to
     /// an ordinary per-side seek.
     public func nudge(_ side: ComparisonSide, by seconds: Double) {
+        noteTouched(side)
         guard isSynced else {
             seek(side, by: seconds)
             return
@@ -327,6 +388,7 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func seek(_ side: ComparisonSide, by seconds: Double) {
+        noteTouched(side)
         if isSynced {
             seekSynced(by: seconds)
             return
@@ -336,6 +398,7 @@ public final class ComparisonModel: ObservableObject {
     }
 
     func seek(_ side: ComparisonSide, to seconds: Double) {
+        noteTouched(side)
         if isSynced {
             seekSynced(by: seconds - currentTime(for: side))
             return
@@ -345,6 +408,7 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func scrub(_ side: ComparisonSide, to seconds: Double) {
+        noteTouched(side)
         guard isSynced else {
             seek(player(for: side), to: seconds)
             return

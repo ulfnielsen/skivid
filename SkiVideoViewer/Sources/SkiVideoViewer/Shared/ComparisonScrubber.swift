@@ -76,6 +76,14 @@ struct ComparisonScrubber: View {
             }
         )
         .disabled(duration <= 0)
+        // A `Slider` draws about 16pt tall on macOS and grabs only that band.
+        // The frame gives it a 44pt row and `contentShape` makes the whole row
+        // the slider's hit region rather than dead space around a thin target
+        // — the same treatment the control bar gives its pickers, and the same
+        // caveat: that a drag started in the padding actually reaches the
+        // slider is not verifiable headlessly and needs Task 4's device check.
+        .frame(height: 44)
+        .contentShape(Rectangle())
         .accessibilityLabel("Timeline")
         .accessibilityValue(ComparisonModel.timecode(displayedTime))
     }

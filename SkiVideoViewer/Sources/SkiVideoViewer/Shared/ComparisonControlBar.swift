@@ -4,10 +4,21 @@ import SwiftUI
 /// Layout picker, target selector, transport, time and the sync anchor — the
 /// one row that replaces the previous three transports.
 ///
-/// Wraps to two rows rather than shrinking when it does not fit: touch targets
-/// stay 44pt at every width. `ViewThatFits` tries the single row first and
-/// falls through to the stacked one, which is also the last candidate and so
-/// the one used when nothing fits.
+/// Wraps to two rows rather than shrinking when it does not fit: every control
+/// keeps its 44pt row at every width. `ViewThatFits` tries the single row first
+/// and falls through to the stacked one, which is also the last candidate and
+/// so the one used when nothing fits.
+///
+/// "44pt row" is the honest claim, and it is weaker than "44pt target" for two
+/// of the controls. The transport buttons and the anchor are genuinely 44×44 —
+/// a `frame` plus `contentShape` on a plain `Button`. The two segmented
+/// pickers draw at their platform-intrinsic 24pt however tall a frame they are
+/// given (measured on macOS: identical drawn pixel extent at `height: 44` and
+/// unframed), so they get the 44pt frame *and* `contentShape(Rectangle())`,
+/// which makes the surrounding band part of the picker's hit region rather
+/// than a gap that falls through to the bar. Whether a tap in that band
+/// actually selects the segment under it is the one thing that cannot be
+/// measured headlessly — it needs Task 4's device check.
 struct ComparisonControlBar: View {
     @ObservedObject var model: ComparisonModel
 
@@ -51,7 +62,8 @@ struct ComparisonControlBar: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 180)
+        .frame(width: 180, height: 44)
+        .contentShape(Rectangle())
     }
 
     /// Bound to `availableTargets`, never `ComparisonTarget.allCases`: `.both`
@@ -73,7 +85,8 @@ struct ComparisonControlBar: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 160)
+        .frame(width: 160, height: 44)
+        .contentShape(Rectangle())
     }
 
     /// A `ForEach` over `allCases` rather than a restatement of the list:
@@ -137,7 +150,22 @@ struct ComparisonControlBar: View {
     /// Points and Unsync — the first two by changing meaning with `isSynced`,
     /// the third as the secondary action (right-click on Mac, long-press on
     /// touch).
+    ///
+    /// The whole `contextMenu` is conditional, not just its contents: a menu
+    /// whose only item is gated on `isSynced` still counts as a context menu
+    /// while aligning, and pops up empty.
+    @ViewBuilder
     private var anchorButton: some View {
+        if model.isSynced {
+            anchorControl.contextMenu {
+                Button("Clear sync", role: .destructive) { model.removeSync() }
+            }
+        } else {
+            anchorControl
+        }
+    }
+
+    private var anchorControl: some View {
         Button {
             if model.isSynced { model.returnToSyncPoints() } else { model.setSyncPoints() }
         } label: {
@@ -154,11 +182,6 @@ struct ComparisonControlBar: View {
         // button's meaning: ⌘Return sets the sync points while aligning and
         // returns to them once synced.
         .keyboardShortcut(.return, modifiers: .command)
-        .contextMenu {
-            if model.isSynced {
-                Button("Clear sync", role: .destructive) { model.removeSync() }
-            }
-        }
     }
 
     private var anchorLabel: String {

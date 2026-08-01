@@ -566,6 +566,124 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(model.target, .left)
     }
 
+    /// The reported scenario, verbatim: select Right, align it by *dragging*
+    /// rather than tapping, sync, clear sync — and land back on Left. The
+    /// scrubber is the only route to an absolute seek (`TransportAction` has
+    /// no such case), so this user never went through `applyTransport`, which
+    /// was one of only two places `lastTouchedSide` was written.
+    ///
+    /// Now double-covered: the picker write records the side too, so this test
+    /// passes if *either* fix is present. `testEveryPerSideEntryPointRecords…`
+    /// below is what actually pins `scrub`.
+    func testScrubbingTheSelectedSideMakesItTheDemotionLanding() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.target = .right
+        model.scrub(.right, to: 5)
+        model.setSyncPoints()
+        XCTAssertEqual(model.target, .both, "precondition: syncing promotes to Both")
+
+        model.removeSync()
+
+        XCTAssertEqual(model.target, .right,
+                       "aligning the right clip by dragging must still land on Right")
+    }
+
+    /// Selecting a side in the picker is the clearest statement of preference
+    /// there is, and on its own it used to record nothing at all.
+    ///
+    /// Loaded right-then-left so the stale landing side is Left and choosing
+    /// Right is a real change — assigning the value it already holds would
+    /// prove nothing.
+    func testSelectingASideMakesItTheDemotionLandingWithoutAnyOtherAction() throws {
+        let model = ComparisonModel()
+        defer { model.close() }
+        model.load(try makeVideoFile("right.mp4"), side: .right)
+        model.load(try makeVideoFile("left.mp4"), side: .left)
+
+        model.target = .right
+        model.setSyncPoints()
+        model.removeSync()
+
+        XCTAssertEqual(model.target, .right,
+                       "the side the user picked must survive a sync/unsync round trip")
+    }
+
+    /// The counterpart the naive fix gets wrong. While targeting `both` the
+    /// scrubber shows the common timeline and drags it through
+    /// `scrub(.left, to:)`, because there is no paired overload. Recording
+    /// that as a touch on Left would reintroduce the same bug for a user who
+    /// had chosen Right.
+    func testDraggingTheCommonTimelineWhileTargetingBothDoesNotStealTheLandingSide() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.target = .right
+        model.setSyncPoints()
+        XCTAssertEqual(model.target, .both, "precondition: syncing promotes to Both")
+
+        // What ComparisonScrubber does when the target is `both`.
+        model.scrub(.left, to: 7)
+
+        model.removeSync()
+
+        XCTAssertEqual(model.target, .right,
+                       "the common timeline names no side; the user's choice of Right must stand")
+    }
+
+    /// The remaining per-side entry points, so the rule cannot be re-broken one
+    /// method at a time.
+    func testEveryPerSideEntryPointRecordsTheLandingSide() throws {
+        let calls: [(name: String, apply: (ComparisonModel) -> Void)] = [
+            ("scrub", { $0.scrub(.left, to: 3) }),
+            ("seek(by:)", { $0.seek(.left, by: 3) }),
+            ("seek(to:)", { $0.seek(.left, to: 3) }),
+            ("nudge", { $0.nudge(.left, by: 3) }),
+            ("toggleIndividual", { $0.toggleIndividual(.left) }),
+            ("playIndividual", { $0.playIndividual(.left, rate: 0.25) }),
+        ]
+
+        for call in calls {
+            // makeAlignedModel loads left then right, so the stale landing
+            // side is Right. Nothing here touches `target`, so each call is
+            // the only thing that can move the landing to Left — which is what
+            // makes this sensitive to removing `noteTouched` from any one
+            // method.
+            let model = try makeAlignedModel()
+            defer { model.close() }
+
+            call.apply(model)
+            model.setSyncPoints()
+            model.removeSync()
+
+            XCTAssertEqual(model.target, .left,
+                           "\(call.name) left lastTouchedSide stale")
+        }
+    }
+
+    /// `nudge` needs its own case. In the table above it is called while
+    /// aligning, where it delegates to `seek(_:by:)` — which records the side
+    /// itself, so the table cannot tell whether `nudge` does. The path where
+    /// `nudge` is the only recorder is the synced one, reached with a side
+    /// other than the current target.
+    func testNudgingASideOtherThanTheTargetRecordsIt() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.nudge(.right, by: 3)
+        // Back to the paired transport, so that clearing sync actually has a
+        // `both` to demote from — `removeSync` only relands the target when it
+        // is `both`. Selecting `both` records no side, so the landing is still
+        // whatever `nudge` left behind.
+        model.target = .both
+        model.removeSync()
+
+        XCTAssertEqual(model.target, .right,
+                       "nudging the right clip must make Right the landing side")
+    }
+
     // MARK: - Nudging one side while the pair is locked
     //
     // The correction affordance: with a side targeted while synced, a seek
