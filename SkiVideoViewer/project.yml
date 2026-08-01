@@ -48,8 +48,8 @@ targets:
       # invariant the directory name promises. ComparisonView lives there and
       # compiles for iPad, overlay included: OverlayPlayerStack renders it in
       # SwiftUI on both platforms, so Shared/ references no macOS/ type.
-      # Nothing on iPad reaches Compare yet until Task 4
-      # (NoSecondaryScreenPresenter.canPresent == false).
+      # IOSSecondaryScreenPresenter reports canPresentComparison == true, so
+      # the toolbar's Compare button opens it as a full-screen cover.
       - path: Sources/SkiVideoViewer/Shared
       - path: Sources/SkiVideoViewer/iOS
     dependencies:
@@ -74,5 +74,32 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: true
+        CODE_SIGNING_REQUIRED: false
+        CODE_SIGNING_ALLOWED: false
+    # Declared here so xcodegen writes a *shared* scheme with the UI tests
+    # attached. Without it xcodebuild autocreates a scheme that builds but
+    # cannot `test`, and `xcodebuild test -scheme SkiVideoViewer-iPad` finds
+    # nothing to run.
+    scheme:
+      testTargets:
+        - SkiVideoViewer-iPadUITests
+
+  # The only check in this repo that drives the iPad UI. simctl has no input
+  # injection, so a tap on the Compare button can only come from XCUITest.
+  SkiVideoViewer-iPadUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/SkiVideoViewerUITests
+    dependencies:
+      - target: SkiVideoViewer-iPad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad.uitests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: true
+        TARGETED_DEVICE_FAMILY: "2"
+        TEST_TARGET_NAME: SkiVideoViewer-iPad
         CODE_SIGNING_REQUIRED: false
         CODE_SIGNING_ALLOWED: false

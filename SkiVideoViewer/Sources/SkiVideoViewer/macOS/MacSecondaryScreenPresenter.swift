@@ -6,7 +6,10 @@ import SwiftUI
 /// behaviour is unchanged.
 @MainActor
 final class MacSecondaryScreenPresenter: SecondaryScreenPresenter {
-    var canPresent: Bool { true }
+    // Constants: macOS has real windows for both screens, and `ContentView`
+    // reads these while building `body` without observing this object.
+    var canPresentComparison: Bool { true }
+    var canPresentSorting: Bool { true }
 
     private let comparisonWindow = ComparisonWindowController()
     private let sortingWindow = SortingWindowController()

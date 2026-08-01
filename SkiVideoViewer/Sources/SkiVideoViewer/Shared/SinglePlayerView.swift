@@ -31,6 +31,13 @@ private struct PlayerLayerRepresentable: NSViewRepresentable {
     func updateNSView(_ view: PlayerLayerHostView, context: Context) {
         view.attach(player)
     }
+
+    // The macOS overlay this replaced detached its players in `dismantleNSView`
+    // as a deliberate rule; keep it. A layer left holding an `AVPlayer` keeps a
+    // render path alive for a view SwiftUI has already discarded.
+    static func dismantleNSView(_ view: PlayerLayerHostView, coordinator: ()) {
+        view.detach()
+    }
 }
 
 final class PlayerLayerHostView: NSView {
@@ -69,6 +76,10 @@ final class PlayerLayerHostView: NSView {
             playerLayer.player = player
         }
     }
+
+    func detach() {
+        playerLayer.player = nil
+    }
 }
 #else
 import UIKit
@@ -84,6 +95,12 @@ private struct PlayerLayerRepresentable: UIViewRepresentable {
 
     func updateUIView(_ view: PlayerLayerHostView, context: Context) {
         view.attach(player)
+    }
+
+    // Same rule as the macOS branch: detach on teardown so a discarded view's
+    // layer stops holding the player.
+    static func dismantleUIView(_ view: PlayerLayerHostView, coordinator: ()) {
+        view.detach()
     }
 }
 
@@ -108,6 +125,10 @@ final class PlayerLayerHostView: UIView {
         if playerLayer.player !== player {
             playerLayer.player = player
         }
+    }
+
+    func detach() {
+        playerLayer.player = nil
     }
 }
 #endif

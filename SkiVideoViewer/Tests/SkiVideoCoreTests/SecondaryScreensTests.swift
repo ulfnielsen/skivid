@@ -3,9 +3,10 @@ import XCTest
 
 @MainActor
 final class SecondaryScreensTests: XCTestCase {
-    /// Stands in for the iPad's phase-3 presenter, which cannot show anything yet.
+    /// Stands in for a platform that can show neither screen.
     private final class UnavailablePresenter: SecondaryScreenPresenter {
-        var canPresent: Bool { false }
+        var canPresentComparison: Bool { false }
+        var canPresentSorting: Bool { false }
         private(set) var comparisonCalls = 0
         private(set) var sortingCalls = 0
 
@@ -25,12 +26,43 @@ final class SecondaryScreensTests: XCTestCase {
         }
     }
 
+    /// The shape iPad ships: Compare works, Sort does not, because Sort needs
+    /// `Process`, which iOS does not have.
+    private final class ComparisonOnlyPresenter: SecondaryScreenPresenter {
+        var canPresentComparison: Bool { true }
+        var canPresentSorting: Bool { false }
+
+        func presentComparison(
+            initialLeftVideo: URL?,
+            openLibrary: [ComparisonAthleteChoice],
+            onClose: @escaping () -> Void
+        ) {}
+
+        func presentSorting(
+            openResizedLibrary: @escaping (URL) -> Void,
+            onClose: @escaping () -> Void
+        ) {}
+    }
+
     func testCanPresentGatesTheUI() {
         let presenter = UnavailablePresenter()
         XCTAssertFalse(
-            presenter.canPresent,
-            "a presenter that cannot show screens must say so, so the view hides its buttons"
+            presenter.canPresentComparison,
+            "a presenter that cannot show Compare must say so, so the view hides its button"
         )
+        XCTAssertFalse(
+            presenter.canPresentSorting,
+            "a presenter that cannot show Sort must say so, so the view hides its button"
+        )
+    }
+
+    func testTheTwoScreensAreGatedIndependently() {
+        // The reason the seam carries two flags rather than one: iPad presents
+        // Compare but not Sort, and a single flag would reveal both or neither
+        // — one of those is a dead button.
+        let presenter = ComparisonOnlyPresenter()
+        XCTAssertTrue(presenter.canPresentComparison)
+        XCTAssertFalse(presenter.canPresentSorting)
     }
 
     func testAPresenterThatCannotPresentIsStillSafeToCall() {

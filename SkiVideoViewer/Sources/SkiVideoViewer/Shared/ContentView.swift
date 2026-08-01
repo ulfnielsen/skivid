@@ -6,9 +6,10 @@ struct ContentView: View {
     let initialDirectory: URL?
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
-    /// The platform's Compare and Sort presentation. macOS opens windows; a
-    /// platform that cannot present them reports `canPresent == false` and the
-    /// toolbar buttons disappear rather than becoming dead controls.
+    /// The platform's Compare and Sort presentation. macOS opens windows; iPad
+    /// uses a full-screen cover for Compare only. Each screen is gated by its
+    /// own flag, so a platform that cannot present one hides just that button
+    /// rather than offering a dead control.
     private let secondaryScreens: SecondaryScreenPresenter
 
     init(
@@ -70,7 +71,7 @@ struct ContentView: View {
     /// platforms from drifting apart.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if secondaryScreens.canPresent {
+        if secondaryScreens.canPresentComparison {
             ToolbarItem {
                 Button {
                     model.setKeyboardControlsEnabled(false)
@@ -85,6 +86,8 @@ struct ContentView: View {
                     Label("Compare Videos…", systemImage: "rectangle.split.2x1")
                 }
             }
+        }
+        if secondaryScreens.canPresentSorting {
             ToolbarItem {
                 Button {
                     model.setKeyboardControlsEnabled(false)
