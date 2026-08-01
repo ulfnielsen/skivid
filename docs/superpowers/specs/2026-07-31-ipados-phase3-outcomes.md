@@ -101,6 +101,24 @@ Recorded because three of them were invisible to a green build.
 
 ## Carried forward
 
+### Phase 2 (AVFoundation replacing ffmpeg)
+
+- **Carry the pixel-format assertion across the rewrite.** A resize bug was found
+  in real output: `testvid/C0059_resized.MP4` is `h264 High 4:4:4 Predictive /
+  yuv444p10le`, which no iPhone or iPad can decode (`kVTVideoDecoderBadDataErr`,
+  -8969). Root cause verified, not assumed: `resize_video.py`'s `--exposure`
+  filter promotes the format; plain `-vf scale` from an 8-bit 4:2:0 source does
+  not drift. A second trigger affects both pipelines — any non-8-bit-4:2:0
+  source passes straight through.
+- Both paths now pass `-pix_fmt yuv420p`. The Swift half
+  (`macOS/FFmpegMediaPipeline.swift`) is **deleted by phase 2**; the Python half
+  is permanent, since the spec never covered `resize_video.py`.
+- `FFmpegMediaPipelineTests.testResizeOutputsEightBitFourTwoZero` asserts the
+  output's pixel format via `ffprobe`, so it is implementation-agnostic. **Move
+  it onto whatever replaces `MediaPipeline` rather than deleting it with the
+  ffmpeg file.** `AVAssetExportSession` is expected to emit `yuv420p`, but that
+  is an assumption phase 2 must verify, not inherit.
+
 ### Phase 4 (touch and keyboard input)
 
 - `InertInputSource` emits nothing. Everything the UI advertises —
