@@ -138,8 +138,19 @@ Recorded because three of them were invisible to a green build.
 ### Phase 5 (Compare and Sort on iPad)
 
 - Move `ComparisonView.swift` back to `Shared/` once a UIKit `OverlayPlayerView`
-  exists. Verify `CALayer.compositingFilter` actually renders on iOS first — it
-  compiles but Core Animation may not execute it.
+  exists.
+- **SPIKE RESOLVED (2026-08-01), measured on an iPad Pro 11-inch (M5) simulator.**
+  `CALayer.compositingFilter` is a **silent no-op on iOS**: two layers, red under
+  cyan with `CIDifferenceBlendMode`, rendered the overlap as plain cyan instead
+  of white. Porting `OverlayPlayerView` verbatim would have shipped a Difference
+  mode that does nothing.
+  SwiftUI `.blendMode(.difference)` **does** work, and — the part that was not
+  obvious — it works on `AVPlayerLayer`-backed views: a red clip under a cyan
+  clip rendered white, and an `.opacity(0.5)` control rendered grey. Video layers
+  are not composited out-of-band here.
+  So the iPad overlay must be a SwiftUI `ZStack` of two single-player views with
+  `.blendMode(.difference)` and `.opacity()`, inside a `.compositingGroup()` —
+  not a port of the two-`AVPlayerLayer` `NSView`.
 - `NoSecondaryScreenPresenter.canPresent` must stay a per-platform **constant**.
   `ContentView` reads it while building `body` and the presenter is not
   observable, so a runtime-varying value would not update the toolbar.
