@@ -11,3 +11,7 @@ wheels/
 *.egg-info
 # Virtual environments
 .venv
+
+# Native macOS viewer build outputs
+SkiVideoViewer/.build/
+SkiVideoViewer/SkiVideoViewer.app/

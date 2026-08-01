@@ -1,5 +1,6 @@
 import argparse
 import atexit
+import inspect
 import json
 import os
 import re
@@ -20,6 +21,28 @@ try:
     import readline
 except ImportError:  # pragma: no cover
     readline = None
+
+from resize_video import resize_video_file
+
+# Parameters handled by the sorter itself; not exposed as --resize-* flags.
+_RESIZE_SKIP_PARAMS = frozenset({"video_file", "replace", "overwrite_output"})
+
+
+def _resize_param_type(param: inspect.Parameter):
+    """Infer the argparse type for a resize_video_file parameter."""
+    ann = param.annotation
+    if ann is not inspect.Parameter.empty:
+        # Unwrap Optional[X] / Union[X, None]
+        if hasattr(ann, "__args__"):
+            inner = [a for a in ann.__args__ if a is not type(None)]
+            if inner:
+                ann = inner[0]
+        if ann in (int, float, str):
+            return ann
+    default = param.default
+    if default not in (inspect.Parameter.empty, None):
+        return type(default)
+    return float  # sensible fallback for numeric resize params
 
 # --- CONFIG ---
 SOURCE = "~/Ski/Zurs20251213"  # Folder with raw videos
@@ -136,6 +159,29 @@ def parse_args():
         default=None,
         help="Optional mpv window height in pixels",
     )
+    parser.add_argument(
+        "--resize",
+        action="store_true",
+        help="Kick off background resize jobs for each sorted video",
+    )
+    parser.add_argument(
+        "--resize-dest",
+        default=None,
+        help="Root directory for resized output (default: <dest>_resized)",
+    )
+    sig = inspect.signature(resize_video_file)
+    for name, param in sig.parameters.items():
+        if name in _RESIZE_SKIP_PARAMS:
+            continue
+        ptype = _resize_param_type(param)
+        default = param.default if param.default is not inspect.Parameter.empty else None
+        parser.add_argument(
+            f"--resize-{name.replace('_', '-')}",
+            type=ptype,
+            default=None,
+            metavar=ptype.__name__.upper(),
+            help=f"Passed to resize_video_file as {name!r} (default: {default})",
+        )
     return parser.parse_args()
 
 
@@ -451,12 +497,16 @@ class SkiSorter:
         event_title: str,
         window_width: Optional[int] = None,
         window_height: Optional[int] = None,
+        resize_dest: Optional[str] = None,
+        resize_kwargs: Optional[dict] = None,
     ):
         self.source_dir = source_dir
         self.dest_dir = dest_dir
         self.event_folder = event_folder
         self.event_date = event_date
         self.event_title = event_title
+        self.resize_dest = resize_dest
+        self.resize_kwargs = resize_kwargs or {}
         self.player = MPVController(window_width, window_height)
         self.names = load_name_list(NAMES_PATH)
         self.exact_name_map = {name.lower(): name for name in self.names}
@@ -474,6 +524,9 @@ class SkiSorter:
         self.quit_requested = False
         self.key_listener = TerminalKeyListener(self._handle_key_token)
         self.keys_active = False
+        self._resize_jobs: List[threading.Thread] = []
+        self._resize_lock = threading.Lock()
+        self._resize_errors: List[str] = []
 
     def _start_terminal_keys(self):
         if self.keys_active:
@@ -709,8 +762,12 @@ class SkiSorter:
         if athlete:
             target_dir = os.path.join(self.dest_dir, self.event_folder, athlete.title())
             os.makedirs(target_dir, exist_ok=True)
-            shutil.move(path, os.path.join(target_dir, self.current_file))
+            moved_path = os.path.join(target_dir, self.current_file)
+            shutil.move(path, moved_path)
             print(f"✅ Moved {self.current_file} to {athlete.title()}")
+            if self.resize_dest:
+                resize_athlete_dir = os.path.join(self.resize_dest, self.event_folder, athlete.title())
+                self._start_resize_job(moved_path, resize_athlete_dir, self.current_file)
             self._remove_current()
         else:
             print(f"⏭️ Skipped {self.current_file}")
@@ -743,6 +800,47 @@ class SkiSorter:
         if 1 < len(matches) <= 5:
             print("Suggestions:", ", ".join(matches))
         return name.title()
+
+    def _resize_worker(self, moved_path: str, resize_athlete_dir: str, filename: str):
+        try:
+            os.makedirs(resize_athlete_dir, exist_ok=True)
+            result = resize_video_file(moved_path, **self.resize_kwargs)
+            final_path = os.path.join(resize_athlete_dir, filename)
+            shutil.move(str(result.output), final_path)
+            print(f"\n[resize] Done: {filename} -> {resize_athlete_dir}")
+        except Exception as exc:
+            with self._resize_lock:
+                self._resize_errors.append(f"{filename}: {exc}")
+            print(f"\n[resize] Failed {filename}: {exc}")
+
+    def _start_resize_job(self, moved_path: str, resize_athlete_dir: str, filename: str):
+        thread = threading.Thread(
+            target=self._resize_worker,
+            args=(moved_path, resize_athlete_dir, filename),
+            daemon=True,
+            name=f"resize-{filename}",
+        )
+        with self._resize_lock:
+            self._resize_jobs.append(thread)
+        thread.start()
+        print(f"[resize] Started background job for {filename}")
+
+    def _wait_for_resize_jobs(self):
+        with self._resize_lock:
+            jobs = list(self._resize_jobs)
+        if not jobs:
+            return
+        pending = [j for j in jobs if j.is_alive()]
+        if pending:
+            print(f"\nWaiting for {len(pending)} resize job(s) to complete...")
+            for job in pending:
+                job.join()
+        if self._resize_errors:
+            print(f"\n{len(self._resize_errors)} resize error(s):")
+            for err in self._resize_errors:
+                print(f"  {err}")
+        else:
+            print(f"\nAll {len(jobs)} resize job(s) completed successfully.")
 
     def run(self):
         if not os.path.exists(self.source_dir):
@@ -801,6 +899,7 @@ class SkiSorter:
             print("\nSession ended by user.")
         else:
             print("\nAll done!")
+        self._wait_for_resize_jobs()
 
 if __name__ == "__main__":
     cli_args = parse_args()
@@ -811,6 +910,19 @@ if __name__ == "__main__":
         dest_dir = os.path.join(source_dir, "organized")
     window_width = cli_args.window_width if cli_args.window_width and cli_args.window_width > 0 else None
     window_height = cli_args.window_height if cli_args.window_height and cli_args.window_height > 0 else None
+    resize_dest = None
+    resize_kwargs = {}
+    if cli_args.resize:
+        if cli_args.resize_dest:
+            resize_dest = resolve_path(cli_args.resize_dest)
+        else:
+            resize_dest = dest_dir + "_resized"
+        for name in inspect.signature(resize_video_file).parameters:
+            if name in _RESIZE_SKIP_PARAMS:
+                continue
+            value = getattr(cli_args, f"resize_{name}", None)
+            if value is not None:
+                resize_kwargs[name] = value
     default_event_date = detect_default_event_date(source_dir)
     event_folder, event_date, event_title = prompt_event_folder(default_event_date)
     sorter = SkiSorter(
@@ -821,5 +933,7 @@ if __name__ == "__main__":
         event_title,
         window_width,
         window_height,
+        resize_dest,
+        resize_kwargs,
     )
     sorter.run()

@@ -11,6 +11,7 @@ from typing import Iterable, List, Optional
 
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
+VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"})
 
 
 @dataclass
@@ -24,6 +25,46 @@ class ResizeResult:
 
 class ResizeError(RuntimeError):
     """Raised when at least one file could not be processed."""
+
+
+def _is_discoverable_video(path: Path) -> bool:
+    """Return whether a file found in a directory should be resized."""
+
+    return (
+        path.suffix.lower() in VIDEO_EXTENSIONS
+        and not path.stem.lower().endswith("_resized")
+    )
+
+
+def collect_video_files(inputs: Iterable[Path | str]) -> List[Path]:
+    """Expand file and directory inputs into a de-duplicated list of videos.
+
+    Directories are searched recursively. Explicit file inputs are retained even
+    if their extension is unusual so ffmpeg can decide whether it can read them.
+    Previously generated ``*_resized`` files are ignored during directory scans.
+    """
+
+    files: List[Path] = []
+    seen: set[Path] = set()
+
+    for item in inputs:
+        path = Path(item).expanduser()
+        candidates = (
+            sorted(
+                candidate
+                for candidate in path.rglob("*")
+                if candidate.is_file() and _is_discoverable_video(candidate)
+            )
+            if path.is_dir()
+            else [path]
+        )
+        for candidate in candidates:
+            identity = candidate.resolve(strict=False)
+            if identity not in seen:
+                seen.add(identity)
+                files.append(candidate)
+
+    return files
 
 
 def _build_filter(max_width: int, max_height: int, brighten_percent: Optional[float], exposure_stops: Optional[float]) -> str:
@@ -157,17 +198,43 @@ def resize_video_file(
     """Resize a single video file and return the outcome."""
 
     video_path = Path(video_file)
+    output_path = video_path.with_name(f"{video_path.stem}_resized{video_path.suffix}")
+    return _resize_video_to_path(
+        video_path,
+        output_path,
+        max_width=max_width,
+        max_height=max_height,
+        brighten_percent=brighten_percent,
+        exposure_stops=exposure_stops,
+        replace=replace,
+        overwrite_output=overwrite_output,
+    )
+
+
+def _resize_video_to_path(
+    video_path: Path,
+    output_path: Path,
+    *,
+    max_width: int,
+    max_height: int,
+    brighten_percent: Optional[float],
+    exposure_stops: Optional[float],
+    replace: bool,
+    overwrite_output: bool,
+) -> ResizeResult:
+    """Resize one video to a specific output path."""
+
     if not video_path.is_file():
         raise FileNotFoundError(f"File not found: {video_path}")
 
     filter_chain = _build_filter(max_width, max_height, brighten_percent, exposure_stops)
-    output_path = video_path.with_name(f"{video_path.stem}_resized{video_path.suffix}")
     allow_overwrite = overwrite_output or replace
     if output_path.exists() and not allow_overwrite:
         raise FileExistsError(
             f"Output already exists: {output_path}. Set overwrite_output=True or pass --overwrite-output to replace it."
         )
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     duration_seconds = _probe_duration(video_path)
 
     try:
@@ -194,6 +261,19 @@ def resize_video_file(
     return ResizeResult(source=video_path, output=final_output, replaced=replaced)
 
 
+def _directory_output_path(video_path: Path, directory_inputs: List[Path]) -> Optional[Path]:
+    """Return a mirrored sibling output path for a recursively found video."""
+
+    for source_root in directory_inputs:
+        try:
+            relative_path = video_path.relative_to(source_root)
+        except ValueError:
+            continue
+        output_root = source_root.with_name(f"{source_root.name}_resize")
+        return output_root / relative_path
+    return None
+
+
 def resize_videos(
     video_files: Iterable[Path | str],
     *,
@@ -204,9 +284,11 @@ def resize_videos(
     replace: bool = False,
     overwrite_output: bool = False,
 ) -> List[ResizeResult]:
-    """Process multiple files, raising ResizeError if any fail."""
+    """Process files or recursively scanned directories, raising on failures."""
 
-    files = list(video_files)
+    inputs = [Path(item).expanduser() for item in video_files]
+    directory_inputs = [path for path in inputs if path.is_dir()]
+    files = collect_video_files(inputs)
     total = len(files)
     results: List[ResizeResult] = []
     errors: List[str] = []
@@ -217,15 +299,28 @@ def resize_videos(
         sys.stdout.write(f"[{index}/{total}] Resizing {file}\n")
         sys.stdout.flush()
         try:
-            result = resize_video_file(
-                file,
-                max_width=max_width,
-                max_height=max_height,
-                brighten_percent=brighten_percent,
-                exposure_stops=exposure_stops,
-                replace=replace,
-                overwrite_output=overwrite_output,
-            )
+            directory_output = _directory_output_path(file, directory_inputs)
+            if directory_output is not None and not replace:
+                result = _resize_video_to_path(
+                    file,
+                    directory_output,
+                    max_width=max_width,
+                    max_height=max_height,
+                    brighten_percent=brighten_percent,
+                    exposure_stops=exposure_stops,
+                    replace=False,
+                    overwrite_output=overwrite_output,
+                )
+            else:
+                result = resize_video_file(
+                    file,
+                    max_width=max_width,
+                    max_height=max_height,
+                    brighten_percent=brighten_percent,
+                    exposure_stops=exposure_stops,
+                    replace=replace,
+                    overwrite_output=overwrite_output,
+                )
             results.append(result)
             target = result.source if result.replaced else result.output
             sys.stdout.write(f"[{index}/{total}] Finished -> {target}\n")
@@ -239,8 +334,12 @@ def resize_videos(
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Resize one or more videos using ffmpeg.")
-    parser.add_argument("files", nargs="+", help="Video files to process")
+    parser = argparse.ArgumentParser(description="Resize video files using ffmpeg.")
+    parser.add_argument(
+        "files",
+        nargs="+",
+        help="Video files or directories to process (directories are scanned recursively)",
+    )
     parser.add_argument("-w", "--width", type=int, default=DEFAULT_WIDTH, help="Maximum output width")
     parser.add_argument("-ht", "--height", type=int, default=DEFAULT_HEIGHT, help="Maximum output height")
     parser.add_argument(
@@ -261,12 +360,12 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "-r",
         "--replace",
         action="store_true",
-        help="Replace the original file instead of creating *_resized copies",
+        help="Replace original files instead of writing output copies",
     )
     parser.add_argument(
         "--overwrite-output",
         action="store_true",
-        help="Allow overwriting existing *_resized files (default: skip and raise)",
+        help="Allow overwriting existing output files (default: skip and raise)",
     )
     return parser.parse_args(argv)
 
