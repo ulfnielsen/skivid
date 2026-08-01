@@ -34,10 +34,23 @@ final class ComparisonModelTests: XCTestCase {
     /// window binds each produce a distinguishable status. Without sync every
     /// branch reports "Set the sync points first.", which cannot tell
     /// `playSynced` from `seekSynced` from a dropped intent.
-    private func makeSyncedModel(input: FakeInputSource? = nil) throws -> ComparisonModel {
+    /// Two clips loaded, no sync points yet — the "aligning" state.
+    ///
+    /// The loaded items matter for any assertion on `currentTime()`: a player
+    /// with no `currentItem` reports an *indefinite* time, which reads back as
+    /// NaN. With an item, even an undecodable one, seeks land and
+    /// `currentTime()` reports them — the published `leftTime`/`rightTime` are
+    /// the ones that stay 0, because their periodic observers never fire.
+    private func makeAlignedModel(input: FakeInputSource? = nil) throws -> ComparisonModel {
         let model = ComparisonModel(input: input)
         model.load(try makeVideoFile("left.mp4"), side: .left)
         model.load(try makeVideoFile("right.mp4"), side: .right)
+        XCTAssertFalse(model.isSynced, "precondition: the model must still be aligning")
+        return model
+    }
+
+    private func makeSyncedModel(input: FakeInputSource? = nil) throws -> ComparisonModel {
+        let model = try makeAlignedModel(input: input)
         model.setSyncPoints()
         XCTAssertTrue(model.isSynced, "precondition: the model must be synced")
         return model
@@ -125,26 +138,57 @@ final class ComparisonModelTests: XCTestCase {
     /// Deliberately *not* run against a synced model: `playSynced` reaches
     /// `AVPlayer.setRate(_:time:atHostTime:)`, which raises an Objective-C
     /// exception unless the item is `.readyToPlay`, and no decodable media
-    /// exists in a unit test. Unsynced, the two branches are still
-    /// distinguishable — `playSynced` sets the status, `pauseBoth` leaves it
-    /// alone — which is the regression that matters: Space must attempt to
-    /// play, not to pause, when both players are stopped.
-    func testTogglePlaybackIntentAttemptsSyncedPlaybackRatherThanPausing() {
+    /// exists in a unit test.
+    ///
+    /// The regression this pins is unchanged — Space must attempt to *play*,
+    /// not to pause, when both players are stopped — but the contract it
+    /// asserts is the new one: the key goes through `applyTransport`, so while
+    /// aligning it plays the targeted clip instead of answering "Set the sync
+    /// points first." A rate of 0 on both players would mean it reached
+    /// `pauseBoth`, which is the failure that matters.
+    func testTogglePlaybackIntentAttemptsPlaybackRatherThanPausing() {
         let input = FakeInputSource()
         let model = ComparisonModel(input: input)
         defer { model.close() }
 
         XCTAssertEqual(model.leftPlayer.rate, 0)
         XCTAssertEqual(model.rightPlayer.rate, 0)
-        XCTAssertEqual(model.status, "Choose two videos and align them independently.")
+        XCTAssertEqual(model.target, .left)
 
         input.emit(.togglePlayback)
 
-        XCTAssertEqual(
-            model.status,
-            "Set the sync points first.",
-            "an unchanged status would mean the intent reached pauseBoth instead"
-        )
+        XCTAssertEqual(model.leftPlayer.rate, 1, "Space must attempt to play the targeted clip")
+        XCTAssertEqual(model.rightPlayer.rate, 0, "the untargeted clip must stay put")
+    }
+
+    /// The keys used to call `playSynced`/`seekSynced` directly while the
+    /// buttons went through `target`, so with Left targeted while aligning the
+    /// ▶ button played the left clip and Space said "Set the sync points
+    /// first." Both now route through `applyTransport`.
+    func testKeyboardFollowsTheTargetJustAsTheButtonsDo() {
+        let input = FakeInputSource()
+        let model = ComparisonModel(input: input)
+        defer { model.close() }
+
+        model.target = .right
+        input.emit(.togglePlayback)
+
+        XCTAssertEqual(model.rightPlayer.rate, 1, "Space must follow the target")
+        XCTAssertEqual(model.leftPlayer.rate, 0)
+    }
+
+    func testScrubKeysFollowTheTargetWhileAligning() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+
+        model.target = .right
+        input.emit(.scrubBegan(.forward))
+
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 1, accuracy: 0.01,
+                       "the targeted clip must move")
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 0, accuracy: 0.01,
+                       "the untargeted clip must not")
     }
 
     func testScrubBeganIntentsSeekBothPlayersOneSecondInTheEmittedDirection() throws {
@@ -402,5 +446,212 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(ComparisonTarget.both.title, "Both")
         XCTAssertEqual(ComparisonTarget.left.title, "Left")
         XCTAssertEqual(ComparisonTarget.right.title, "Right")
+    }
+
+    func testTransportActionIsCaseIterableInButtonOrder() {
+        XCTAssertEqual(TransportAction.allCases,
+                       [.back5, .back1, .playPause, .forward1, .forward5, .slow])
+    }
+
+    // MARK: - The target invariant
+    //
+    // `target` is writable so a Picker can bind to it, which means anything can
+    // assign `both`. A selection absent from `availableTargets` renders as no
+    // selection at all, so the setter has to refuse it.
+
+    func testSelectingBothWhileAligningIsRefused() {
+        let model = makeModel()
+        defer { model.close() }
+
+        model.target = .both
+
+        XCTAssertNotEqual(model.target, .both,
+                          "Both cannot work before sync, so it must not stick")
+        XCTAssertTrue(model.availableTargets.contains(model.target))
+    }
+
+    func testTargetAlwaysStaysWithinAvailableTargets() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        for candidate in ComparisonTarget.allCases {
+            model.target = candidate
+            XCTAssertTrue(model.availableTargets.contains(model.target),
+                          "\(candidate) left target outside availableTargets")
+        }
+
+        model.removeSync()
+
+        for candidate in ComparisonTarget.allCases {
+            model.target = candidate
+            XCTAssertTrue(model.availableTargets.contains(model.target),
+                          "\(candidate) left target outside availableTargets while aligning")
+        }
+    }
+
+    // MARK: - Per-action routing
+    //
+    // Mutation-checked: routing playPause to the other side, or any seek action
+    // to seekSynced, fails at least one assertion below.
+
+    func testPlayPauseTargetingLeftPlaysOnlyTheLeftClip() {
+        let model = makeModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.applyTransport(.playPause)
+
+        XCTAssertEqual(model.leftPlayer.rate, 1)
+        XCTAssertEqual(model.rightPlayer.rate, 0, "the other clip must not start")
+    }
+
+    func testPlayPauseTargetingRightPlaysOnlyTheRightClip() {
+        let model = makeModel()
+        defer { model.close() }
+
+        model.target = .right
+        model.applyTransport(.playPause)
+
+        XCTAssertEqual(model.rightPlayer.rate, 1)
+        XCTAssertEqual(model.leftPlayer.rate, 0, "the other clip must not start")
+    }
+
+    /// Every seek action, not just `.back5`: routing any one of them to
+    /// `seekSynced` would write "Set the sync points first." instead.
+    func testEverySeekActionRoutesPerSideWhileAligning() throws {
+        let expected: [(TransportAction, Double)] = [
+            (.back5, -5), (.back1, -1), (.forward1, 1), (.forward5, 5),
+        ]
+
+        for (action, offset) in expected {
+            let model = try makeAlignedModel()
+            defer { model.close() }
+
+            model.target = .right
+            model.applyTransport(action)
+
+            XCTAssertEqual(
+                model.status,
+                "Alignment changed. Set sync points again when ready.",
+                "\(action) reached seekSynced instead of the per-side seek"
+            )
+            XCTAssertEqual(model.rightPlayer.currentTime().seconds, max(0, offset), accuracy: 0.01,
+                           "\(action) moved the targeted clip to the wrong place")
+            XCTAssertEqual(model.leftPlayer.currentTime().seconds, 0, accuracy: 0.01,
+                           "\(action) disturbed the untargeted clip")
+        }
+    }
+
+    // MARK: - Demotion follows the last-touched side
+
+    func testDemotionFollowsTheLastTouchedSide() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        // makeSyncedModel loads left then right, so right was touched last.
+        model.removeSync()
+
+        XCTAssertEqual(model.target, .right,
+                       "snapping to Left after the user last worked the right pane reads as a bug")
+    }
+
+    func testNudgingASideMakesItTheDemotionLanding() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.applyTransport(.forward1)
+        model.removeSync()
+
+        XCTAssertEqual(model.target, .left)
+    }
+
+    // MARK: - Nudging one side while the pair is locked
+    //
+    // The correction affordance: with a side targeted while synced, a seek
+    // moves that clip *relative to* the other and carries its sync point along,
+    // so the pair stays locked at the corrected offset.
+
+    func testNudgeMovesOnlyTheTargetedClip() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.applyTransport(.forward5)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 5, accuracy: 0.01)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 0, accuracy: 0.01,
+                       "a nudge corrects one clip against the other; the other must not move")
+        XCTAssertTrue(model.status.lowercased().contains("left"),
+                      "the status must name the nudged side, got \(model.status)")
+        XCTAssertTrue(model.isSynced, "a nudge corrects the alignment, it does not drop it")
+    }
+
+    func testNudgeCarriesTheSyncPointSoTheCorrectionSurvivesAReturn() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.applyTransport(.forward5)
+
+        XCTAssertEqual(model.leftSyncPoint.seconds, 5, accuracy: 0.01,
+                       "the sync point must follow the clip it names")
+        XCTAssertEqual(model.rightSyncPoint.seconds, 0, accuracy: 0.01)
+
+        // Move the locked pair away, then come back.
+        model.target = .both
+        model.applyTransport(.forward1)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 6, accuracy: 0.01)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 1, accuracy: 0.01)
+
+        model.returnToSyncPoints()
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 5, accuracy: 0.01,
+                       "returned to the original alignment instead of the corrected one")
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 0, accuracy: 0.01)
+    }
+
+    /// The pair must stay locked at the *new* offset: `scrub` derives its
+    /// offset from the two sync points, so it has to follow the correction.
+    func testNudgeRetargetsTheOffsetTheLockedPairKeeps() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .right
+        model.applyTransport(.forward5)
+
+        model.scrub(.left, to: 10)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 10, accuracy: 0.01)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 15, accuracy: 0.01,
+                       "scrubbing together must honour the corrected 5s offset")
+    }
+
+    func testNudgeWhileAligningIsAnOrdinaryPerSideSeek() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.nudge(.right, by: 3)
+
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 3, accuracy: 0.01)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 0, accuracy: 0.01)
+        XCTAssertEqual(model.leftSyncPoint, .zero, "there is no alignment to correct yet")
+        XCTAssertEqual(model.rightSyncPoint, .zero)
+    }
+
+    /// A nudge that runs into the start of the clip must not drift the sync
+    /// point past where the clip can actually go, or the pair silently loses
+    /// the offset the user set.
+    func testNudgeClampedAtTheStartDoesNotDriftTheSyncPoint() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.applyTransport(.back5)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 0, accuracy: 0.01,
+                       "cannot seek before the start")
+        XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 0.01,
+                       "the sync point must move by the distance travelled, not the distance asked for")
     }
 }

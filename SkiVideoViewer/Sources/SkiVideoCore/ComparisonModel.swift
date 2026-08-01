@@ -55,8 +55,13 @@ public enum ComparisonTarget: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// One transport action, routed by `ComparisonModel.target`.
-public enum TransportAction: Sendable {
+///
+/// `CaseIterable` in declaration order, which is left-to-right button order:
+/// the control bar renders it with a `ForEach` rather than restating the list.
+public enum TransportAction: String, CaseIterable, Identifiable, Sendable {
     case back5, back1, playPause, forward1, forward5, slow
+
+    public var id: String { rawValue }
 }
 
 /// Platform-agnostic state for the two-video comparison window. Like
@@ -79,14 +84,34 @@ public final class ComparisonModel: ObservableObject {
     @Published public var layout: ComparisonLayout = .sideBySide
     @Published public var overlayOpacity: Double = 0.5
     @Published public var blend: OverlayBlend = .blend
-    @Published public var target: ComparisonTarget = .left
+    /// Writable so a `Picker` can bind to it, but self-correcting: a caller
+    /// that selects `both` while aligning would otherwise leave a selection
+    /// `availableTargets` does not contain, which SwiftUI renders as no
+    /// selection at all. Assigning from inside `didSet` does not re-enter it.
+    @Published public var target: ComparisonTarget = .left {
+        didSet {
+            if !availableTargets.contains(target) { target = lastTouchedTarget }
+        }
+    }
 
     public let leftPlayer = AVPlayer()
     public let rightPlayer = AVPlayer()
     public let openLibrary: [ComparisonAthleteChoice]
 
-    private var leftSyncPoint = CMTime.zero
-    private var rightSyncPoint = CMTime.zero
+    /// Where `target` lands when `both` stops being available. Snapping back to
+    /// Left after the user drops a clip into the right pane reads as a bug, so
+    /// the demotion follows whichever side was last acted on.
+    private var lastTouchedSide: ComparisonSide = .left
+
+    private var lastTouchedTarget: ComparisonTarget {
+        lastTouchedSide == .left ? .left : .right
+    }
+
+    /// Internal rather than private so the tests can prove a nudge moves a sync
+    /// point: with undecodable fixtures the published `leftTime`/`rightTime`
+    /// never update, and the sync points are the only durable evidence.
+    var leftSyncPoint = CMTime.zero
+    var rightSyncPoint = CMTime.zero
     private var leftTimeObserver: Any?
     private var rightTimeObserver: Any?
     private var leftDurationObserver: NSKeyValueObservation?
@@ -154,11 +179,19 @@ public final class ComparisonModel: ObservableObject {
             }
         case .left, .right:
             let side: ComparisonSide = target == .left ? .left : .right
+            lastTouchedSide = side
             switch action {
-            case .back5: seek(side, by: -5)
-            case .back1: seek(side, by: -1)
-            case .forward1: seek(side, by: 1)
-            case .forward5: seek(side, by: 5)
+            // Seeks become nudges once synced: they correct this clip against
+            // the other instead of moving the locked pair. `nudge` falls back
+            // to a plain per-side seek while aligning.
+            case .back5: nudge(side, by: -5)
+            case .back1: nudge(side, by: -1)
+            case .forward1: nudge(side, by: 1)
+            case .forward5: nudge(side, by: 5)
+            // Playback deliberately stays paired while synced — running one
+            // clip alone would desync exactly what the user just aligned. Both
+            // of these already delegate to the pair when `isSynced`, so they
+            // ignore the side without having to test for it.
             case .playPause: toggleIndividual(side)
             case .slow: playIndividual(side, rate: 0.25)
             }
@@ -173,18 +206,19 @@ public final class ComparisonModel: ObservableObject {
     /// `.scrubBegan` and ignoring `.scrubEnded` reproduces that: it never had
     /// hold-to-scrub. The remaining intents were passed through to the app by
     /// the old monitor and stay unhandled here.
+    ///
+    /// Routed through `applyTransport` so the keys and the on-screen buttons
+    /// cannot disagree. They used to: these called `playSynced`/`seekSynced`
+    /// directly, so while aligning with Left targeted the ▶ button played the
+    /// left clip while Space only answered "Set the sync points first."
     func handle(_ intent: PlaybackIntent) {
         switch intent {
         case .togglePlayback:
-            if leftPlayer.rate == 0 && rightPlayer.rate == 0 {
-                playSynced()
-            } else {
-                pauseBoth()
-            }
+            applyTransport(.playPause)
         case .scrubBegan(.backward):
-            seekSynced(by: -1)
+            applyTransport(.back1)
         case .scrubBegan(.forward):
-            seekSynced(by: 1)
+            applyTransport(.forward1)
         default:
             break
         }
@@ -201,6 +235,7 @@ public final class ComparisonModel: ObservableObject {
 
     func load(_ url: URL, side: ComparisonSide) {
         let player = player(for: side)
+        lastTouchedSide = side
         player.pause()
         let item = AVPlayerItem(url: url)
         player.replaceCurrentItem(with: item)
@@ -254,6 +289,38 @@ public final class ComparisonModel: ObservableObject {
         let player = player(for: side)
         player.playImmediately(atRate: rate)
         status = "Playing \(side == .left ? "left" : "right") at \(String(format: "%.2g", rate))×"
+    }
+
+    /// A per-side correction that survives the pair being locked: it moves one
+    /// clip *relative to* the other. The clip's sync point moves with it by the
+    /// same amount, so three things stay true — the pair remains locked, at the
+    /// corrected offset; `scrub` (which derives its offset from the two sync
+    /// points) follows the correction; and `returnToSyncPoints()` comes back to
+    /// the corrected alignment rather than the one being corrected.
+    ///
+    /// The sync point shifts by the distance actually travelled, not the
+    /// distance asked for, so a nudge clamped at 0 or at the end of the clip
+    /// cannot drift the sync point away from the frame it names.
+    ///
+    /// While aligning there is nothing to correct against, so this degrades to
+    /// an ordinary per-side seek.
+    public func nudge(_ side: ComparisonSide, by seconds: Double) {
+        guard isSynced else {
+            seek(side, by: seconds)
+            return
+        }
+        pauseBoth()
+        let clip = player(for: side)
+        let currentSeconds = clip.currentTime().seconds
+        let from = currentSeconds.isFinite ? currentSeconds : 0
+        let travelled = clampedSeekTarget(for: clip, to: from + seconds) - from
+        seek(clip, to: from + seconds)
+        let shift = CMTime(seconds: travelled, preferredTimescale: 600)
+        switch side {
+        case .left: leftSyncPoint = leftSyncPoint + shift
+        case .right: rightSyncPoint = rightSyncPoint + shift
+        }
+        status = "\(side == .left ? "Left" : "Right") nudged \(seconds >= 0 ? "+" : "")\(Int(seconds)) seconds"
     }
 
     public func seek(_ side: ComparisonSide, by seconds: Double) {
@@ -311,7 +378,7 @@ public final class ComparisonModel: ObservableObject {
     public func removeSync() {
         pauseBoth()
         isSynced = false
-        if target == .both { target = .left }
+        if target == .both { target = lastTouchedTarget }
         status = "Independent controls restored. Align the videos and set new sync points when ready."
     }
 
@@ -406,30 +473,43 @@ public final class ComparisonModel: ObservableObject {
         side == .left ? leftTime : rightTime
     }
 
-    private func seek(_ player: AVPlayer, to seconds: Double) {
+    /// Extracted so `nudge` can ask where a seek would land without performing
+    /// it — it has to shift the sync point by the distance actually travelled.
+    private func clampedSeekTarget(for player: AVPlayer, to seconds: Double) -> Double {
         let duration = player.currentItem?.duration.seconds ?? .nan
-        var target = max(0, seconds.isFinite ? seconds : 0)
+        var clamped = max(0, seconds.isFinite ? seconds : 0)
         if duration.isFinite {
-            target = min(target, duration)
+            clamped = min(clamped, duration)
         }
+        return clamped
+    }
+
+    private func seek(_ player: AVPlayer, to seconds: Double) {
+        let clamped = clampedSeekTarget(for: player, to: seconds)
         player.currentItem?.cancelPendingSeeks()
         player.seek(
-            to: CMTime(seconds: target, preferredTimescale: 600),
+            to: CMTime(seconds: clamped, preferredTimescale: 600),
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
     }
 
-    /// The other way sync drops — loading a clip, or nudging one side while
-    /// aligned. `removeSync()` is not the only path, so the `both` demotion has
-    /// to live here too: otherwise `target` stays on a value `availableTargets`
-    /// no longer offers, and the picker shows a selection that is not there.
+    /// The other way sync drops, and `removeSync()` is not the only path — so
+    /// the `both` demotion has to live here too, or `target` keeps a value
+    /// `availableTargets` no longer offers and the picker shows a selection
+    /// that is not there.
+    ///
+    /// Loading a clip is the only route that reaches here *while* `target` is
+    /// `both`: the per-side callers (`seek`, `toggleIndividual`) all delegate
+    /// to their synced equivalents and return before getting this far whenever
+    /// `isSynced`. The guard stays anyway — it is the invariant, not the
+    /// current call graph, that must hold.
     private func clearSync(message: String) {
         if isSynced {
             pauseBoth()
         }
         isSynced = false
-        if target == .both { target = .left }
+        if target == .both { target = lastTouchedTarget }
         status = message
     }
 
