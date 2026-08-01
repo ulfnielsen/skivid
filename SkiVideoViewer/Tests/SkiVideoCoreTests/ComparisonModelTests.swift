@@ -572,6 +572,34 @@ final class ComparisonModelTests: XCTestCase {
     // moves that clip *relative to* the other and carries its sync point along,
     // so the pair stays locked at the corrected offset.
 
+    /// Playback stays paired while synced even with a side targeted — running
+    /// one clip alone would desync exactly what the user just aligned.
+    ///
+    /// Only the *pause* direction is reachable in a unit test. Playing routes
+    /// through `playSynced` → `AVPlayer.setRate(_:time:atHostTime:)`, which
+    /// raises unless the item is `.readyToPlay`, so it would abort the suite
+    /// rather than fail. Starting the players directly with
+    /// `playImmediately(atRate:)` sidesteps that and still exercises the branch
+    /// that matters: `toggleIndividual` must reach `pauseBoth`, not pause one
+    /// side.
+    func testPlayPauseStaysPairedWhileSyncedEvenWithASideTargeted() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.leftPlayer.playImmediately(atRate: 1)
+        model.rightPlayer.playImmediately(atRate: 1)
+        XCTAssertEqual(model.leftPlayer.rate, 1, "precondition: both clips running")
+        XCTAssertEqual(model.rightPlayer.rate, 1, "precondition: both clips running")
+
+        model.target = .left
+        model.applyTransport(.playPause)
+
+        XCTAssertEqual(model.leftPlayer.rate, 0)
+        XCTAssertEqual(model.rightPlayer.rate, 0,
+                       "pausing one clip alone would desync the locked pair")
+        XCTAssertEqual(model.status, "Paused together")
+    }
+
     func testNudgeMovesOnlyTheTargetedClip() throws {
         let model = try makeSyncedModel()
         defer { model.close() }

@@ -107,11 +107,14 @@ public final class ComparisonModel: ObservableObject {
         lastTouchedSide == .left ? .left : .right
     }
 
-    /// Internal rather than private so the tests can prove a nudge moves a sync
-    /// point: with undecodable fixtures the published `leftTime`/`rightTime`
-    /// never update, and the sync points are the only durable evidence.
-    var leftSyncPoint = CMTime.zero
-    var rightSyncPoint = CMTime.zero
+    /// Readable inside the module so the tests can prove a nudge moves a sync
+    /// point — with undecodable fixtures the published `leftTime`/`rightTime`
+    /// never update, so these are the only durable evidence. Writable only
+    /// here: the pair is an invariant (`L_cur - L_sync == R_cur - R_sync` while
+    /// locked), and nothing outside these methods may set one without the
+    /// other.
+    private(set) var leftSyncPoint = CMTime.zero
+    private(set) var rightSyncPoint = CMTime.zero
     private var leftTimeObserver: Any?
     private var rightTimeObserver: Any?
     private var leftDurationObserver: NSKeyValueObservation?
