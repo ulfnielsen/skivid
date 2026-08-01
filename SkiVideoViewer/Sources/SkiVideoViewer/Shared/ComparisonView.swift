@@ -1,12 +1,11 @@
 import SkiVideoCore
 import SwiftUI
 
+/// Composition only. Everything that used to be inline here — the panes, the
+/// timeline, the transport, the blend controls — is one file each now; see the
+/// spec's "Structure" table. Side-by-side is two rows of chrome, overlay three.
 struct ComparisonView: View {
     @StateObject private var model: ComparisonModel
-    @State private var leftScrubTime = 0.0
-    @State private var rightScrubTime = 0.0
-    @State private var isScrubbingLeft = false
-    @State private var isScrubbingRight = false
     let closeWindow: () -> Void
 
     init(
@@ -29,20 +28,28 @@ struct ComparisonView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            layoutPicker
-
-            switch model.layout {
-            case .sideBySide:
-                HStack(spacing: 1) {
-                    videoPane(side: .left)
-                    Divider()
-                    videoPane(side: .right)
+            videos
+                // Over the video rather than in a row of its own; see
+                // `ComparisonStatusChip` for why, and for why its width is a
+                // constant. The 8pt inset lives here because it is a placement
+                // decision, not part of the pill.
+                .overlay(alignment: .topTrailing) {
+                    ComparisonStatusChip(status: model.status).padding(8)
                 }
-            case .overlay:
-                overlayLayout
-            }
 
-            synchronizedControls
+            // One surface for the chrome, as every deleted control row had.
+            // Applied to the group rather than per row so the scrubber, the
+            // blend bar and the control bar cannot end up on different
+            // backgrounds; it changes no height.
+            VStack(spacing: 0) {
+                if model.layout == .overlay {
+                    OverlayBlendBar(model: model)
+                }
+                ComparisonScrubber(model: model)
+                    .padding(.horizontal, 12)
+                ComparisonControlBar(model: model)
+            }
+            .background(.bar)
         }
         // An 11-inch iPad is 834pt wide in portrait, so a hard 1000pt minimum
         // clips. macOS keeps it: the Compare window is resizable and needs a
@@ -50,38 +57,30 @@ struct ComparisonView: View {
         #if os(macOS)
         .frame(minWidth: 1000, minHeight: 680)
         #endif
+        // macOS drops the Close button — the window has one. iPad needs it,
+        // because a full-screen cover has no chrome of its own, and it goes
+        // over the video rather than into a row.
+        #if os(iOS)
+        .overlay(alignment: .topLeading) { closeButton }
+        #endif
         .onDisappear { model.close() }
     }
 
-    private var layoutPicker: some View {
-        HStack {
-            Picker("", selection: $model.layout) {
-                ForEach(ComparisonLayout.allCases) { layout in
-                    Text(layout.title).tag(layout)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 260)
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
-
-    private var overlayLayout: some View {
-        VStack(spacing: 0) {
+    @ViewBuilder
+    private var videos: some View {
+        switch model.layout {
+        case .sideBySide:
             HStack(spacing: 1) {
-                paneHeader(side: .left)
-                Divider()
-                paneHeader(side: .right)
+                ComparisonPane(model: model, side: .left)
+                // Constrained deliberately: a bare `Divider()` inside an
+                // `HStack` is vertically greedy and squeezes the video.
+                Divider().frame(width: 1)
+                ComparisonPane(model: model, side: .right)
             }
-
+        case .overlay:
             // Both platforms use the SwiftUI stack. macOS previously had its
             // own NSViewRepresentable overlay, whose CALayer.compositingFilter
-            // approach is a silent no-op on iOS; the argument list here is
-            // unchanged from the one that view was given.
+            // approach is a silent no-op on iOS.
             OverlayPlayerStack(
                 bottomPlayer: model.leftPlayer,
                 topPlayer: model.rightPlayer,
@@ -89,193 +88,20 @@ struct ComparisonView: View {
                 blend: model.blend
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            overlayControls
-
-            HStack(spacing: 1) {
-                paneTransport(side: .left)
-                Divider()
-                paneTransport(side: .right)
-            }
         }
     }
 
-    private var overlayControls: some View {
-        HStack(spacing: 14) {
-            Text("Left")
-                .foregroundStyle(.secondary)
-            Slider(value: $model.overlayOpacity, in: 0...1)
-                .frame(minWidth: 180)
-                .disabled(model.blend == .difference)
-            Text("Right")
-                .foregroundStyle(.secondary)
-
-            Picker("", selection: $model.blend) {
-                ForEach(OverlayBlend.allCases) { blend in
-                    Text(blend.title).tag(blend)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 200)
-
-            Text(
-                model.blend == .difference
-                    ? "Difference blending uses full opacity · black where the clips match"
-                    : "Right video drawn over left · drag toward a side to favour that clip"
-            )
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            Spacer()
+    private var closeButton: some View {
+        Button {
+            closeWindow()
+        } label: {
+            Image(systemName: "xmark")
+                .frame(width: 44, height: 44)
+                .background(.thinMaterial, in: Circle())
+                .contentShape(Circle())
         }
+        .buttonStyle(.plain)
         .padding(12)
-        .background(.bar)
-    }
-
-    private func videoPane(side: ComparisonSide) -> some View {
-        let player = side == .left ? model.leftPlayer : model.rightPlayer
-
-        return VStack(spacing: 0) {
-            paneHeader(side: side)
-
-            NativePlayerView(player: player)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            paneTransport(side: side)
-        }
-    }
-
-    private func paneHeader(side: ComparisonSide) -> some View {
-        let isLeft = side == .left
-        let name = isLeft ? model.leftName : model.rightName
-
-        return HStack {
-            Text(isLeft ? "Left" : "Right")
-                .font(.headline)
-            Text(name)
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if !model.openLibrary.isEmpty {
-                Menu("From Open Folder…") {
-                    ForEach(model.openLibrary) { athlete in
-                        Menu(athlete.name) {
-                            ForEach(athlete.videos) { video in
-                                Button(video.name) {
-                                    model.load(video, side: side)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Button("Choose File…") { Task { await model.chooseVideo(side: side) } }
-        }
-        .padding(12)
-        .background(.bar)
-    }
-
-    private func paneTransport(side: ComparisonSide) -> some View {
-        let isLeft = side == .left
-        let time = isLeft ? model.leftTime : model.rightTime
-        let duration = isLeft ? model.leftDuration : model.rightDuration
-        let scrubTime = isLeft ? leftScrubTime : rightScrubTime
-        let isScrubbing = isLeft ? isScrubbingLeft : isScrubbingRight
-        let displayedTime = isScrubbing ? scrubTime : time
-
-        return VStack(spacing: 9) {
-            Slider(
-                value: Binding(
-                    get: {
-                        min(displayedTime, max(duration, 0))
-                    },
-                    set: {
-                        if isLeft {
-                            leftScrubTime = $0
-                        } else {
-                            rightScrubTime = $0
-                        }
-                        model.scrub(side, to: $0)
-                    }
-                ),
-                in: 0...max(duration, 0.1),
-                onEditingChanged: { editing in
-                    if isLeft {
-                        if editing {
-                            leftScrubTime = time
-                            isScrubbingLeft = true
-                        } else {
-                            isScrubbingLeft = false
-                        }
-                    } else if editing {
-                        rightScrubTime = time
-                        isScrubbingRight = true
-                    } else {
-                        isScrubbingRight = false
-                    }
-                }
-            )
-            .disabled(duration <= 0)
-
-            HStack {
-                Text("\(ComparisonModel.timecode(displayedTime)) / \(ComparisonModel.timecode(duration))")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("−5s") { model.seek(side, by: -5) }
-                Button("−1s") { model.seek(side, by: -1) }
-                Button("Play / Pause") { model.toggleIndividual(side) }
-                Button("Slow 0.25×") { model.playIndividual(side, rate: 0.25) }
-                Button("+1s") { model.seek(side, by: 1) }
-                Button("+5s") { model.seek(side, by: 5) }
-            }
-        }
-        .padding(12)
-        .background(.bar)
-    }
-
-    private var synchronizedControls: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Button("Close") { closeWindow() }
-                Spacer()
-                Label(
-                    model.isSynced ? "Linked" : "Independent",
-                    systemImage: model.isSynced ? "link" : "link.badge.plus"
-                )
-                .foregroundStyle(model.isSynced ? .blue : .secondary)
-                Text(model.status)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if model.isSynced {
-                    Button("Unsync") { model.removeSync() }
-                        .buttonStyle(.borderedProminent)
-                }
-                Button(model.isSynced ? "Update Sync Points" : "Set Sync Points") {
-                    model.setSyncPoints()
-                }
-                    .disabled(!model.hasTwoVideos)
-                    .keyboardShortcut(.return, modifiers: [.command])
-            }
-
-            HStack(spacing: 10) {
-                Button("Back to Sync Points") { model.returnToSyncPoints() }
-                Button("Both −5s") { model.seekSynced(by: -5) }
-                Button("Play Together") { model.playSynced() }
-                Button("Slow Together 0.25×") { model.playSynced(rate: 0.25) }
-                Button("Pause / Stop") { model.pauseBoth() }
-                Button("Both +5s") { model.seekSynced(by: 5) }
-            }
-
-            Text(
-                model.isSynced
-                    ? "All controls now affect both videos · Unsync restores independent controls · Space plays/pauses · ←/→ moves both one second"
-                    : "Align each side independently · ⌘Return sets sync points"
-            )
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .background(.regularMaterial)
+        .accessibilityLabel("Close comparison")
     }
 }

@@ -49,7 +49,12 @@ controls twice**. The model unifies them by mode; the UI shows both anyway.
   while aligning and gains `Both` on sync, so no control is ever present
   without being usable.
 - **Transport** is five actions — −5s, −1s, play/pause, +1s, +5s — plus a
-  slow-motion toggle. Identical regardless of target.
+  **momentary** slow-motion action that starts playback at 0.25×. Identical
+  regardless of target. It is not a toggle: `applyTransport(.slow)` is
+  fire-and-play, the rate it sets lives on `AVPlayer` and the model publishes
+  nothing to render a toggle's state from, so an on/off icon would go stale at
+  exactly the moment playback stops. The route back to 1× is play/pause — it
+  pauses, and the next play starts at full rate.
 - **Scrubber** sits above, showing the targeted clip, or the common timeline
   when `Both`.
 
@@ -62,12 +67,58 @@ correction affordance. Nothing is rebuilt — the selector simply stops being
 touched. Designing per-side control as a *mode of one transport* rather than as
 its own UI is what makes that demotion free.
 
+### Per-side control while synced: the nudge
+
+While synced, targeting `Left` or `Right` does not hand that clip a plain,
+independent seek — that would let a −5s tap silently drift the pair out of
+alignment while the status bar still claimed "Synchronized". Instead, the four
+seek actions (`back5`, `back1`, `forward1`, `forward5`) become a **nudge**: the
+targeted clip moves, and *its own sync point moves with it by the same amount*,
+so the pair stays locked, at the corrected offset. The other clip does not
+move. `playPause` and `slow` stay paired regardless of target — playing or
+slowing one side alone would desync exactly what the user just aligned — so
+they always resolve to the synced pair while `isSynced` is true, the same as
+`Both` would.
+
+This is what makes the correction affordance real rather than aspirational:
+`scrub` derives its offset from the two sync points, so a nudge's correction
+propagates to every subsequent synced scrub for free, and
+`returnToSyncPoints()` returns to the corrected alignment rather than the one
+being corrected away from.
+
+**The subtlety a reimplementation is likely to get wrong.** The sync point
+shifts by the distance *actually travelled*, not the distance requested. A
+locked pair satisfies `L_cur − L_sync == R_cur − R_sync`. If a nudge clamps —
+at 0, or at the clip's end — and the sync point is shifted by the requested
+amount instead of the travelled one, that invariant breaks by exactly
+`requested − travelled`: the live playhead and the sync-point-derived offset
+disagree, and the next synced scrub jumps by the difference. Verified by
+mutation — shifting by the requested seconds instead of the extracted
+travelled distance is caught by a dedicated test.
+
+**A known bug the nudge introduces.** Before `nudge`, sync points only ever
+came from `currentTime()`, which is always inside the clip's bounds. `nudge`
+is unbounded in the direction that matters here — a nudge near a clip boundary
+can push a sync point *outside* the clip. Measured: sync points at 0, the pair
+moved to 30, then `back5` on `Left` gives `leftSyncPoint == -5.0`.
+`returnToSyncPoints()` seeks with raw `AVPlayer.seek`, bypassing the model's
+own clamping helper, so on real (non-empty) media that seek would clamp to 0
+and land the pair five seconds out of alignment — the exact failure `nudge`
+exists to prevent. **The misaligned return has not itself been observed**,
+only reasoned to: the test fixtures are zero-byte files that accept a negative
+seek verbatim, so what is measured is the negative sync point, not the clamped
+return landing wrong. Say that plainly rather than implying it was seen. The
+fix belongs with whoever owns `returnToSyncPoints`: either clamp the sync
+point on write inside `nudge` and refuse the excess travel, or route the
+return seek through the same clamping helper `seek(_:to:)` already uses.
+
 ### Icons, not text
 
 "Play / Pause", "Slow Together 0.25×" and "Back to Sync Points" as text buttons
 are why the bar is rows deep. SF Symbols at 44pt hit targets fit the whole set
-on one line and are legible on both platforms. Mac restores the words as hover
-tooltips.
+on one line and are legible on both platforms — these are our own `Button`s, so
+44pt is genuinely achievable here; see "Platform differences" for the system
+controls it is not. Mac restores the words as hover tooltips.
 
 ### Layout
 
@@ -114,8 +165,25 @@ tooltips.
   dismiss chip over the video's top-left, because a full-screen cover has no
   chrome of its own.
 
-Net: side-by-side goes from seven chrome rows to two; overlay from nine to
-three, with the video no longer sandwiched between control bands.
+Net: side-by-side goes from seven chrome rows to **two, and to three below the
+control bar's 880.5pt wrap threshold**; overlay from nine to **three, and to
+four below it**. The video is no longer sandwiched between control bands at any
+width.
+
+The two counts are not a caveat bolted on: the bar wraps to two rows at every
+iPad portrait width (see "Narrow widths" below), and a wrapped bar is one more
+row of chrome by definition. Measured on the simulator, counted off the
+screenshots and cross-checked against the headless measurements:
+
+| Width | Side-by-side | Overlay |
+|---|---|---|
+| 1210pt (11-inch landscape) | 2 rows, 104pt | 3 rows, 144pt |
+| 1133pt (mini landscape) | 2 rows, 104pt | 3 rows, 144pt |
+| 834pt (11-inch portrait) | **3 rows, 156pt** | **4 rows, 196pt** |
+| 744pt (mini portrait) | **3 rows, 156pt** | **4 rows, 196pt** |
+
+macOS is always the unwrapped case, because `ComparisonView` pins
+`minWidth: 1000` there.
 
 ### States
 
@@ -127,6 +195,8 @@ button's meaning.
 | Target offers | `Left`, `Right` | `Both`, `Left`, `Right` |
 | Target defaults to | `Left`, then the last-touched side | `Both` |
 | Scrubber shows | the targeted clip | the common timeline |
+| Left/Right seek actions | plain per-side seek | **nudge** — the clip moves and its own sync point moves with it; the other clip is untouched |
+| Left/Right play/slow | plays/slows that clip alone | stays paired — resolves to the synced pair regardless of target |
 | ⚓ does | Set sync points | Return to sync points |
 | ⚓ secondary action | — | Clear sync |
 
@@ -136,15 +206,58 @@ long-press on touch, right-click on Mac.
 ### Narrow widths
 
 An 11-inch iPad in portrait is 834pt and the bar will not fit on one line. It
-**wraps to two rows** rather than shrinking targets below 44pt. Touch target
-size wins over row count. An iPad mini is 744pt and must also be checked —
-nothing narrower has been tested at any point in this project.
+**wraps to two rows** rather than shrinking targets. Touch target size wins over
+row count. An iPad mini is 744pt and must also be checked — nothing narrower has
+been tested at any point in this project.
+
+Measured in Task 2, via `ViewThatFits` hosted headlessly at a sweep of widths:
+
+- **Wrap threshold 880.5pt**, identical whether aligning or synced. 881pt gives
+  one row, 880pt gives two. Both 834pt and 744pt wrap, as intended — which is
+  why the chrome-row counts above are one higher in portrait than in landscape.
+- **One row is 60pt tall; two rows are 112pt.** (An earlier plan said 92pt —
+  that predated the 44pt row frames.)
+- The two-row layout holds its 112pt down to about 460pt, far below anything
+  this project targets.
+- macOS keeps one row, because `ComparisonView` pins `minWidth: 1000` there.
+
+The threshold is identical in both sync states only because the target picker
+has a fixed width rather than one that varies with its segment count. With a
+variable width the bar's ideal width was 830.5pt aligning and 880.5pt synced —
+straddling 834pt, so tapping the anchor on an 11-inch iPad reflowed one row into
+two and resized the video mid-alignment.
 
 ### Platform differences
 
-One layout, two input methods. 44pt targets everywhere: a mouse can hit small
-things but does not suffer from large ones, and one geometry is far cheaper to
+One layout, two input methods. **44pt targets for the controls we build;
+system controls at their platform-standard size.** A mouse can hit small things
+but does not suffer from large ones, and one geometry is far cheaper to
 maintain than two.
+
+The rule used to read "44pt targets everywhere". It was amended in Task 2 after
+the exemption turned out to be unavoidable *and* correct:
+
+| Control | Kind | Hit target |
+|---|---|---|
+| Six transport buttons, sync anchor | our `Button` + `contentShape` | **44×44**, as specified |
+| Layout picker, target picker | `Picker(.segmented)` | 24pt macOS, **32pt iPadOS** |
+| Scrubber | `Slider` | 16pt macOS |
+
+**Why the exemption is deliberate, not a concession.** 32pt is what iPadOS uses
+for segmented controls throughout; matching the platform is the right answer for
+the mode switch, not a compromise on it. And it is not reachable from SwiftUI
+anyway: measured, a `frame(height: 44)` around a segmented picker or a slider
+*centres* the control without growing it — identical drawn extent framed and
+unframed — and `contentShape(Rectangle())` on the framed parent does not extend
+the hit region either. Synthetic clicks selected a segment over the same ~24pt
+band with `contentShape`, without it, and with no frame at all; a parent's
+content shape defines that view's own hit region and cannot route a hit into a
+child control's segments. Its only measurable effect was to *swallow* clicks in
+the surrounding band, so it is deliberately absent.
+
+The 44pt frames remain, because reserving the row is real and gives the two-row
+layout its rhythm. They just do not enlarge the control, and no comment or spec
+line should claim they do.
 
 - **macOS adds** hover tooltips restoring the words the icons replaced, and
   keeps the existing key equivalents (⌘Return sets sync points, space, arrows).
@@ -167,14 +280,19 @@ accreted without anyone noticing. Split into files that each do one thing:
 | `ComparisonScrubber` | the timeline for whatever is targeted |
 | `ComparisonControlBar` | target selector, transport, time, anchor |
 | `OverlayBlendBar` | blend slider and mode; overlay only |
-| `ComparisonView` | composition only, ~60 lines |
+| `ComparisonStatusChip` | the status sentence, as a width-capped pill over the video |
+| `ComparisonView` | composition only — 107 lines as shipped, 79 of them code |
 
-All five live in `Sources/SkiVideoViewer/Shared/`. None may import AppKit or
+Six files, not the five originally planned: the status chip came out of
+`ComparisonView` during implementation because its width has to be capped —
+uncapped, the model's longest status runs out of the right pane and over the
+left pane's filename — and a capped pill measured by its own test is a thing,
+not a modifier.
+
+All six live in `Sources/SkiVideoViewer/Shared/`. None may import AppKit or
 UIKit — `SinglePlayerView` remains the only file there that does.
 
 ## Model change
-
-One addition:
 
 ```swift
 public enum ComparisonTarget: String, CaseIterable, Identifiable, Sendable {
@@ -182,16 +300,79 @@ public enum ComparisonTarget: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
-@Published public var target: ComparisonTarget = .both
+public enum TransportAction: String, CaseIterable, Identifiable, Sendable {
+    case back5, back1, playPause, forward1, forward5, slow
+    public var id: String { rawValue }
+}
+
+@Published public var target: ComparisonTarget = .left {
+    didSet {
+        if !availableTargets.contains(target) { target = lastTouchedTarget }
+    }
+}
+
+public func applyTransport(_ action: TransportAction)
 ```
 
-Everything else already exists. The control bar routes to `seek(_:by:)`,
-`toggleIndividual(_:)`, `seekSynced(by:)`, `playSynced(rate:)` and `pauseBoth()`
-by target. No existing model method changes signature or behaviour.
+`applyTransport` is the single entry point the control bar drives, and the
+keyboard shortcuts route through it too so a key and its on-screen button
+cannot disagree. It switches on `target`: for `.both` it calls `seekSynced`,
+`playSynced`/`pauseBoth`; for `.left`/`.right` the four seek actions go
+through the new `nudge(_:by:)` rather than plain `seek(_:by:)` — see "Per-side
+control while synced" above — and `playPause`/`slow` go to
+`toggleIndividual`/`playIndividual`, which already delegated to the synced
+pair when `isSynced`, so `applyTransport` does not have to test for pairing
+itself.
 
 `target` is genuinely independent state, not derivable from `isSynced`: a user
-may nudge one side while synced, which is exactly the correction affordance
-auto-sync will leave behind.
+may target `Left` while synced, in which case the seek actions correct that
+side against the other rather than moving the pair.
+
+No existing model method's *signature* changes. `nudge(_:by:)` is new;
+`applyTransport(_:)` is new; `handle(_:)` (the keyboard router) now routes
+through `applyTransport` instead of calling `playSynced`/`seekSynced`
+directly, which is a deliberate behaviour change — while aligning, Space now
+plays the targeted clip instead of answering "Set the sync points first."
+
+### The invariant: `target` can never hold a value `availableTargets` refuses
+
+If it did, a segmented picker bound to `target` would render no selection at
+all — SwiftUI's behaviour when a bound value isn't among the options it's
+given. `target`'s `didSet` self-enforces this rather than relying on every
+call site to remember it: `availableTargets` always contains `.left` and
+`.right`, so `.both` is the only value that can ever need correcting, and the
+landing value, `lastTouchedTarget`, derives from the two-case `ComparisonSide`
+and so is structurally incapable of being `.both` itself — there is no
+`.both`-to-`.both` loop to worry about. The three places that used to
+hand-demote (`removeSync`, `clearSync`, and now the `didSet`) all funnel
+through the same `lastTouchedTarget`.
+
+### The last-touched side (fixed in Task 2)
+
+`lastTouchedSide` — what a `.both`-losing demotion falls back to — was
+originally written in exactly two places: `applyTransport`'s per-side branch,
+and `load(_:side:)`. Every other per-side entry point left it stale, and the
+control bar made that reachable: dragging the scrubber is the only route to an
+absolute seek, since `TransportAction` has no such case. Measured symptom —
+select Right, align it by dragging, sync, clear sync, and land back on **Left**.
+
+Fixed by moving the rule into the model rather than asking each new control to
+remember it. `noteTouched(_:)` is called by `scrub`, `nudge`, `seek(_:by:)`,
+`seek(_:to:)`, `toggleIndividual` and `playIndividual`, and `target`'s own
+`didSet` records a side the moment the picker selects one — choosing `Right` is
+the clearest statement of preference there is, and on its own it used to record
+nothing.
+
+`noteTouched` refuses while `target == .both`, which is the part a naive fix
+gets wrong. `lastTouchedSide` answers one question — which side a demotion
+lands on — so it must follow only calls that name a side. While targeting
+`Both` the scrubber shows the common timeline and drags it through
+`scrub(.left, to:)`, because there is no paired overload; recording that as a
+touch on Left would reintroduce the same bug for a user who had chosen Right.
+`applyTransport` already behaved this way (its `.both` branch never wrote it);
+the direct entry points now agree. `load(_:side:)` stays unconditional:
+dropping a clip into a pane names that side whatever the target is, and it has
+to be recorded before `clearSync` demotes off `both`.
 
 ## Testing
 
@@ -200,6 +381,20 @@ auto-sync will leave behind.
   left player and not the right; with `.both` while synced, both move. Default
   target is `.both` when synced and follows the last-touched side while
   aligning.
+- **Nudge semantics** are covered separately, mutation-verified: the sync point
+  shifts by the distance actually travelled rather than the distance
+  requested; the correction propagates to a subsequent synced `scrub`; and
+  `returnToSyncPoints()` lands on the corrected alignment rather than the one
+  being corrected away from.
+- **One remaining coverage gap.** The *play* direction of the synced pairing
+  (targeting a side with `playPause`/`slow` while synced, which resolves to
+  `playSynced`) is untested — reaching it calls
+  `setRate(_:time:atHostTime:)`, which raises on an unready `AVPlayerItem` and
+  would crash the suite rather than fail it, given the zero-byte fixtures used
+  elsewhere. The *pause* direction is tested and mutation-verified —
+  `toggleIndividual` routes to `pauseBoth` without touching the raising API.
+  Closing the play direction needs decodable media; `AVAssetWriter`-generated
+  fixtures would work on both platforms without shelling out to `Process`.
 - **New UI tests** in the existing iPad UI-test target: the target selector
   switches, the transport acts on the selected clip, and the anchor button's
   label changes with `isSynced`.
