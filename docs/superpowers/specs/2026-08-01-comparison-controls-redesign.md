@@ -165,8 +165,25 @@ controls it is not. Mac restores the words as hover tooltips.
   dismiss chip over the video's top-left, because a full-screen cover has no
   chrome of its own.
 
-Net: side-by-side goes from seven chrome rows to two; overlay from nine to
-three, with the video no longer sandwiched between control bands.
+Net: side-by-side goes from seven chrome rows to **two, and to three below the
+control bar's 880.5pt wrap threshold**; overlay from nine to **three, and to
+four below it**. The video is no longer sandwiched between control bands at any
+width.
+
+The two counts are not a caveat bolted on: the bar wraps to two rows at every
+iPad portrait width (see "Narrow widths" below), and a wrapped bar is one more
+row of chrome by definition. Measured on the simulator, counted off the
+screenshots and cross-checked against the headless measurements:
+
+| Width | Side-by-side | Overlay |
+|---|---|---|
+| 1210pt (11-inch landscape) | 2 rows, 104pt | 3 rows, 144pt |
+| 1133pt (mini landscape) | 2 rows, 104pt | 3 rows, 144pt |
+| 834pt (11-inch portrait) | **3 rows, 156pt** | **4 rows, 196pt** |
+| 744pt (mini portrait) | **3 rows, 156pt** | **4 rows, 196pt** |
+
+macOS is always the unwrapped case, because `ComparisonView` pins
+`minWidth: 1000` there.
 
 ### States
 
@@ -196,7 +213,8 @@ been tested at any point in this project.
 Measured in Task 2, via `ViewThatFits` hosted headlessly at a sweep of widths:
 
 - **Wrap threshold 880.5pt**, identical whether aligning or synced. 881pt gives
-  one row, 880pt gives two. Both 834pt and 744pt wrap, as intended.
+  one row, 880pt gives two. Both 834pt and 744pt wrap, as intended — which is
+  why the chrome-row counts above are one higher in portrait than in landscape.
 - **One row is 60pt tall; two rows are 112pt.** (An earlier plan said 92pt —
   that predated the 44pt row frames.)
 - The two-row layout holds its 112pt down to about 460pt, far below anything
@@ -262,9 +280,16 @@ accreted without anyone noticing. Split into files that each do one thing:
 | `ComparisonScrubber` | the timeline for whatever is targeted |
 | `ComparisonControlBar` | target selector, transport, time, anchor |
 | `OverlayBlendBar` | blend slider and mode; overlay only |
-| `ComparisonView` | composition only, ~60 lines |
+| `ComparisonStatusChip` | the status sentence, as a width-capped pill over the video |
+| `ComparisonView` | composition only — 107 lines as shipped, 79 of them code |
 
-All five live in `Sources/SkiVideoViewer/Shared/`. None may import AppKit or
+Six files, not the five originally planned: the status chip came out of
+`ComparisonView` during implementation because its width has to be capped —
+uncapped, the model's longest status runs out of the right pane and over the
+left pane's filename — and a capped pill measured by its own test is a thing,
+not a modifier.
+
+All six live in `Sources/SkiVideoViewer/Shared/`. None may import AppKit or
 UIKit — `SinglePlayerView` remains the only file there that does.
 
 ## Model change
