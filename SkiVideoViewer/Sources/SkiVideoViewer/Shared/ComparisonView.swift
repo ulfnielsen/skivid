@@ -44,7 +44,12 @@ struct ComparisonView: View {
 
             synchronizedControls
         }
+        // An 11-inch iPad is 834pt wide in portrait, so a hard 1000pt minimum
+        // clips. macOS keeps it: the Compare window is resizable and needs a
+        // floor. Same shape as `ContentView`'s minimum-size conditional.
+        #if os(macOS)
         .frame(minWidth: 1000, minHeight: 680)
+        #endif
         .onDisappear { model.close() }
     }
 
@@ -73,6 +78,14 @@ struct ComparisonView: View {
                 paneHeader(side: .right)
             }
 
+            // Task 3 replaces both branches with OverlayPlayerStack. The macOS
+            // OverlayPlayerView cannot move here: it is an NSViewRepresentable,
+            // and its CALayer.compositingFilter is a no-op on iOS anyway.
+            // macOS deliberately keeps calling it until Task 3 lands, so this
+            // move does not regress the shipping overlay; only iOS gets the
+            // placeholder, which nothing can reach yet
+            // (NoSecondaryScreenPresenter.canPresent == false).
+            #if os(macOS)
             OverlayPlayerView(
                 bottomPlayer: model.leftPlayer,
                 topPlayer: model.rightPlayer,
@@ -80,6 +93,11 @@ struct ComparisonView: View {
                 blend: model.blend
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #else
+            Color.black
+                .overlay(Text("Overlay").foregroundStyle(.secondary))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #endif
 
             overlayControls
 
