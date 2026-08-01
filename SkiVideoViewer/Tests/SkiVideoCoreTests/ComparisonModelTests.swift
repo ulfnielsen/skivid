@@ -76,10 +76,11 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(model.topLayerOpacity, 1.0, accuracy: 0.0001)
     }
 
-    /// `OverlayPlayerStack` no longer branches on `blend` for opacity — it
-    /// draws whatever `topLayerOpacity` says. So the forced 1.0 of difference
-    /// mode must be computed, never latched: leaving difference has to hand the
-    /// slider value back, or the overlay stays stuck at full opacity.
+    /// `OverlayPlayerStack` re-applies the "difference mode forces full
+    /// opacity" rule itself, as defence in depth — but the model is still
+    /// where the rule lives. So the forced 1.0 must be computed here, never
+    /// latched: leaving difference has to hand the slider value back, or the
+    /// overlay stays stuck at full opacity.
     func testLeavingDifferenceModeRestoresTheSliderOpacity() {
         let model = makeModel()
         defer { model.close() }
