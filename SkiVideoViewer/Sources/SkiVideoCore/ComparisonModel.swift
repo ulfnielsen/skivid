@@ -35,6 +35,30 @@ public enum OverlayBlend: String, CaseIterable, Identifiable {
     }
 }
 
+/// Who the transport controls act on.
+///
+/// `both` is only meaningful once sync points are set — `playSynced` and
+/// `seekSynced` both refuse otherwise — so `availableTargets` omits it while
+/// aligning rather than offering a control that can only produce a nag.
+public enum ComparisonTarget: String, CaseIterable, Identifiable, Sendable {
+    case both, left, right
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .both: return "Both"
+        case .left: return "Left"
+        case .right: return "Right"
+        }
+    }
+}
+
+/// One transport action, routed by `ComparisonModel.target`.
+public enum TransportAction: Sendable {
+    case back5, back1, playPause, forward1, forward5, slow
+}
+
 /// Platform-agnostic state for the two-video comparison window. Like
 /// `ViewerModel`, everything platform-specific reaches it through the seams in
 /// `Seams.swift`, so an iPadOS target can present the same model.
@@ -55,6 +79,7 @@ public final class ComparisonModel: ObservableObject {
     @Published public var layout: ComparisonLayout = .sideBySide
     @Published public var overlayOpacity: Double = 0.5
     @Published public var blend: OverlayBlend = .blend
+    @Published public var target: ComparisonTarget = .left
 
     public let leftPlayer = AVPlayer()
     public let rightPlayer = AVPlayer()
@@ -102,6 +127,42 @@ public final class ComparisonModel: ObservableObject {
     /// is ignored (and disabled in the UI) while difference mode is active.
     public var topLayerOpacity: Double {
         blend == .difference ? 1.0 : overlayOpacity
+    }
+
+    public var availableTargets: [ComparisonTarget] {
+        isSynced ? [.both, .left, .right] : [.left, .right]
+    }
+
+    /// One transport action, routed to the synced pair or to a single side by
+    /// `target`. The per-side methods already fall through to their synced
+    /// equivalents when `isSynced`, so this only has to pick the entry point.
+    public func applyTransport(_ action: TransportAction) {
+        switch target {
+        case .both:
+            switch action {
+            case .back5: seekSynced(by: -5)
+            case .back1: seekSynced(by: -1)
+            case .forward1: seekSynced(by: 1)
+            case .forward5: seekSynced(by: 5)
+            case .playPause:
+                if leftPlayer.rate == 0 && rightPlayer.rate == 0 {
+                    playSynced()
+                } else {
+                    pauseBoth()
+                }
+            case .slow: playSynced(rate: 0.25)
+            }
+        case .left, .right:
+            let side: ComparisonSide = target == .left ? .left : .right
+            switch action {
+            case .back5: seek(side, by: -5)
+            case .back1: seek(side, by: -1)
+            case .forward1: seek(side, by: 1)
+            case .forward5: seek(side, by: 5)
+            case .playPause: toggleIndividual(side)
+            case .slow: playIndividual(side, rate: 0.25)
+            }
+        }
     }
 
     /// Internal: the model subscribes itself to `input.onIntent`, so nothing
@@ -243,12 +304,14 @@ public final class ComparisonModel: ObservableObject {
         leftSyncPoint = leftPlayer.currentTime()
         rightSyncPoint = rightPlayer.currentTime()
         isSynced = true
+        target = .both
         status = "Synchronized from L \(Self.timecode(leftTime)) and R \(Self.timecode(rightTime))."
     }
 
     public func removeSync() {
         pauseBoth()
         isSynced = false
+        if target == .both { target = .left }
         status = "Independent controls restored. Align the videos and set new sync points when ready."
     }
 
@@ -357,11 +420,16 @@ public final class ComparisonModel: ObservableObject {
         )
     }
 
+    /// The other way sync drops — loading a clip, or nudging one side while
+    /// aligned. `removeSync()` is not the only path, so the `both` demotion has
+    /// to live here too: otherwise `target` stays on a value `availableTargets`
+    /// no longer offers, and the picker shows a selection that is not there.
     private func clearSync(message: String) {
         if isSynced {
             pauseBoth()
         }
         isSynced = false
+        if target == .both { target = .left }
         status = message
     }
 

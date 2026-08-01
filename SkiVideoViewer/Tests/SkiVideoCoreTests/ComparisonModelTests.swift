@@ -34,7 +34,7 @@ final class ComparisonModelTests: XCTestCase {
     /// window binds each produce a distinguishable status. Without sync every
     /// branch reports "Set the sync points first.", which cannot tell
     /// `playSynced` from `seekSynced` from a dropped intent.
-    private func makeSyncedModel(input: FakeInputSource) throws -> ComparisonModel {
+    private func makeSyncedModel(input: FakeInputSource? = nil) throws -> ComparisonModel {
         let model = ComparisonModel(input: input)
         model.load(try makeVideoFile("left.mp4"), side: .left)
         model.load(try makeVideoFile("right.mp4"), side: .right)
@@ -266,5 +266,141 @@ final class ComparisonModelTests: XCTestCase {
 
         XCTAssertEqual(picker.pickFileCallCount, 1)
         XCTAssertEqual(model.leftName, "Choose left video")
+    }
+
+    // MARK: - Transport target
+    //
+    // One control bar drives either side or both, selected by `target`. The
+    // model already routes every per-side call through `isSynced`
+    // (`toggleIndividual`, `playIndividual`, `seek`, `scrub` each check it
+    // first), so `target` is the only thing that was missing.
+
+    func testTargetDefaultsToLeftWhileAligning() {
+        let model = makeModel()
+        defer { model.close() }
+
+        XCTAssertFalse(model.isSynced)
+        XCTAssertEqual(model.target, .left)
+    }
+
+    func testBothIsNotOfferedUntilSyncPointsAreSet() {
+        let model = makeModel()
+        defer { model.close() }
+
+        XCTAssertEqual(model.availableTargets, [.left, .right],
+                       "Both cannot work before sync: playSynced refuses")
+    }
+
+    func testTargetSwitchesToBothOnSync() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        XCTAssertTrue(model.isSynced)
+        XCTAssertEqual(model.target, .both)
+        XCTAssertEqual(model.availableTargets, [.both, .left, .right])
+    }
+
+    func testClearingSyncReturnsTargetToASide() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.removeSync()
+
+        XCTAssertFalse(model.isSynced)
+        XCTAssertNotEqual(model.target, .both,
+                          "Both must not remain selected once it cannot work")
+        XCTAssertEqual(model.availableTargets, [.left, .right])
+    }
+
+    /// `removeSync()` is not the only way sync drops: `clearSync` does it too,
+    /// from `load` and from any per-side nudge. That path must demote `target`
+    /// as well, or the picker keeps a selection `availableTargets` no longer
+    /// offers.
+    func testLoadingAClipAlsoDemotesTargetFromBoth() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        XCTAssertEqual(model.target, .both)
+
+        model.load(try makeVideoFile("replacement.mp4"), side: .left)
+
+        XCTAssertFalse(model.isSynced)
+        XCTAssertNotEqual(model.target, .both)
+        XCTAssertTrue(model.availableTargets.contains(model.target),
+                      "target must always be one of availableTargets")
+    }
+
+    /// `.slow` is the action asserted on because it is the only one whose
+    /// observable effect names a side: unsynced, `playIndividual` writes
+    /// "Playing left/right at …×". The seek actions route through
+    /// `seek(_:by:)`, whose unsynced branch writes the side-agnostic
+    /// "Alignment changed…" — asserting `status.contains("right")` after a
+    /// targeted seek would fail, not pass. The player rates pin the routing a
+    /// second way, so a mis-wired `.right` case cannot slip through on the
+    /// status string alone.
+    func testTransportRoutesToTheTargetedSide() {
+        let model = makeModel()
+        defer { model.close() }
+
+        model.target = .right
+        model.applyTransport(.slow)
+
+        XCTAssertTrue(
+            model.status.lowercased().contains("right"),
+            "expected a right-side status, got \(model.status)"
+        )
+        XCTAssertEqual(model.rightPlayer.rate, 0.25, "the targeted side must move")
+        XCTAssertEqual(model.leftPlayer.rate, 0, "the untargeted side must not")
+    }
+
+    func testTransportTargetingLeftLeavesTheRightSideAlone() {
+        let model = makeModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.applyTransport(.slow)
+
+        XCTAssertTrue(
+            model.status.lowercased().contains("left"),
+            "expected a left-side status, got \(model.status)"
+        )
+        XCTAssertEqual(model.leftPlayer.rate, 0.25)
+        XCTAssertEqual(model.rightPlayer.rate, 0)
+    }
+
+    /// Seek routing cannot be told apart per side without decodable media, but
+    /// side-versus-both can: the unsynced per-side branch writes "Alignment
+    /// changed…" while `seekSynced` writes "Set the sync points first."
+    func testSeekActionsRouteThroughThePerSideSeekWhenASideIsTargeted() {
+        let model = makeModel()
+        defer { model.close() }
+
+        model.target = .right
+        model.applyTransport(.back5)
+
+        XCTAssertEqual(
+            model.status,
+            "Alignment changed. Set sync points again when ready.",
+            "a 'Set the sync points first.' status would mean it reached seekSynced"
+        )
+    }
+
+    func testTransportRoutesToBothWhenSynced() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        XCTAssertEqual(model.target, .both)
+
+        model.applyTransport(.back5)
+        XCTAssertEqual(model.status, "Both moved -5 seconds")
+
+        model.applyTransport(.forward1)
+        XCTAssertEqual(model.status, "Both moved +1 seconds")
+    }
+
+    func testTargetTitles() {
+        XCTAssertEqual(ComparisonTarget.both.title, "Both")
+        XCTAssertEqual(ComparisonTarget.left.title, "Left")
+        XCTAssertEqual(ComparisonTarget.right.title, "Right")
     }
 }
