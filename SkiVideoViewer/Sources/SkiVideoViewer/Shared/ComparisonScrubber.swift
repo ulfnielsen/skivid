@@ -90,6 +90,6 @@ struct ComparisonScrubber: View {
         // for whatever Task 3 composes behind the scrubber. Do not re-add it.
         .frame(height: 44)
         .accessibilityLabel("Timeline")
-        .accessibilityValue(ComparisonModel.timecode(displayedTime))
+        .accessibilityValue(Timecode.string(displayedTime))
     }
 }

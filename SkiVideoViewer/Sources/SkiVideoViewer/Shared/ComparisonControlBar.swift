@@ -150,7 +150,7 @@ struct ComparisonControlBar: View {
         let side = model.target.scrubbedSide
         let time = side == .left ? model.leftTime : model.rightTime
         let duration = side == .left ? model.leftDuration : model.rightDuration
-        return Text(ComparisonModel.timecode(time) + " / " + ComparisonModel.timecode(duration))
+        return Text(Timecode.string(time) + " / " + Timecode.string(duration))
             .font(.callout.monospacedDigit())
             .foregroundStyle(.secondary)
     }
