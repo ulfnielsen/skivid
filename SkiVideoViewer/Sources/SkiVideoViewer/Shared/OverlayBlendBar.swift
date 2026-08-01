@@ -32,5 +32,9 @@ struct OverlayBlendBar: View {
             .frame(width: 200)
         }
         .padding(.horizontal, 12)
+        // The controls themselves draw over 24pt, which put the slider and the
+        // blend picker hard against the video above and the scrubber below.
+        // Matches the control bar's own vertical padding.
+        .padding(.vertical, 8)
     }
 }

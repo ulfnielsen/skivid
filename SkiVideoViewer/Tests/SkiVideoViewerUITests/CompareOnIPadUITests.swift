@@ -49,11 +49,20 @@ final class CompareOnIPadUITests: XCTestCase {
 
         // Two panes. Neither has a clip yet, so each shows its own centred
         // Choose Clip control where the deleted header row used to be. Asserted
-        // per side rather than as a count of two: with no clips loaded the
-        // panes are otherwise indistinguishable, so a count passes just as
-        // happily when both panes are wired to the same side.
+        // per side, because with no clips loaded the panes are otherwise
+        // indistinguishable and a bare count of two passes just as happily when
+        // both panes are wired to the same side — mutation-verified.
         XCTAssertTrue(app.buttons["Choose left clip"].exists)
         XCTAssertTrue(app.buttons["Choose right clip"].exists)
+        // Those two are the *spoken* labels, which naming the side makes
+        // side-specific. The visible title is the identifier, and nothing else
+        // observes it — without this, renaming the button on screen is a change
+        // no test can see.
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "Choose Clip").count,
+            2,
+            "the visible title of both choosers must still read Choose Clip"
+        )
 
         // The one control bar at the foot of the screen: transport, anchor,
         // and — because nothing is synced yet — a target selector without Both.
@@ -100,6 +109,22 @@ final class CompareOnIPadUITests: XCTestCase {
         attachScreenshot(named: "comparison-portrait-side-by-side")
 
         let window = app.windows.firstMatch.frame
+        // Rotation is animated, and the window reports its new size before the
+        // controls inside it have finished moving — this loop failed once with
+        // "Back 5 seconds" at y 2343 in an 1210pt-tall window, roughly twice
+        // the height, on a screen that was otherwise laid out correctly. Wait
+        // for one control to land before measuring any of them. This cannot
+        // mask a genuine clipping: the wait is bounded, and the assertions
+        // below still run.
+        let settled = expectation(
+            for: NSPredicate { element, _ in
+                guard let element = element as? XCUIElement else { return false }
+                return window.contains(element.frame)
+            },
+            evaluatedWith: app.buttons["Back 5 seconds"]
+        )
+        _ = XCTWaiter().wait(for: [settled], timeout: 10)
+
         // 834pt is below the bar's measured 880.5pt wrap threshold, so this is
         // also the check that nothing is clipped once it has wrapped to two
         // rows — which is the state an 11-inch portrait iPad is always in.
@@ -116,6 +141,8 @@ final class CompareOnIPadUITests: XCTestCase {
                 "\(label) is clipped in portrait: \(button.frame) outside \(window)"
             )
         }
+
+        assertTheStatusChipClearsEverythingUnderIt(app, window: window)
 
         app.buttons["Overlay"].tap()
         XCTAssertTrue(app.buttons["Difference"].waitForExistence(timeout: 30))
@@ -168,6 +195,57 @@ final class CompareOnIPadUITests: XCTestCase {
         )
     }
 
+    /// The status chip floats over the video, so the only thing keeping it off
+    /// the controls beneath it is its geometry — and geometry is exactly what
+    /// `exists` and `isHittable` say nothing about. The first version of it was
+    /// bottom-trailing and *unbounded*: measured at 834pt it laid out 446pt
+    /// wide against a 415pt pane, overran the divider and covered the left
+    /// pane's caption. It is not hit-testable, so nothing failed — the chip
+    /// simply sat on top of the filename.
+    ///
+    /// Asserted as "stays in the right half" rather than "does not intersect
+    /// the caption", because the captions only exist once clips are loaded and
+    /// a UI test cannot load them. Half the window is the same bound: the panes
+    /// split it evenly.
+    private func assertTheStatusChipClearsEverythingUnderIt(
+        _ app: XCUIApplication,
+        window: CGRect
+    ) {
+        let chip = app.staticTexts
+            .matching(NSPredicate(format: "label BEGINSWITH 'Status: '"))
+            .firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "the status must be on screen to be placed")
+
+        let frame = chip.frame
+        // The clearance below is only durable if the chip's width does not
+        // depend on the sentence in it. No UI test can drive the model to its
+        // longest status — every status writer needs two clips — so this pins
+        // the *cap* instead: 320pt of text plus 2×10pt of padding. Without it
+        // the chip sizes to its content, and the initial 46-character status
+        // happens to clear the divider while an 83-character one would not.
+        XCTAssertEqual(
+            frame.width,
+            340,
+            accuracy: 0.5,
+            "the status chip must be a constant width, not sized to its text: \(frame)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            frame.minX,
+            window.midX,
+            "the status chip reaches into the left pane: \(frame) in \(window)"
+        )
+        XCTAssertTrue(
+            window.contains(frame),
+            "the status chip is clipped: \(frame) outside \(window)"
+        )
+        for label in ["Close comparison", "Choose left clip", "Choose right clip"] {
+            XCTAssertFalse(
+                frame.intersects(app.buttons[label].frame),
+                "the status chip covers \(label): \(frame) over \(app.buttons[label].frame)"
+            )
+        }
+    }
+
     /// `ViewerModel.start(initialDirectory: nil)` opens the folder picker from
     /// `onAppear`, so every launch begins with a `UIDocumentPickerViewController`
     /// on screen. Its content lives in another process and never reaches this
@@ -175,13 +253,25 @@ final class CompareOnIPadUITests: XCTestCase {
     /// gone that region swallows every tap, so a toolbar button can be found,
     /// reported hittable, and tapped with no effect whatsoever. That is exactly
     /// what happened the first time these tests were written.
+    ///
+    /// **The region is not universal, and the difference is measured.** On an
+    /// iPad mini (A17 Pro) the picker presents as a sheet with no
+    /// `PopoverDismissRegion` at all — but, unlike the 11-inch's form sheet,
+    /// its own contents *do* reach this app's tree, Cancel button included.
+    /// Dumped from `app.debugDescription`, not guessed: Cancel, More, Recents,
+    /// Locations, iCloud Drive. Tapping Cancel is the dismissal there.
+    ///
+    /// Do not "simplify" this to just asserting the toolbar is reachable. That
+    /// was tried, and it passed on the mini *while the picker was still up* —
+    /// the toolbar is in the tree underneath it — and the tap on Compare then
+    /// went nowhere. That is precisely the trap this helper exists for.
     private func launchPastTheFolderPicker() -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
 
         let dismissRegion = app.otherElements["PopoverDismissRegion"]
         guard dismissRegion.waitForExistence(timeout: 30) else {
-            XCTFail("expected the launch folder picker; did ViewerModel.start change?")
+            dismissTheFolderPickerByCancelling(app)
             return app
         }
         // Tap near the bottom edge — outside the centred form sheet, inside the
@@ -198,6 +288,28 @@ final class CompareOnIPadUITests: XCTestCase {
             "the folder picker must be dismissed before anything else is tappable"
         )
         return app
+    }
+
+    /// The iPad mini's sheet-style presentation of the same picker. Asserted
+    /// gone afterwards for the same reason the region path is: a picker still
+    /// on screen swallows every subsequent tap.
+    private func dismissTheFolderPickerByCancelling(_ app: XCUIApplication) {
+        let cancel = app.buttons["Cancel"]
+        guard cancel.waitForExistence(timeout: 15) else {
+            XCTFail("expected the launch folder picker; did ViewerModel.start change?")
+            return
+        }
+        cancel.tap()
+
+        let gone = expectation(
+            for: NSPredicate(format: "exists == false"),
+            evaluatedWith: cancel
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [gone], timeout: 30),
+            .completed,
+            "the folder picker must be dismissed before anything else is tappable"
+        )
     }
 
     private func attachScreenshot(named name: String) {

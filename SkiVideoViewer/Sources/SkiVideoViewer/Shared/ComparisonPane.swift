@@ -91,17 +91,27 @@ struct ComparisonPane: View {
     private var emptyChooser: some View {
         Group {
             if model.openLibrary.isEmpty {
-                Button("Choose Clip") { Task { await model.chooseVideo(side: side) } }
-                    .accessibilityLabel(chooseLabel)
+                Button(Self.chooseTitle) { Task { await model.chooseVideo(side: side) } }
             } else {
-                Menu("Choose Clip") { clipSources }
+                Menu(Self.chooseTitle) { clipSources }
                     .menuStyle(.button)
-                    .accessibilityLabel(chooseLabel)
             }
         }
         .buttonStyle(.borderedProminent)
+        .accessibilityLabel(chooseLabel)
+        // The identifier is the *visible* title, and the label is the spoken
+        // one. Overriding the label hides the title from the accessibility
+        // tree entirely, so without this nothing observes it: renaming the
+        // button in the UI is a mutation no test can see. Both derive from one
+        // literal, so they cannot drift.
+        .accessibilityIdentifier(Self.chooseTitle)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    /// What the button says. The two panes read identically until clips are
+    /// loaded, so the spoken label names the side while this stays the spec's
+    /// wording.
+    private static let chooseTitle = "Choose Clip"
 
     private var chooseLabel: String {
         "Choose \(sideName.lowercased()) clip"
