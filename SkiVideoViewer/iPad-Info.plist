@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Partial Info.plist for the SkiVideoViewer-iPad target, merged into the
+	one Xcode generates from the INFOPLIST_KEY_* build settings
+	(GENERATE_INFOPLIST_FILE stays YES).
+
+	UIFileSharingEnabled lives here because there is no
+	INFOPLIST_KEY_UIFileSharingEnabled: Xcode only recognises the
+	INFOPLIST_KEY_* names listed in CoreBuildSystem.xcspec, and that one is
+	not among them, so setting it in project.yml reached the build settings
+	but never reached the built plist. Its sibling
+	INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace IS in the xcspec and so
+	stays in project.yml.
+
+	Together the two keys put the app's Documents folder under "On My iPad"
+	in Files, which is how athletes.txt is meant to get onto the device.
+
+	Keep this file minimal. Anything expressible as a recognised
+	INFOPLIST_KEY_* belongs in project.yml instead; a key repeated here
+	would shadow the generated value.
+	-->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+</dict>
+</plist>

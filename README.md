@@ -13,6 +13,7 @@ Unapologetically vibe coded terminal-driven workflow for reviewing ski videos, t
 - [mpv](https://mpv.io) media player (for video preview)
 - [ffmpeg](https://ffmpeg.org) 4.x or newer (for resizing)
 - Xcode Command Line Tools with Swift (for the native video viewer)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.45.4 (`brew install xcodegen`) — only for the Xcode targets: `SkiVideoViewer/SkiVideoViewer.xcodeproj` is not checked in, so regenerate it with `cd SkiVideoViewer && xcodegen generate` (`scripts/ipad-smoke.sh` does this for you)
 - Google Drive uploads rely on `google-api-python-client`, `google-auth`, and `google-auth-httplib2` (installed automatically when syncing the project dependencies)
 - Optional: `readline`/`libedit` already bundled on macOS; GNU readline on Linux improves tab completion.
 

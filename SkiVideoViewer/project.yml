@@ -1,0 +1,105 @@
+name: SkiVideoViewer
+options:
+  bundleIdPrefix: ch.ski
+  deploymentTarget:
+    macOS: "13.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  SkiVideoCore:
+    path: .
+
+targets:
+  SkiVideoViewer-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/SkiVideoViewer/Shared
+      - path: Sources/SkiVideoViewer/macOS
+    dependencies:
+      - package: SkiVideoCore
+        product: SkiVideoCore
+    settings:
+      base:
+        # Deliberately NOT ch.ski.video-viewer, which belongs to the shipping
+        # hand-assembled AppBundle/ (CFBundleVersion 7, built by build_app.sh).
+        # Building this target runs lsregister over the derived-data bundle, so
+        # sharing the identifier registered a competing, higher-versioned,
+        # icon-less "SkiVideoViewer" that `open -b`, the Dock and Open With
+        # could resolve to instead of the real app. Take the shipping
+        # identifier only when this target becomes the shipping path.
+        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.xcode
+        PRODUCT_NAME: SkiVideoViewer
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "8"
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: false
+
+  SkiVideoViewer-iPad:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      # Shared/ compiles on both platforms with no exclusions — that is the
+      # invariant the directory name promises. ComparisonView lives there and
+      # compiles for iPad, overlay included: OverlayPlayerStack renders it in
+      # SwiftUI on both platforms, so Shared/ references no macOS/ type.
+      # IOSSecondaryScreenPresenter reports canPresentComparison == true, so
+      # the toolbar's Compare button opens it as a full-screen cover.
+      - path: Sources/SkiVideoViewer/Shared
+      - path: Sources/SkiVideoViewer/iOS
+    dependencies:
+      - package: SkiVideoCore
+        product: SkiVideoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad
+        PRODUCT_NAME: SkiVideoViewer
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: true
+        # Partial plist merged into the generated one. It carries
+        # UIFileSharingEnabled, which has no INFOPLIST_KEY_* equivalent —
+        # Xcode only honours the INFOPLIST_KEY_ names in
+        # CoreBuildSystem.xcspec, and that one is absent, so setting it here
+        # reached the build settings but never the built plist.
+        INFOPLIST_FILE: iPad-Info.plist
+        TARGETED_DEVICE_FAMILY: "2"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
+        INFOPLIST_KEY_UILaunchScreen_Generation: true
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: true
+        CODE_SIGNING_REQUIRED: false
+        CODE_SIGNING_ALLOWED: false
+    # Declared here so xcodegen writes a *shared* scheme with the UI tests
+    # attached. Without it xcodebuild autocreates a scheme that builds but
+    # cannot `test`, and `xcodebuild test -scheme SkiVideoViewer-iPad` finds
+    # nothing to run.
+    scheme:
+      testTargets:
+        - SkiVideoViewer-iPadUITests
+
+  # The only check in this repo that drives the iPad UI. simctl has no input
+  # injection, so a tap on the Compare button can only come from XCUITest.
+  SkiVideoViewer-iPadUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/SkiVideoViewerUITests
+    dependencies:
+      - target: SkiVideoViewer-iPad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad.uitests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: true
+        TARGETED_DEVICE_FAMILY: "2"
+        TEST_TARGET_NAME: SkiVideoViewer-iPad
+        CODE_SIGNING_REQUIRED: false
+        CODE_SIGNING_ALLOWED: false

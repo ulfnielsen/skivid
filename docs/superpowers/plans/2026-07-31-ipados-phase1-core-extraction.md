@@ -29,8 +29,39 @@ XCTest. macOS 13+.
   file to `SkiVideoCore` without adding access modifiers will not compile.
 - No behaviour changes. This phase is a pure refactor; any user-visible
   difference is a bug, except the one incidental fix in Task 3.
-- `xcodebuild` requires `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
-  Phase 1 does not need it — `swift build` and `swift test` suffice.
+- **Every shell that runs `swift build` or `swift test` must first run
+  `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.** The
+  machine's active developer directory is the Command Line Tools, which ship no
+  XCTest — without the export, `swift test` fails with
+  `error: no such module 'XCTest'` before running a single test. Verified
+  against this repo. The command blocks below include the export; keep it when
+  adapting them.
+- Baseline before any work: 10 tests, 0 failures. Any lower count is a
+  regression, not a starting point.
+- **Verification is automated, never manual.** No task is complete on "launch
+  the app and check by hand". Every seam implementation gets tests in the
+  `SkiVideoViewerTests` target, which `@testable import`s the app target.
+  Synthesized `NSEvent`s drive the AppKit input source headlessly — verified
+  working in this repo, no `NSApplication` required:
+
+  ```swift
+  NSEvent.keyEvent(
+      with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+      windowNumber: 0, context: nil, characters: "",
+      charactersIgnoringModifiers: "", isARepeat: false, keyCode: 49
+  )!
+  ```
+
+- **What automated tests here cannot reach**, stated so nobody mistakes a green
+  suite for full coverage: that `NSEvent.addLocalMonitorForEvents` is installed
+  and routes real events (a local monitor cannot be driven by synthetic events);
+  that SwiftUI buttons are bound to the right model methods; and the Google
+  Drive sign-in flow. Those need XCUITest, which requires the Xcode project
+  built in phase 3. Do not attempt to fake them — leave them to phase 3 and
+  note them in the task report.
+- **Google Drive verification is out of scope for this phase** (user decision).
+  Task 5 verifies the refactor compiles and `GoogleDriveSupport` is AppKit-free.
+  No sign-in is performed.
 
 ## Deviation from the spec, deliberate
 
@@ -140,6 +171,7 @@ final class CorePurityTests: XCTestCase {
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -175,10 +207,21 @@ let package = Package(
             name: "SkiVideoCoreTests",
             dependencies: ["SkiVideoCore"]
         ),
+        // Tests the app target itself, including the AppKit seam
+        // implementations. A test target can @testable import an executable
+        // target from swift-tools 5.5 onward.
+        .testTarget(
+            name: "SkiVideoViewerTests",
+            dependencies: ["SkiVideoViewer", "SkiVideoCore"]
+        ),
     ],
     swiftLanguageModes: [.v5]
 )
 ```
+
+Both test targets are required. `Tests/SkiVideoViewerTests/` still holds
+`ComparisonModelTests.swift` until Task 7 — dropping the target here would
+silently delete four passing tests.
 
 - [ ] **Step 4: Move the two pure files and make them public**
 
@@ -252,6 +295,7 @@ and change its `@testable import SkiVideoViewer` to `@testable import SkiVideoCo
 - [ ] **Step 6: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -261,6 +305,7 @@ existing `VideoLibraryTests`.
 - [ ] **Step 7: Verify the app still builds**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && ./build_app.sh
 ```
 
@@ -394,6 +439,7 @@ Add `@testable import SkiVideoCore` to the top of `CorePurityTests.swift`.
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -488,6 +534,7 @@ public protocol MediaPipeline: Sendable {
 - [ ] **Step 4: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -868,19 +915,160 @@ In `Sources/SkiVideoViewer/ContentView.swift`, change the model's construction.
     @StateObject private var model = ViewerModel(input: AppKitInputSource())
 ```
 
-- [ ] **Step 5: Build and smoke-test**
+- [ ] **Step 5: Write automated tests for the key mapping**
 
-```bash
-cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
+`AppKitInputSource.handle(_:)` must be `internal`, not `private`, so tests can
+drive it directly. A local event monitor cannot be fed synthetic events, so
+testing the mapping function is the automatable half; that the monitor is
+installed is left to phase 3's XCUITest.
+
+Create `Tests/SkiVideoViewerTests/AppKitInputSourceTests.swift`:
+
+```swift
+import AppKit
+import SkiVideoCore
+import XCTest
+@testable import SkiVideoViewer
+
+@MainActor
+final class AppKitInputSourceTests: XCTestCase {
+    private func key(
+        _ code: UInt16,
+        type: NSEvent.EventType = .keyDown,
+        modifiers: NSEvent.ModifierFlags = [],
+        isARepeat: Bool = false
+    ) -> NSEvent {
+        NSEvent.keyEvent(
+            with: type,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: isARepeat,
+            keyCode: code
+        )!
+    }
+
+    private func capture(
+        _ events: [NSEvent],
+        configure: (AppKitInputSource) -> Void = { _ in }
+    ) -> [PlaybackIntent] {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+        configure(source)
+        for event in events { _ = source.handle(event) }
+        return captured
+    }
+
+    func testSpaceEmitsTogglePlayback() {
+        let intents = capture([key(49)])
+        XCTAssertEqual(intents.count, 1)
+        guard case .togglePlayback = intents[0] else {
+            return XCTFail("expected togglePlayback, got \(intents[0])")
+        }
+    }
+
+    func testArrowsEmitClipSteps() {
+        let intents = capture([key(126), key(125)])
+        guard case let .clip(up) = intents[0], case let .clip(down) = intents[1] else {
+            return XCTFail("expected two clip intents, got \(intents)")
+        }
+        XCTAssertEqual(up, .previous)
+        XCTAssertEqual(down, .next)
+    }
+
+    func testPageKeysEmitAthleteSteps() {
+        let intents = capture([key(116), key(121)])
+        guard case let .athlete(up) = intents[0], case let .athlete(down) = intents[1] else {
+            return XCTFail("expected two athlete intents, got \(intents)")
+        }
+        XCTAssertEqual(up, .previous)
+        XCTAssertEqual(down, .next)
+    }
+
+    func testArrowDownThenUpEmitsScrubPairWithTap() {
+        let intents = capture([key(124), key(124, type: .keyUp)])
+        XCTAssertEqual(intents.count, 2)
+        guard case let .scrubBegan(began) = intents[0],
+              case let .scrubEnded(ended, performTap) = intents[1]
+        else {
+            return XCTFail("expected a scrub pair, got \(intents)")
+        }
+        XCTAssertEqual(began, .forward)
+        XCTAssertEqual(ended, .forward)
+        XCTAssertTrue(performTap, "a released key is a tap")
+    }
+
+    func testKeyUpWithoutMatchingKeyDownEmitsNothing() {
+        XCTAssertTrue(capture([key(123, type: .keyUp)]).isEmpty)
+    }
+
+    func testModifiedKeysAreIgnored() {
+        // Cmd-O and Cmd-F belong to the menu, not to playback.
+        XCTAssertTrue(capture([key(49, modifiers: .command)]).isEmpty)
+        XCTAssertTrue(capture([key(125, modifiers: .option)]).isEmpty)
+        XCTAssertTrue(capture([key(124, modifiers: .control)]).isEmpty)
+    }
+
+    func testAutorepeatDoesNotRetrigger() {
+        XCTAssertTrue(capture([key(49, isARepeat: true)]).isEmpty)
+        XCTAssertTrue(capture([key(125, isARepeat: true)]).isEmpty)
+    }
+
+    func testDisabledSourceEmitsNothing() {
+        let intents = capture([key(49), key(125)]) { $0.setEnabled(false) }
+        XCTAssertTrue(intents.isEmpty)
+    }
+
+    func testDisablingMidHoldCancelsWithoutTap() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        _ = source.handle(key(123))     // press and hold Left
+        source.setEnabled(false)        // e.g. a modal sheet opens
+
+        XCTAssertEqual(captured.count, 2)
+        guard case let .scrubEnded(direction, performTap) = captured[1] else {
+            return XCTFail("expected a cancelling scrubEnded, got \(captured)")
+        }
+        XCTAssertEqual(direction, .backward)
+        XCTAssertFalse(performTap, "a cancelled hold must not seek")
+    }
+
+    func testUnhandledKeyIsNotConsumed() {
+        let source = AppKitInputSource()
+        XCTAssertFalse(source.handle(key(0)), "'a' must pass through to the app")
+        XCTAssertTrue(source.handle(key(49)), "space must be consumed")
+    }
+}
 ```
 
-Expected: the app opens. Verify by hand: Space toggles playback, Up/Down change
-clip, Page Up/Down change athlete, a Left/Right tap seeks 1 second, a quick
-double-tap seeks 5 seconds, holding Left or Right enters slow scrub and releasing
-restores the prior state, and typing in the athlete search box does not trigger
-playback controls.
+- [ ] **Step 6: Run the tests**
 
-- [ ] **Step 6: Commit**
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift test
+```
+
+Expected: PASS, including all eleven `AppKitInputSourceTests`. Report the total
+count; it must not drop below the 10-test baseline plus the tests added so far.
+
+- [ ] **Step 7: Confirm the app still builds**
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift build && ./build_app.sh
+```
+
+Expected: prints the bundle path with no errors. Do not attempt to launch or
+interact with the GUI — that is phase 3's XCUITest work.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add -A
@@ -1044,14 +1232,35 @@ grep -rn "chooseDirectory\|chooseClientSecretsFile" Sources/SkiVideoViewer/
 
 Each becomes `Task { await model.chooseDirectory() }`.
 
-- [ ] **Step 5: Build and smoke-test**
+- [ ] **Step 5: Verify no NSOpenPanel remains in the model**
 
 ```bash
-cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh
+cd SkiVideoViewer && grep -n "NSOpenPanel" Sources/SkiVideoViewer/ViewerModel.swift
 ```
 
-Expected: the open panel appears on launch, Cmd-O reopens it, and the Google
-Drive sheet's client-secret chooser still works.
+Expected: no output. The only `NSOpenPanel` references left in the package must
+be inside `Sources/SkiVideoViewer/Platform/`:
+
+```bash
+cd SkiVideoViewer && grep -rln "NSOpenPanel" Sources/
+```
+
+Expected: exactly `Sources/SkiVideoViewer/Platform/AppKitFolderPicker.swift`.
+
+`AppKitFolderPicker` itself cannot be unit-tested — `NSOpenPanel.runModal()`
+blocks on user interaction. Its behaviour is covered by the `FakeFolderPicker`
+tests of the calling code, and by phase 3's XCUITest. Do not write a test that
+calls `runModal()`; it will hang the suite.
+
+- [ ] **Step 6: Run the tests and build**
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift test && swift build && ./build_app.sh
+```
+
+Expected: all tests pass, including the two new picker tests, and the bundle
+builds.
 
 - [ ] **Step 6: Commit**
 
@@ -1200,22 +1409,28 @@ cd SkiVideoViewer && grep -n "AppKit\|NSWorkspace\|import Network" Sources/SkiVi
 
 Expected: no output.
 
-- [ ] **Step 5: Build and test the Drive flow**
+- [ ] **Step 5: Build and confirm the seam is complete**
+
+Per the Global Constraints, **no Google sign-in is performed in this phase.**
+Do not delete Keychain items and do not open a browser. Verification here is
+structural.
 
 ```bash
-cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift test && swift build && ./build_app.sh
 ```
 
-Expected: "Open Google Drive…" still completes a sign-in and lists athletes.
-Because a cached refresh token skips the browser entirely, delete the Keychain
-item first to exercise the full path:
+Expected: all tests still pass and the bundle builds.
 
 ```bash
-security delete-generic-password -s "SkiVideoViewer.GoogleDrive" 2>/dev/null || true
+cd SkiVideoViewer && grep -rln "NWListener\|import Network\|NSWorkspace" Sources/
 ```
 
-Confirm the service name against `KeychainTokenStore` in
-`GoogleDriveSupport.swift` before running this; adjust `-s` if it differs.
+Expected: exactly `Sources/SkiVideoViewer/Platform/AppKitOAuthPresenter.swift`.
+If `GoogleDriveSupport.swift` appears, the loopback server was not fully moved.
+
+Record in the task report that the Drive flow was **not** exercised end-to-end,
+so the final review and phase 6 both know it is unverified.
 
 - [ ] **Step 6: Commit**
 
@@ -1251,6 +1466,7 @@ git mv Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift.pending \
 - [ ] **Step 2: Run the build to enumerate what must become public**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift build 2>&1 | grep -c "error:"
 ```
 
@@ -1282,19 +1498,27 @@ Repeat `swift build` until the error count is zero.
 - [ ] **Step 4: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
 Expected: PASS, including all of `ViewerModelIntentTests` and the purity test —
 `ViewerModel.swift` no longer imports AppKit.
 
-- [ ] **Step 5: Verify the app**
+- [ ] **Step 5: Verify the app builds and the core is clean**
 
 ```bash
-cd SkiVideoViewer && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && ./build_app.sh
 ```
 
-Expected: identical behaviour to before the refactor.
+Expected: prints the bundle path.
+
+```bash
+cd SkiVideoViewer && grep -rn "AppKit\|UIKit\|SwiftUI\|Process(" Sources/SkiVideoCore/
+```
+
+Expected: no output. `ViewerModel` and `GoogleDriveSupport` are now portable.
 
 - [ ] **Step 6: Commit**
 
@@ -1423,21 +1647,75 @@ input source simply has no keyboard control, which is correct for a unit test.
 - [ ] **Step 5: Run the tests**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
 Expected: PASS, including the four existing `ComparisonModelTests` and the
 purity test.
 
-- [ ] **Step 6: Verify the comparison window**
+- [ ] **Step 6: Add automated coverage for the comparison intent handling**
 
-```bash
-cd SkiVideoViewer && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
+The comparison window's key bindings moved from an `NSEvent` monitor into
+`handle(_:)`. Cover that mapping in
+`Tests/SkiVideoCoreTests/ComparisonModelTests.swift`, using the existing
+no-argument initializer plus a fake input source:
+
+```swift
+    func testSpaceIntentTogglesSyncedPlayback() {
+        let input = FakeInputSource()
+        let model = ComparisonModel(input: input)
+        defer { model.close() }
+
+        XCTAssertEqual(model.leftPlayer.rate, 0)
+        XCTAssertEqual(model.rightPlayer.rate, 0)
+
+        input.emit(.togglePlayback)
+
+        // With no items loaded the players cannot start, but the model must
+        // have attempted a synced play rather than a pause.
+        XCTAssertFalse(model.isSynced, "no videos loaded, so sync cannot engage")
+    }
+
+    func testScrubIntentsAreAcceptedWithoutVideos() {
+        let input = FakeInputSource()
+        let model = ComparisonModel(input: input)
+        defer { model.close() }
+
+        // Must not trap or crash when no items are loaded.
+        input.emit(.scrubBegan(.backward))
+        input.emit(.scrubBegan(.forward))
+
+        XCTAssertEqual(model.leftTime, 0, accuracy: 0.0001)
+        XCTAssertEqual(model.rightTime, 0, accuracy: 0.0001)
+    }
+
+    func testScrubEndedIsIgnored() {
+        let input = FakeInputSource()
+        let model = ComparisonModel(input: input)
+        defer { model.close() }
+
+        // The comparison window never had hold-to-scrub; releases are no-ops.
+        input.emit(.scrubEnded(.forward, performTap: true))
+
+        XCTAssertEqual(model.leftTime, 0, accuracy: 0.0001)
+    }
 ```
 
-Expected: "Compare Videos…" opens the window; both side-by-side and overlay
-layouts work; the opacity slider and the Blend/Difference picker behave as
-before; Space and Left/Right control synced playback.
+Then confirm no AppKit remains in the moved file:
+
+```bash
+cd SkiVideoViewer && grep -n "NSOpenPanel\|NSEvent\|AppKit" Sources/SkiVideoCore/ComparisonModel.swift
+```
+
+Expected: no output.
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift test && ./build_app.sh
+```
+
+Expected: all tests pass and the bundle builds.
 
 - [ ] **Step 7: Commit**
 
@@ -1602,17 +1880,149 @@ private final class ResultBox: @unchecked Sendable {
 `SortingModel`. Pass `FFmpegMediaPipeline()` through both, alongside the
 `AppKitInputSource()` and `AppKitFolderPicker()` that Task 9 will need.
 
-- [ ] **Step 4: Build and run a real sort**
+- [ ] **Step 4: Test the pipeline against real ffmpeg**
 
-```bash
-cd SkiVideoViewer && swift build && ./build_app.sh && ./run.sh
+`FFmpegMediaPipeline` is the only thing here that can be tested end-to-end
+without a GUI, so test it properly. Create
+`Tests/SkiVideoViewerTests/FFmpegMediaPipelineTests.swift`. The fixture is
+generated by ffmpeg itself, so nothing binary enters git:
+
+```swift
+import AVFoundation
+import XCTest
+@testable import SkiVideoViewer
+
+final class FFmpegMediaPipelineTests: XCTestCase {
+    private var workingDirectory: URL!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        workingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: workingDirectory,
+            withIntermediateDirectories: true
+        )
+    }
+
+    override func tearDown() async throws {
+        if let workingDirectory {
+            try? FileManager.default.removeItem(at: workingDirectory)
+        }
+        try await super.tearDown()
+    }
+
+    /// A one-second 640x360 test pattern. Small enough to keep the suite fast.
+    private func makeFixture(named name: String) throws -> URL {
+        let url = workingDirectory.appendingPathComponent(name)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=1:size=640x360:rate=15",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            url.path,
+        ]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, "fixture generation failed")
+        return url
+    }
+
+    func testResizeProducesAnOutputWithinBounds() async throws {
+        let source = try makeFixture(named: "source.mp4")
+        let destination = workingDirectory
+            .appendingPathComponent("out", isDirectory: true)
+            .appendingPathComponent("resized.mp4")
+
+        try await FFmpegMediaPipeline().resize(
+            source: source,
+            destination: destination,
+            athlete: "Idun"
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+
+        let track = try await AVURLAsset(url: destination)
+            .loadTracks(withMediaType: .video).first
+        let size = try await track?.load(.naturalSize)
+        let resolved = try XCTUnwrap(size)
+        XCTAssertLessThanOrEqual(resolved.width, 1920)
+        XCTAssertLessThanOrEqual(resolved.height, 1080)
+    }
+
+    func testResizeCreatesIntermediateDirectories() async throws {
+        let source = try makeFixture(named: "source.mp4")
+        let destination = workingDirectory
+            .appendingPathComponent("a/b/c", isDirectory: true)
+            .appendingPathComponent("resized.mp4")
+
+        try await FFmpegMediaPipeline().resize(
+            source: source,
+            destination: destination,
+            athlete: "Idun"
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testWriteMetadataReplacesTheFileInPlace() async throws {
+        let source = try makeFixture(named: "source.mp4")
+        let originalSize = try FileManager.default
+            .attributesOfItem(atPath: source.path)[.size] as? Int
+
+        try await FFmpegMediaPipeline().writeMetadata(athlete: "Idun", to: source)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertNotNil(originalSize)
+
+        // The tagged copy must still be a playable video with its video track.
+        let tracks = try await AVURLAsset(url: source)
+            .loadTracks(withMediaType: .video)
+        XCTAssertEqual(tracks.count, 1)
+
+        // No temp files may survive.
+        let leftovers = try FileManager.default
+            .contentsOfDirectory(atPath: workingDirectory.path)
+            .filter { $0.hasPrefix(".metadata-") }
+        XCTAssertTrue(leftovers.isEmpty, "temp files leaked: \(leftovers)")
+    }
+
+    func testFailureSurfacesFFmpegStderr() async throws {
+        let missing = workingDirectory.appendingPathComponent("nope.mp4")
+        let destination = workingDirectory.appendingPathComponent("out.mp4")
+
+        do {
+            try await FFmpegMediaPipeline().resize(
+                source: missing,
+                destination: destination,
+                athlete: "Idun"
+            )
+            XCTFail("expected a failure for a missing source")
+        } catch {
+            XCTAssertFalse(
+                error.localizedDescription.isEmpty,
+                "the ffmpeg error message must reach the caller"
+            )
+        }
+    }
+}
 ```
 
-Open "Sort & Resize…", point it at a copy of a folder with two or three raw
-clips, tag them, and confirm `organized/` and `organized_resize/` are produced
-with the same contents as before. Use a copy — this moves files.
+This requires ffmpeg on PATH, which the app already requires. Verified present
+at `/opt/homebrew/bin/ffmpeg` (version 8.1.1).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run the tests**
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift test && ./build_app.sh
+```
+
+Expected: PASS, including the four `FFmpegMediaPipelineTests`. These invoke real
+ffmpeg, so the suite gets slower — that is expected.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -1728,6 +2138,7 @@ Add `public` to each type and member the errors name.
 - [ ] **Step 5: Run the full suite**
 
 ```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && swift test
 ```
 
@@ -1742,18 +2153,141 @@ cd SkiVideoViewer && ls Sources/SkiVideoCore/ && grep -rn "AppKit\|UIKit\|SwiftU
 
 Expected: the file listing, then no grep output.
 
-- [ ] **Step 7: Full manual regression**
+- [ ] **Step 7: Automated end-to-end sort regression**
 
-```bash
-cd SkiVideoViewer && ./build_app.sh && ./run.sh ~/Ski/Neuss2026
+The sorting flow is file-system work behind a GUI, and the file-system half is
+fully testable. Create `Tests/SkiVideoViewerTests/SortingFlowTests.swift`,
+driving the real `SortingModel` with the real `FFmpegMediaPipeline` over a
+generated fixture library:
+
+```swift
+import SkiVideoCore
+import XCTest
+@testable import SkiVideoViewer
+
+@MainActor
+final class SortingFlowTests: XCTestCase {
+    private var root: URL!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        for name in ["C0001.mp4", "C0002.mp4"] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=1:size=320x180:rate=10",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                root.appendingPathComponent(name).path,
+            ]
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+        }
+    }
+
+    override func tearDown() async throws {
+        if let root { try? FileManager.default.removeItem(at: root) }
+        try await super.tearDown()
+    }
+
+    func testTaggingMovesClipsAndQueuesResizes() async throws {
+        let names = root.appendingPathComponent("athletes.txt")
+        try "Idun\nNora\n".write(to: names, atomically: true, encoding: .utf8)
+
+        let pipeline = FakeMediaPipeline()
+        let model = SortingModel(
+            input: FakeInputSource(),
+            folderPicker: FakeFolderPicker(),
+            mediaPipeline: pipeline,
+            defaultNamesURL: names
+        )
+        model.sourcePath = root.path
+        model.eventTitle = "Test"
+        model.beginSorting()
+
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.rawVideos.count, 2)
+
+        model.athleteQuery = "Idun"
+        model.tagCurrentVideo()
+
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.rawVideos.count, 1, "the tagged clip leaves the queue")
+
+        // The clip moved out of the flat source folder into organized/.
+        let organized = root.appendingPathComponent("organized", isDirectory: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: organized.path))
+
+        let moved = FileManager.default
+            .enumerator(at: organized, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension.lowercased() == "mp4" } ?? []
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertTrue(
+            moved[0].path.contains("/Idun/"),
+            "expected an Idun folder, got \(moved[0].path)"
+        )
+    }
+
+    func testUnmatchedAthleteDoesNotMoveAnything() async throws {
+        let names = root.appendingPathComponent("athletes.txt")
+        try "Idun\nIngrid\n".write(to: names, atomically: true, encoding: .utf8)
+
+        let model = SortingModel(
+            input: FakeInputSource(),
+            folderPicker: FakeFolderPicker(),
+            mediaPipeline: FakeMediaPipeline(),
+            defaultNamesURL: names
+        )
+        model.sourcePath = root.path
+        model.beginSorting()
+
+        // "In" matches both Idun and Ingrid, so tagging must refuse to guess.
+        model.athleteQuery = "In"
+        model.tagCurrentVideo()
+
+        XCTAssertEqual(model.rawVideos.count, 2, "nothing may move on an ambiguous tag")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("organized").path
+            )
+        )
+    }
+}
 ```
 
-Walk the whole app: open a folder, switch athletes and clips by keyboard and by
-mouse, tap and hold the arrows, open the comparison window in both layouts, run
-a sort-and-resize over a copied folder, and connect to Google Drive. Behaviour
-must be indistinguishable from the pre-refactor app.
+`FakeMediaPipeline` and `FakeInputSource` live in `Tests/SkiVideoCoreTests/`.
+Make them reachable from this target by moving `FakeSeams.swift` into a small
+`SkiVideoTestSupport` target that both test targets depend on, or by adding the
+file to both targets' sources. Prefer the shared target — duplication drifts.
 
-- [ ] **Step 8: Commit**
+Verify the second test's premise before relying on it: confirm that
+`SortingLibrary.matches(for:names:)` returns two results for `"In"` against
+`["Idun", "Ingrid"]`. If the matcher's semantics differ, adjust the query so the
+test genuinely exercises the ambiguous case rather than passing by accident.
+
+- [ ] **Step 8: Run the full suite**
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+cd SkiVideoViewer && swift test && ./build_app.sh
+```
+
+Expected: every test passes and the bundle builds. Report the total test count.
+
+**Not verified by this phase**, to be recorded in the report: that SwiftUI
+buttons are bound to the right model methods, that the `NSEvent` local monitor
+is installed at runtime, and the Google Drive sign-in flow. All three need
+phase 3's Xcode project and XCUITest.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add -A
@@ -1769,10 +2303,14 @@ git commit -m "Move SortingModel into SkiVideoCore, completing phase 1"
   imports no UI framework and no `Process`.
 - `Sources/SkiVideoViewer/Platform/` holds the four AppKit seam
   implementations.
-- `swift test` passes, including the purity test, the ported
-  `VideoLibraryTests` and `ComparisonModelTests`, and the new
-  `ViewerModelIntentTests`.
-- `./build_app.sh` produces a working app with no behaviour change.
+- `swift test` passes with `DEVELOPER_DIR` set, covering: the purity test, the
+  ported `VideoLibraryTests` and `ComparisonModelTests`, `ViewerModelIntentTests`,
+  `AppKitInputSourceTests`, `FFmpegMediaPipelineTests`, and `SortingFlowTests`.
+  Test count is strictly greater than the 10-test baseline.
+- `./build_app.sh` produces a working app.
+- Three things remain unverified and must be stated as such when the phase is
+  reported: SwiftUI button bindings, runtime installation of the `NSEvent`
+  local monitor, and the Google Drive sign-in. All are phase 3 XCUITest work.
 
 ## Next phases
 
