@@ -25,9 +25,10 @@ final class CompareOnIPadUITests: XCTestCase {
 
     /// Tap Compare, and assert the comparison screen is on screen. The three
     /// things asserted are the three the screen is made of: the
-    /// side-by-side/overlay picker, two panes, and the synchronised controls.
-    /// A screenshot is attached because element existence says nothing about
-    /// layout, and this screen was designed for a 1000pt macOS window.
+    /// side-by-side/overlay picker, two panes, and the one control bar that
+    /// replaced the three transports. A screenshot is attached because element
+    /// existence says nothing about layout, and this screen was designed for a
+    /// 1000pt macOS window.
     func testTappingCompareOpensTheComparisonScreen() {
         let app = launchPastTheFolderPicker()
 
@@ -46,17 +47,32 @@ final class CompareOnIPadUITests: XCTestCase {
         )
         XCTAssertTrue(app.buttons["Overlay"].exists)
 
-        // Two panes. Each carries its own Choose File… button.
-        XCTAssertEqual(
-            app.buttons.matching(identifier: "Choose File…").count,
-            2,
-            "the comparison screen must show a left and a right pane"
-        )
+        // Two panes. Neither has a clip yet, so each shows its own centred
+        // Choose Clip control where the deleted header row used to be. Asserted
+        // per side rather than as a count of two: with no clips loaded the
+        // panes are otherwise indistinguishable, so a count passes just as
+        // happily when both panes are wired to the same side.
+        XCTAssertTrue(app.buttons["Choose left clip"].exists)
+        XCTAssertTrue(app.buttons["Choose right clip"].exists)
 
-        // The synchronised controls at the foot of the screen.
-        XCTAssertTrue(app.buttons["Play Together"].exists)
-        XCTAssertTrue(app.buttons["Set Sync Points"].exists)
-        XCTAssertTrue(app.buttons["Close"].exists)
+        // The one control bar at the foot of the screen: transport, anchor,
+        // and — because nothing is synced yet — a target selector without Both.
+        XCTAssertTrue(app.buttons["Play or pause"].exists)
+        XCTAssertTrue(app.buttons["Set sync points"].exists)
+        XCTAssertTrue(app.buttons["Close comparison"].exists)
+
+        // `model.status` is the only feedback a nudge produces, and the rows
+        // that used to display it are gone — it now floats over the video.
+        // Matched by prefix rather than by the exact sentence so this pins
+        // *that the status is displayed at all*, which is the thing that can
+        // silently disappear, without pinning the model's wording.
+        XCTAssertTrue(
+            app.staticTexts
+                .matching(NSPredicate(format: "label BEGINSWITH 'Status: '"))
+                .firstMatch
+                .waitForExistence(timeout: 5),
+            "the status text must survive the deletion of the rows it lived in"
+        )
 
         attachScreenshot(named: "comparison-side-by-side")
 
@@ -84,9 +100,13 @@ final class CompareOnIPadUITests: XCTestCase {
         attachScreenshot(named: "comparison-portrait-side-by-side")
 
         let window = app.windows.firstMatch.frame
+        // 834pt is below the bar's measured 880.5pt wrap threshold, so this is
+        // also the check that nothing is clipped once it has wrapped to two
+        // rows — which is the state an 11-inch portrait iPad is always in.
         for label in [
-            "Side-by-side", "Overlay", "Close", "Set Sync Points",
-            "Play Together", "Both −5s", "Both +5s", "Pause / Stop",
+            "Side-by-side", "Overlay", "Left", "Right", "Close comparison",
+            "Set sync points", "Play or pause", "Back 5 seconds",
+            "Forward 5 seconds", "Play at quarter speed",
         ] {
             let button = app.buttons[label]
             XCTAssertTrue(button.exists, "\(label) must be on the portrait screen")
@@ -138,7 +158,7 @@ final class CompareOnIPadUITests: XCTestCase {
         XCTAssertTrue(compare.waitForExistence(timeout: 30))
         compare.tap()
 
-        let close = app.buttons["Close"]
+        let close = app.buttons["Close comparison"]
         XCTAssertTrue(close.waitForExistence(timeout: 30))
         close.tap()
 
