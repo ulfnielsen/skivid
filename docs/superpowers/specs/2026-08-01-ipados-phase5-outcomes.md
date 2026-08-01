@@ -225,3 +225,32 @@ the view re-applies the model's rule as defence in depth, that the model
 remains where the rule lives, and that the forced 1.0 must therefore be
 computed, never latched. The test body was left unchanged — it was already
 correct.
+
+
+## Spike resolved for phase 4 (measured 2026-08-01)
+
+The design doc flagged backward slow-scrub as **risk #1**, to be spiked early
+because a bad result would reshape the phase 4 input design. It reasoned that
+`canPlayReverse` is "usually false" for camera H.264, so iPad would fall back to
+`ViewerModel`'s 12.5-seeks-per-second timer and stutter on external storage.
+
+**That reasoning was wrong for this footage.** Measured against real
+`~/Ski/Neuss2026` clips with a retained `AVPlayer`, waiting for
+`.readyToPlay`:
+
+```
+C0087.MP4: READY  canPlayReverse=true  canPlaySlowReverse=true  canPlayFastReverse=true
+C0098.MP4: READY  canPlayReverse=true  canPlaySlowReverse=true  canPlayFastReverse=true
+```
+
+So `ViewerModel.resumeHeldPlayback` takes the smooth
+`playImmediately(atRate: -0.35)` branch, and the timer fallback is dead code for
+this library. Phase 4's hold-to-scrub can rely on smooth reverse.
+
+Two caveats:
+- **Measured on macOS**, not on iOS. Same VideoToolbox H.264 decoder underneath,
+  but phase 4 should confirm on the simulator before depending on it.
+- A first attempt returned `status=0` (`.unknown`) with `canPlayReverse=false`,
+  because the probe let the `AVPlayer` deallocate so the item never loaded. That
+  is a **false negative that looks exactly like a real answer** — any future
+  probe of this property must retain the player and wait for `.readyToPlay`.
