@@ -62,6 +62,51 @@ correction affordance. Nothing is rebuilt — the selector simply stops being
 touched. Designing per-side control as a *mode of one transport* rather than as
 its own UI is what makes that demotion free.
 
+### Per-side control while synced: the nudge
+
+While synced, targeting `Left` or `Right` does not hand that clip a plain,
+independent seek — that would let a −5s tap silently drift the pair out of
+alignment while the status bar still claimed "Synchronized". Instead, the four
+seek actions (`back5`, `back1`, `forward1`, `forward5`) become a **nudge**: the
+targeted clip moves, and *its own sync point moves with it by the same amount*,
+so the pair stays locked, at the corrected offset. The other clip does not
+move. `playPause` and `slow` stay paired regardless of target — playing or
+slowing one side alone would desync exactly what the user just aligned — so
+they always resolve to the synced pair while `isSynced` is true, the same as
+`Both` would.
+
+This is what makes the correction affordance real rather than aspirational:
+`scrub` derives its offset from the two sync points, so a nudge's correction
+propagates to every subsequent synced scrub for free, and
+`returnToSyncPoints()` returns to the corrected alignment rather than the one
+being corrected away from.
+
+**The subtlety a reimplementation is likely to get wrong.** The sync point
+shifts by the distance *actually travelled*, not the distance requested. A
+locked pair satisfies `L_cur − L_sync == R_cur − R_sync`. If a nudge clamps —
+at 0, or at the clip's end — and the sync point is shifted by the requested
+amount instead of the travelled one, that invariant breaks by exactly
+`requested − travelled`: the live playhead and the sync-point-derived offset
+disagree, and the next synced scrub jumps by the difference. Verified by
+mutation — shifting by the requested seconds instead of the extracted
+travelled distance is caught by a dedicated test.
+
+**A known bug the nudge introduces.** Before `nudge`, sync points only ever
+came from `currentTime()`, which is always inside the clip's bounds. `nudge`
+is unbounded in the direction that matters here — a nudge near a clip boundary
+can push a sync point *outside* the clip. Measured: sync points at 0, the pair
+moved to 30, then `back5` on `Left` gives `leftSyncPoint == -5.0`.
+`returnToSyncPoints()` seeks with raw `AVPlayer.seek`, bypassing the model's
+own clamping helper, so on real (non-empty) media that seek would clamp to 0
+and land the pair five seconds out of alignment — the exact failure `nudge`
+exists to prevent. **The misaligned return has not itself been observed**,
+only reasoned to: the test fixtures are zero-byte files that accept a negative
+seek verbatim, so what is measured is the negative sync point, not the clamped
+return landing wrong. Say that plainly rather than implying it was seen. The
+fix belongs with whoever owns `returnToSyncPoints`: either clamp the sync
+point on write inside `nudge` and refuse the excess travel, or route the
+return seek through the same clamping helper `seek(_:to:)` already uses.
+
 ### Icons, not text
 
 "Play / Pause", "Slow Together 0.25×" and "Back to Sync Points" as text buttons
@@ -127,6 +172,8 @@ button's meaning.
 | Target offers | `Left`, `Right` | `Both`, `Left`, `Right` |
 | Target defaults to | `Left`, then the last-touched side | `Both` |
 | Scrubber shows | the targeted clip | the common timeline |
+| Left/Right seek actions | plain per-side seek | **nudge** — the clip moves and its own sync point moves with it; the other clip is untouched |
+| Left/Right play/slow | plays/slows that clip alone | stays paired — resolves to the synced pair regardless of target |
 | ⚓ does | Set sync points | Return to sync points |
 | ⚓ secondary action | — | Clear sync |
 
@@ -174,24 +221,71 @@ UIKit — `SinglePlayerView` remains the only file there that does.
 
 ## Model change
 
-One addition:
-
 ```swift
 public enum ComparisonTarget: String, CaseIterable, Identifiable, Sendable {
     case both, left, right
     public var id: String { rawValue }
 }
 
-@Published public var target: ComparisonTarget = .both
+public enum TransportAction: String, CaseIterable, Identifiable, Sendable {
+    case back5, back1, playPause, forward1, forward5, slow
+    public var id: String { rawValue }
+}
+
+@Published public var target: ComparisonTarget = .left {
+    didSet {
+        if !availableTargets.contains(target) { target = lastTouchedTarget }
+    }
+}
+
+public func applyTransport(_ action: TransportAction)
 ```
 
-Everything else already exists. The control bar routes to `seek(_:by:)`,
-`toggleIndividual(_:)`, `seekSynced(by:)`, `playSynced(rate:)` and `pauseBoth()`
-by target. No existing model method changes signature or behaviour.
+`applyTransport` is the single entry point the control bar drives, and the
+keyboard shortcuts route through it too so a key and its on-screen button
+cannot disagree. It switches on `target`: for `.both` it calls `seekSynced`,
+`playSynced`/`pauseBoth`; for `.left`/`.right` the four seek actions go
+through the new `nudge(_:by:)` rather than plain `seek(_:by:)` — see "Per-side
+control while synced" above — and `playPause`/`slow` go to
+`toggleIndividual`/`playIndividual`, which already delegated to the synced
+pair when `isSynced`, so `applyTransport` does not have to test for pairing
+itself.
 
 `target` is genuinely independent state, not derivable from `isSynced`: a user
-may nudge one side while synced, which is exactly the correction affordance
-auto-sync will leave behind.
+may target `Left` while synced, in which case the seek actions correct that
+side against the other rather than moving the pair.
+
+No existing model method's *signature* changes. `nudge(_:by:)` is new;
+`applyTransport(_:)` is new; `handle(_:)` (the keyboard router) now routes
+through `applyTransport` instead of calling `playSynced`/`seekSynced`
+directly, which is a deliberate behaviour change — while aligning, Space now
+plays the targeted clip instead of answering "Set the sync points first."
+
+### The invariant: `target` can never hold a value `availableTargets` refuses
+
+If it did, a segmented picker bound to `target` would render no selection at
+all — SwiftUI's behaviour when a bound value isn't among the options it's
+given. `target`'s `didSet` self-enforces this rather than relying on every
+call site to remember it: `availableTargets` always contains `.left` and
+`.right`, so `.both` is the only value that can ever need correcting, and the
+landing value, `lastTouchedTarget`, derives from the two-case `ComparisonSide`
+and so is structurally incapable of being `.both` itself — there is no
+`.both`-to-`.both` loop to worry about. The three places that used to
+hand-demote (`removeSync`, `clearSync`, and now the `didSet`) all funnel
+through the same `lastTouchedTarget`.
+
+### Staleness note for later tasks
+
+`lastTouchedSide` — what a `.both`-losing demotion falls back to — is written
+in exactly two places: `applyTransport`'s per-side branch, and
+`load(_:side:)`. Every other public per-side entry point leaves it stale:
+`scrub`, `nudge`, `seek(_:by:)`, `seek(_:to:)`, `toggleIndividual`,
+`playIndividual`. A later task's control that calls one of those directly
+instead of routing through `applyTransport` — dragging the per-side scrubber,
+say — inherits the staleness, and the symptom is a demotion landing on the
+wrong side. The durable fix is to set `lastTouchedSide` inside the per-side
+methods themselves rather than in the router; not done here because it was
+outside this task's remit.
 
 ## Testing
 
@@ -200,6 +294,20 @@ auto-sync will leave behind.
   left player and not the right; with `.both` while synced, both move. Default
   target is `.both` when synced and follows the last-touched side while
   aligning.
+- **Nudge semantics** are covered separately, mutation-verified: the sync point
+  shifts by the distance actually travelled rather than the distance
+  requested; the correction propagates to a subsequent synced `scrub`; and
+  `returnToSyncPoints()` lands on the corrected alignment rather than the one
+  being corrected away from.
+- **One remaining coverage gap.** The *play* direction of the synced pairing
+  (targeting a side with `playPause`/`slow` while synced, which resolves to
+  `playSynced`) is untested — reaching it calls
+  `setRate(_:time:atHostTime:)`, which raises on an unready `AVPlayerItem` and
+  would crash the suite rather than fail it, given the zero-byte fixtures used
+  elsewhere. The *pause* direction is tested and mutation-verified —
+  `toggleIndividual` routes to `pauseBoth` without touching the raising API.
+  Closing the play direction needs decodable media; `AVAssetWriter`-generated
+  fixtures would work on both platforms without shelling out to `Process`.
 - **New UI tests** in the existing iPad UI-test target: the target selector
   switches, the transport acts on the selected clip, and the anchor button's
   label changes with `isSynced`.
