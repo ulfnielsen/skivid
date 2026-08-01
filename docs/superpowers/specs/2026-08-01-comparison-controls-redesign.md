@@ -116,8 +116,9 @@ return seek through the same clamping helper `seek(_:to:)` already uses.
 
 "Play / Pause", "Slow Together 0.25×" and "Back to Sync Points" as text buttons
 are why the bar is rows deep. SF Symbols at 44pt hit targets fit the whole set
-on one line and are legible on both platforms. Mac restores the words as hover
-tooltips.
+on one line and are legible on both platforms — these are our own `Button`s, so
+44pt is genuinely achievable here; see "Platform differences" for the system
+controls it is not. Mac restores the words as hover tooltips.
 
 ### Layout
 
@@ -188,15 +189,57 @@ long-press on touch, right-click on Mac.
 ### Narrow widths
 
 An 11-inch iPad in portrait is 834pt and the bar will not fit on one line. It
-**wraps to two rows** rather than shrinking targets below 44pt. Touch target
-size wins over row count. An iPad mini is 744pt and must also be checked —
-nothing narrower has been tested at any point in this project.
+**wraps to two rows** rather than shrinking targets. Touch target size wins over
+row count. An iPad mini is 744pt and must also be checked — nothing narrower has
+been tested at any point in this project.
+
+Measured in Task 2, via `ViewThatFits` hosted headlessly at a sweep of widths:
+
+- **Wrap threshold 880.5pt**, identical whether aligning or synced. 881pt gives
+  one row, 880pt gives two. Both 834pt and 744pt wrap, as intended.
+- **One row is 60pt tall; two rows are 112pt.** (An earlier plan said 92pt —
+  that predated the 44pt row frames.)
+- The two-row layout holds its 112pt down to about 460pt, far below anything
+  this project targets.
+- macOS keeps one row, because `ComparisonView` pins `minWidth: 1000` there.
+
+The threshold is identical in both sync states only because the target picker
+has a fixed width rather than one that varies with its segment count. With a
+variable width the bar's ideal width was 830.5pt aligning and 880.5pt synced —
+straddling 834pt, so tapping the anchor on an 11-inch iPad reflowed one row into
+two and resized the video mid-alignment.
 
 ### Platform differences
 
-One layout, two input methods. 44pt targets everywhere: a mouse can hit small
-things but does not suffer from large ones, and one geometry is far cheaper to
+One layout, two input methods. **44pt targets for the controls we build;
+system controls at their platform-standard size.** A mouse can hit small things
+but does not suffer from large ones, and one geometry is far cheaper to
 maintain than two.
+
+The rule used to read "44pt targets everywhere". It was amended in Task 2 after
+the exemption turned out to be unavoidable *and* correct:
+
+| Control | Kind | Hit target |
+|---|---|---|
+| Six transport buttons, sync anchor | our `Button` + `contentShape` | **44×44**, as specified |
+| Layout picker, target picker | `Picker(.segmented)` | 24pt macOS, **32pt iPadOS** |
+| Scrubber | `Slider` | 16pt macOS |
+
+**Why the exemption is deliberate, not a concession.** 32pt is what iPadOS uses
+for segmented controls throughout; matching the platform is the right answer for
+the mode switch, not a compromise on it. And it is not reachable from SwiftUI
+anyway: measured, a `frame(height: 44)` around a segmented picker or a slider
+*centres* the control without growing it — identical drawn extent framed and
+unframed — and `contentShape(Rectangle())` on the framed parent does not extend
+the hit region either. Synthetic clicks selected a segment over the same ~24pt
+band with `contentShape`, without it, and with no frame at all; a parent's
+content shape defines that view's own hit region and cannot route a hit into a
+child control's segments. Its only measurable effect was to *swallow* clicks in
+the surrounding band, so it is deliberately absent.
+
+The 44pt frames remain, because reserving the row is real and gives the two-row
+layout its rhythm. They just do not enlarge the control, and no comment or spec
+line should claim they do.
 
 - **macOS adds** hover tooltips restoring the words the icons replaced, and
   keeps the existing key equivalents (⌘Return sets sync points, space, arrows).

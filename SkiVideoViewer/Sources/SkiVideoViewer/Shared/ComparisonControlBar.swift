@@ -9,16 +9,27 @@ import SwiftUI
 /// and falls through to the stacked one, which is also the last candidate and
 /// so the one used when nothing fits.
 ///
-/// "44pt row" is the honest claim, and it is weaker than "44pt target" for two
-/// of the controls. The transport buttons and the anchor are genuinely 44×44 —
-/// a `frame` plus `contentShape` on a plain `Button`. The two segmented
-/// pickers draw at their platform-intrinsic 24pt however tall a frame they are
-/// given (measured on macOS: identical drawn pixel extent at `height: 44` and
-/// unframed), so they get the 44pt frame *and* `contentShape(Rectangle())`,
-/// which makes the surrounding band part of the picker's hit region rather
-/// than a gap that falls through to the bar. Whether a tap in that band
-/// actually selects the segment under it is the one thing that cannot be
-/// measured headlessly — it needs Task 4's device check.
+/// **The 44pt rule applies to the controls we build, not to system controls.**
+/// The six transport buttons and the anchor are plain `Button`s and are
+/// genuinely 44×44, by `frame` plus `contentShape`. The two segmented pickers
+/// are not, and cannot be made so from here — 32pt is the iPadOS standard size
+/// for a segmented control, which is the size to want.
+///
+/// The `height: 44` frames below reserve the row — real, and what gives the
+/// two-row layout its rhythm — but they do **not** enlarge the control.
+/// Measured rather than assumed, so nobody re-derives it the hard way:
+///
+/// - A segmented `Picker` draws over 24pt on macOS (32pt on iPadOS) and a
+///   `Slider` over 16pt, identically whether framed at `height: 44` or left
+///   unframed. A parent frame centres them; it does not grow them.
+/// - `contentShape(Rectangle())` on the framed parent does not help either.
+///   Synthetic clicks at the third segment selected over the same ~24pt band
+///   with it, without it, and with no height frame at all. A parent's content
+///   shape defines *that view's* hit region; it cannot route a hit into a child
+///   control's segments. Its one measurable effect was to *swallow* clicks in
+///   the surrounding band — a background tap gesture fired zero times with it
+///   and once without — so it is deliberately absent here. Do not add it: it
+///   would silently eat taps meant for whatever sits behind the bar.
 struct ComparisonControlBar: View {
     @ObservedObject var model: ComparisonModel
 
@@ -63,7 +74,6 @@ struct ComparisonControlBar: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 180, height: 44)
-        .contentShape(Rectangle())
     }
 
     /// Bound to `availableTargets`, never `ComparisonTarget.allCases`: `.both`
@@ -86,7 +96,6 @@ struct ComparisonControlBar: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 160, height: 44)
-        .contentShape(Rectangle())
     }
 
     /// A `ForEach` over `allCases` rather than a restatement of the list:

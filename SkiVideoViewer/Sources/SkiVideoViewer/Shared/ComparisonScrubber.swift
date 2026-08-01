@@ -76,14 +76,19 @@ struct ComparisonScrubber: View {
             }
         )
         .disabled(duration <= 0)
-        // A `Slider` draws about 16pt tall on macOS and grabs only that band.
-        // The frame gives it a 44pt row and `contentShape` makes the whole row
-        // the slider's hit region rather than dead space around a thin target
-        // — the same treatment the control bar gives its pickers, and the same
-        // caveat: that a drag started in the padding actually reaches the
-        // slider is not verifiable headlessly and needs Task 4's device check.
+        // Reserves a 44pt row, matching the control bar's. It does not make the
+        // slider 44pt: measured, a `Slider` draws over 16pt on macOS whether
+        // framed at `height: 44` or left unframed — the frame centres it rather
+        // than growing it — and it hit-tests over its own extent.
+        //
+        // `contentShape(Rectangle())` was tried here and removed. On the
+        // equivalent segmented control, synthetic clicks selected over the same
+        // band with it, without it, and with no frame at all: a parent's
+        // content shape defines *that view's* hit region and cannot route hits
+        // into a child control. Its only measurable effect was swallowing
+        // clicks in the surrounding band, which would silently eat taps meant
+        // for whatever Task 3 composes behind the scrubber. Do not re-add it.
         .frame(height: 44)
-        .contentShape(Rectangle())
         .accessibilityLabel("Timeline")
         .accessibilityValue(ComparisonModel.timecode(displayedTime))
     }
