@@ -1,3 +1,4 @@
+import AVFoundation
 import UniformTypeIdentifiers
 import XCTest
 @testable import SkiVideoCore
@@ -799,5 +800,294 @@ final class ComparisonModelTests: XCTestCase {
                        "cannot seek before the start")
         XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 0.01,
                        "the sync point must move by the distance travelled, not the distance asked for")
+    }
+}
+
+/// The bounds tests, on **real decodable media**.
+///
+/// These live apart from `ComparisonModelTests` because they need a different
+/// kind of fixture, and that difference is the whole point: the zero-byte files
+/// the tests above use report `duration` as NaN, so every upper bound inside
+/// the model is `.infinity` and every seek beyond the end of a clip "succeeds".
+/// A sync point could be driven to −3s or past the end of its clip and no test
+/// in the suite could see it. Real media gives real durations and real
+/// clamping, which is what makes the misalignment below reproducible.
+///
+/// Media is generated here rather than checked in: `AVAssetWriter` produces a
+/// few hundred 160×90 H.264 frames in well under a second, into the test's own
+/// temporary directory, which is removed in `tearDown`. Nothing reads the
+/// user's library.
+@MainActor
+final class ComparisonBoundsTests: XCTestCase {
+    private var temporaryDirectory: URL?
+
+    override func tearDown() async throws {
+        if let temporaryDirectory {
+            try? FileManager.default.removeItem(at: temporaryDirectory)
+        }
+    }
+
+    /// **The regression.** A nudge that would push a sync point below zero used
+    /// to leave it there. `returnToSyncPoints()` then seeked each side
+    /// independently, `AVPlayer` clamped the negative one to 0 on its own, and
+    /// the pair landed 3s apart — while `isSynced` stayed true and the status
+    /// read "Returned to the sync points". Measured before the fix:
+    /// sync 2.0/2.0, pair at 8.0, one `back5` on the left → left sync point
+    /// −3.0, return landed 0.0/2.0, offset 2.0 where the user had set 5.0.
+    ///
+    /// Nudges accumulate, so this is not a boundary curiosity: four `back5`
+    /// corrections push a sync point 20s out wherever it started.
+    func testReturningToSyncPointsKeepsTheOffsetWhenANudgeDrivesASyncPointBelowZero() throws {
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 20)
+        defer { model.close() }
+
+        try align(model, left: 2, right: 2)
+        model.setSyncPoints()
+        XCTAssertTrue(model.isSynced, "precondition: the pair must be locked")
+
+        model.target = .both
+        model.scrub(.left, to: 8)
+        settle(model)
+
+        model.target = .left
+        model.applyTransport(.back5)
+        settle(model)
+
+        // What the user just set, read off the clips themselves.
+        let correctedOffset = model.rightPlayer.currentTime().seconds - model.leftPlayer.currentTime().seconds
+        XCTAssertEqual(correctedOffset, 5, accuracy: 0.05,
+                       "precondition: the nudge itself must move the left clip 5s earlier than the right")
+
+        XCTAssertGreaterThanOrEqual(model.leftSyncPoint.seconds, 0,
+                                    "a sync point below zero names no frame; it was \(model.leftSyncPoint.seconds)")
+        XCTAssertEqual(model.rightSyncPoint.seconds - model.leftSyncPoint.seconds, correctedOffset, accuracy: 0.05,
+                       "sliding the pair back into range must preserve the offset between the sync points")
+
+        model.returnToSyncPoints()
+        settle(model)
+
+        let landedOffset = model.rightPlayer.currentTime().seconds - model.leftPlayer.currentTime().seconds
+        XCTAssertEqual(landedOffset, correctedOffset, accuracy: 0.25,
+                       """
+                       returning to the sync points landed the pair \
+                       \(abs(landedOffset - correctedOffset))s out of alignment \
+                       (L \(model.leftPlayer.currentTime().seconds), \
+                       R \(model.rightPlayer.currentTime().seconds))
+                       """)
+    }
+
+    /// The symmetric case, and the one the first fix attempt did not cover: a
+    /// forward nudge drives the sync point *past the end* of its clip, where
+    /// `AVPlayer` clamps it down to the duration just as silently. Measured
+    /// before the fix: sync 8.0/8.0, pair at 1.0, one `forward5` on the left →
+    /// left sync point 13.0 on a 12s clip, return landed 3s out.
+    func testReturningToSyncPointsKeepsTheOffsetWhenANudgeDrivesASyncPointPastTheEnd() throws {
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 20)
+        defer { model.close() }
+
+        try align(model, left: 8, right: 8)
+        model.setSyncPoints()
+        XCTAssertTrue(model.isSynced, "precondition: the pair must be locked")
+
+        model.target = .both
+        model.scrub(.left, to: 1)
+        settle(model)
+
+        model.target = .left
+        model.applyTransport(.forward5)
+        settle(model)
+
+        let correctedOffset = model.rightPlayer.currentTime().seconds - model.leftPlayer.currentTime().seconds
+        XCTAssertEqual(correctedOffset, -5, accuracy: 0.05,
+                       "precondition: the nudge itself must move the left clip 5s later than the right")
+
+        XCTAssertLessThanOrEqual(model.leftSyncPoint.seconds, model.leftDuration + 0.01,
+                                 """
+                                 a sync point past the end of its clip names no frame; it was \
+                                 \(model.leftSyncPoint.seconds) on a \(model.leftDuration)s clip
+                                 """)
+        XCTAssertEqual(model.rightSyncPoint.seconds - model.leftSyncPoint.seconds, correctedOffset, accuracy: 0.05,
+                       "sliding the pair back into range must preserve the offset between the sync points")
+
+        model.returnToSyncPoints()
+        settle(model)
+
+        let landedOffset = model.rightPlayer.currentTime().seconds - model.leftPlayer.currentTime().seconds
+        XCTAssertEqual(landedOffset, correctedOffset, accuracy: 0.25,
+                       """
+                       returning to the sync points landed the pair \
+                       \(abs(landedOffset - correctedOffset))s out of alignment \
+                       (L \(model.leftPlayer.currentTime().seconds), \
+                       R \(model.rightPlayer.currentTime().seconds))
+                       """)
+    }
+
+    /// Nudges accumulate — that is what makes this reachable from ordinary use
+    /// rather than from a contrived starting position. Four `back5` corrections
+    /// ask for 20s of travel from a sync point at 2s.
+    func testRepeatedNudgesInOneDirectionStillReturnToTheCorrectedAlignment() throws {
+        let model = try makeRealMediaModel(leftSeconds: 25, rightSeconds: 25)
+        defer { model.close() }
+
+        try align(model, left: 2, right: 2)
+        model.setSyncPoints()
+
+        // Far enough in that all four nudges travel the full 5s: a nudge
+        // clamped at the start travels less, which would make this test about
+        // clamping rather than about accumulation.
+        model.target = .both
+        model.scrub(.left, to: 20)
+        settle(model)
+
+        model.target = .left
+        for _ in 0..<4 {
+            model.applyTransport(.back5)
+            settle(model)
+        }
+
+        let correctedOffset = model.rightPlayer.currentTime().seconds - model.leftPlayer.currentTime().seconds
+        XCTAssertEqual(correctedOffset, 20, accuracy: 0.05,
+                       "precondition: four back-5 nudges must move the left clip 20s earlier")
+
+        model.returnToSyncPoints()
+        settle(model)
+
+        let landedOffset = model.rightPlayer.currentTime().seconds - model.leftPlayer.currentTime().seconds
+        XCTAssertEqual(landedOffset, correctedOffset, accuracy: 0.25,
+                       """
+                       four accumulated nudges landed the pair \
+                       \(abs(landedOffset - correctedOffset))s out of alignment \
+                       (L \(model.leftPlayer.currentTime().seconds), \
+                       R \(model.rightPlayer.currentTime().seconds))
+                       """)
+    }
+
+    /// The ordinary case, on real media, so the fix cannot be "always slide the
+    /// pair somewhere". A nudge that stays comfortably inside both clips must
+    /// leave both sync points exactly where the nudge put them.
+    func testANudgeWellInsideBothClipsLeavesTheSyncPointsAlone() throws {
+        let model = try makeRealMediaModel(leftSeconds: 20, rightSeconds: 20)
+        defer { model.close() }
+
+        try align(model, left: 8, right: 8)
+        model.setSyncPoints()
+
+        model.target = .left
+        model.applyTransport(.back5)
+        settle(model)
+
+        XCTAssertEqual(model.leftSyncPoint.seconds, 3, accuracy: 0.05,
+                       "the nudged side's sync point follows its clip")
+        XCTAssertEqual(model.rightSyncPoint.seconds, 8, accuracy: 0.05,
+                       "the untouched side's sync point must not move when nothing is out of range")
+    }
+
+    // MARK: - Fixtures
+
+    /// Two loaded clips whose durations the model has actually observed. The
+    /// wait matters: `AVPlayerItem.duration` is NaN until the item loads, and a
+    /// bounds test run before that would measure the same absent bounds the
+    /// zero-byte fixtures give.
+    private func makeRealMediaModel(leftSeconds: Double, rightSeconds: Double) throws -> ComparisonModel {
+        let model = ComparisonModel()
+        model.load(try makeRealVideoFile("left.mov", seconds: leftSeconds), side: .left)
+        model.load(try makeRealVideoFile("right.mov", seconds: rightSeconds), side: .right)
+        waitUntil("the clips' durations must be known before any bound can be tested") {
+            model.leftDuration > 0 && model.rightDuration > 0
+        }
+        XCTAssertEqual(model.leftDuration, leftSeconds, accuracy: 0.05)
+        XCTAssertEqual(model.rightDuration, rightSeconds, accuracy: 0.05)
+        return model
+    }
+
+    /// Both clips parked on a chosen second, the way a user aligns them before
+    /// tapping the anchor.
+    private func align(_ model: ComparisonModel, left: Double, right: Double) throws {
+        model.seek(.left, to: left)
+        model.seek(.right, to: right)
+        settle(model)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, left, accuracy: 0.05,
+                       "precondition: the left clip must have reached \(left)s")
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, right, accuracy: 0.05,
+                       "precondition: the right clip must have reached \(right)s")
+    }
+
+    /// Seeks on a real item are asynchronous, so every measurement waits for
+    /// both playheads to stop moving rather than reading them straight after
+    /// the call. Stability, not an expected value: a test that waited for the
+    /// value it wants would pass by construction.
+    private func settle(_ model: ComparisonModel, timeout: TimeInterval = 5) {
+        var previous = (Double.nan, Double.nan)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            let now = (model.leftPlayer.currentTime().seconds, model.rightPlayer.currentTime().seconds)
+            if now == previous { return }
+            previous = now
+        }
+    }
+
+    private func waitUntil(_ message: String, timeout: TimeInterval = 20, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertTrue(condition(), message)
+    }
+
+    /// A real H.264 clip of a known length. 160×90 at 30fps keeps a 20s clip to
+    /// 600 tiny frames, which encodes in a fraction of a second; the per-frame
+    /// grey level changes so the encoder cannot collapse the clip into
+    /// something with a different duration than asked for.
+    private func makeRealVideoFile(_ name: String, seconds: Double, fps: Int32 = 30) throws -> URL {
+        let root = temporaryDirectory ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        temporaryDirectory = root
+        let url = root.appendingPathComponent(name)
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: 160,
+            AVVideoHeightKey: 90,
+        ])
+        input.expectsMediaDataInRealTime = false
+        writer.add(input)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                kCVPixelBufferWidthKey as String: 160,
+                kCVPixelBufferHeightKey as String: 90,
+            ]
+        )
+        XCTAssertTrue(writer.startWriting(), "could not start writing the fixture: \(String(describing: writer.error))")
+        writer.startSession(atSourceTime: .zero)
+
+        let frames = Int(seconds * Double(fps))
+        for frame in 0..<frames {
+            while !input.isReadyForMoreMediaData {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            let pool = try XCTUnwrap(adaptor.pixelBufferPool, "the writer gave no pixel buffer pool")
+            var buffer: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer), kCVReturnSuccess)
+            let pixels = try XCTUnwrap(buffer)
+            CVPixelBufferLockBaseAddress(pixels, [])
+            if let base = CVPixelBufferGetBaseAddress(pixels) {
+                memset(base, Int32(frame % 251), CVPixelBufferGetBytesPerRow(pixels) * CVPixelBufferGetHeight(pixels))
+            }
+            CVPixelBufferUnlockBaseAddress(pixels, [])
+            XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps)))
+        }
+        input.markAsFinished()
+        writer.endSession(atSourceTime: CMTime(value: CMTimeValue(frames), timescale: fps))
+
+        let written = expectation(description: "fixture written")
+        writer.finishWriting { written.fulfill() }
+        wait(for: [written], timeout: 60)
+        XCTAssertEqual(writer.status, .completed, "fixture encode failed: \(String(describing: writer.error))")
+        return url
     }
 }

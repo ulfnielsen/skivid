@@ -365,6 +365,11 @@ public final class ComparisonModel: ObservableObject {
     /// distance asked for, so a nudge clamped at 0 or at the end of the clip
     /// cannot drift the sync point away from the frame it names.
     ///
+    /// The clip stays in bounds; the sync point it carries need not, because it
+    /// starts wherever the user set it. `normalizeSyncPoints()` slides the pair
+    /// back into range afterwards — see it for why that is safe and why the
+    /// alternative is a silent misalignment.
+    ///
     /// While aligning there is nothing to correct against, so this degrades to
     /// an ordinary per-side seek.
     public func nudge(_ side: ComparisonSide, by seconds: Double) {
@@ -384,6 +389,9 @@ public final class ComparisonModel: ObservableObject {
         case .left: leftSyncPoint = leftSyncPoint + shift
         case .right: rightSyncPoint = rightSyncPoint + shift
         }
+        // The clip stayed inside its own bounds; the *sync point* need not
+        // have. Slide the pair back into range before anything reads it.
+        normalizeSyncPoints()
         status = "\(side == .left ? "Left" : "Right") nudged \(seconds >= 0 ? "+" : "")\(Int(seconds)) seconds"
     }
 
@@ -500,6 +508,12 @@ public final class ComparisonModel: ObservableObject {
     public func returnToSyncPoints() {
         guard isSynced else { return }
         pauseBoth()
+        // Again here, not only in `nudge`: a clip's duration arrives
+        // asynchronously, so a nudge made before the item finished loading
+        // cannot know its upper bound yet. Without this the two seeks below
+        // clamp *independently* and the pair lands at the wrong offset while
+        // `isSynced` still reads true and the status says it returned.
+        normalizeSyncPoints()
         leftPlayer.seek(to: leftSyncPoint, toleranceBefore: .zero, toleranceAfter: .zero)
         rightPlayer.seek(to: rightSyncPoint, toleranceBefore: .zero, toleranceAfter: .zero)
         status = "Returned to the sync points"
@@ -543,12 +557,52 @@ public final class ComparisonModel: ObservableObject {
     /// Extracted so `nudge` can ask where a seek would land without performing
     /// it — it has to shift the sync point by the distance actually travelled.
     private func clampedSeekTarget(for player: AVPlayer, to seconds: Double) -> Double {
+        min(max(0, seconds.isFinite ? seconds : 0), lastSeekableSecond(of: player))
+    }
+
+    /// The furthest second a seek on this player can reach. A duration that is
+    /// not known yet reads back as NaN — every player before its item finishes
+    /// loading, and every undecodable fixture — and contributes *no* upper
+    /// bound rather than a zero-length clip.
+    private func lastSeekableSecond(of player: AVPlayer) -> Double {
         let duration = player.currentItem?.duration.seconds ?? .nan
-        var clamped = max(0, seconds.isFinite ? seconds : 0)
-        if duration.isFinite {
-            clamped = min(clamped, duration)
-        }
-        return clamped
+        return duration.isFinite ? duration : .infinity
+    }
+
+    /// Slides both sync points by one common delta until they are inside their
+    /// clips. **Only the difference between them carries meaning** — it is the
+    /// offset the locked pair keeps — so a common slide is free, and it is the
+    /// only correction available that cannot change the alignment.
+    ///
+    /// This exists because `nudge` moves one sync point by the distance its
+    /// clip travelled, and repeated nudges accumulate: four `back5` corrections
+    /// push a sync point 20s below zero wherever it started. `AVPlayer.seek`
+    /// then clamps each side *independently* in `returnToSyncPoints()`, which
+    /// destroys the offset between them and lands the pair seconds apart —
+    /// silently, with `isSynced` still true. Measured on generated H.264 before
+    /// this existed: sync points 2.0/2.0, pair at 8.0, one `back5` on the left,
+    /// return landed 0.0/2.0 — 3.0s out of alignment, in a screen whose entire
+    /// job is alignment.
+    ///
+    /// Both bounds are handled. Below zero is what a run of `back5` reaches;
+    /// past the duration is the exactly symmetric case for `forward5`, and just
+    /// as reachable.
+    ///
+    /// When the clips are too short to hold the offset at all — every delta
+    /// leaves one end out of range — the lower bound wins: a negative time
+    /// names no frame at all, while a time past the end at least clamps to the
+    /// last one.
+    private func normalizeSyncPoints() {
+        let left = leftSyncPoint.seconds
+        let right = rightSyncPoint.seconds
+        guard left.isFinite, right.isFinite else { return }
+        let lowest = max(-left, -right)
+        let highest = min(lastSeekableSecond(of: leftPlayer) - left, lastSeekableSecond(of: rightPlayer) - right)
+        let delta = max(lowest, min(0, highest))
+        guard delta != 0, delta.isFinite else { return }
+        let shift = CMTime(seconds: delta, preferredTimescale: 600)
+        leftSyncPoint = leftSyncPoint + shift
+        rightSyncPoint = rightSyncPoint + shift
     }
 
     private func seek(_ player: AVPlayer, to seconds: Double) {
