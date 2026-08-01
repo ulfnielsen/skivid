@@ -31,6 +31,12 @@ struct FFmpegMediaPipeline: MediaPipeline {
         try Self.runFFmpeg([
             "-i", source.path,
             "-vf", "scale=w=1920:h=1080:force_original_aspect_ratio=decrease",
+            // Pin the output to 8-bit 4:2:0. Left to itself a modern x264 picks the
+            // "best" format its build supports and can emit High 4:4:4 Predictive /
+            // 10-bit, which VideoToolbox on iPhone and iPad cannot decode at all --
+            // playback dies with kVTVideoDecoderBadDataErr (-8969). Camera footage
+            // gains nothing visible from the wider format either.
+            "-pix_fmt", "yuv420p",
             "-metadata", "title=\(athlete)",
             "-metadata", "artist=\(athlete)",
             "-metadata", "comment=Athlete: \(athlete)",

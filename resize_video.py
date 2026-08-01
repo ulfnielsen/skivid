@@ -85,6 +85,14 @@ def _run_ffmpeg(
         str(input_path),
         "-vf",
         filter_chain,
+        # Pin the output to 8-bit 4:2:0. Left to itself a modern x264 picks the
+        # "best" format its build supports; with the `exposure` filter in the chain
+        # ffmpeg negotiates all the way up to High 4:4:4 Predictive / 10-bit, which
+        # VideoToolbox on iPhone and iPad cannot decode at all -- playback dies with
+        # kVTVideoDecoderBadDataErr (-8969). Camera footage gains nothing visible
+        # from the wider format either.
+        "-pix_fmt",
+        "yuv420p",
         str(output_path),
     ]
     proc = subprocess.Popen(
