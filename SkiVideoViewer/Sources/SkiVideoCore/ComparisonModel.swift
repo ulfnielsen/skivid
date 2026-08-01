@@ -40,7 +40,7 @@ public enum OverlayBlend: String, CaseIterable, Identifiable {
 /// `Seams.swift`, so an iPadOS target can present the same model.
 ///
 /// Access levels are deliberately narrow: `public` marks exactly what the app
-/// target's `ComparisonView`, `OverlayPlayerView` and `ComparisonWindowController`
+/// target's `ComparisonView`, `OverlayPlayerStack` and `ComparisonWindowController`
 /// touch. Members used only by this module or by tests stay internal.
 @MainActor
 public final class ComparisonModel: ObservableObject {

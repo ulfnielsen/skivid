@@ -45,10 +45,10 @@ targets:
     deploymentTarget: "17.0"
     sources:
       # Shared/ compiles on both platforms with no exclusions — that is the
-      # invariant the directory name promises. ComparisonView now lives there
-      # and compiles for iPad; its overlay branch is still a placeholder on
-      # iOS because OverlayPlayerView is an NSViewRepresentable. Nothing on
-      # iPad reaches Compare yet
+      # invariant the directory name promises. ComparisonView lives there and
+      # compiles for iPad, overlay included: OverlayPlayerStack renders it in
+      # SwiftUI on both platforms, so Shared/ references no macOS/ type.
+      # Nothing on iPad reaches Compare yet until Task 4
       # (NoSecondaryScreenPresenter.canPresent == false).
       - path: Sources/SkiVideoViewer/Shared
       - path: Sources/SkiVideoViewer/iOS

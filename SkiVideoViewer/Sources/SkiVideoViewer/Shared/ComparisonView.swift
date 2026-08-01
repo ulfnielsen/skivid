@@ -78,26 +78,17 @@ struct ComparisonView: View {
                 paneHeader(side: .right)
             }
 
-            // Task 3 replaces both branches with OverlayPlayerStack. The macOS
-            // OverlayPlayerView cannot move here: it is an NSViewRepresentable,
-            // and its CALayer.compositingFilter is a no-op on iOS anyway.
-            // macOS deliberately keeps calling it until Task 3 lands, so this
-            // move does not regress the shipping overlay; only iOS gets the
-            // placeholder, which nothing can reach yet
-            // (NoSecondaryScreenPresenter.canPresent == false).
-            #if os(macOS)
-            OverlayPlayerView(
+            // Both platforms use the SwiftUI stack. macOS previously had its
+            // own NSViewRepresentable overlay, whose CALayer.compositingFilter
+            // approach is a silent no-op on iOS; the argument list here is
+            // unchanged from the one that view was given.
+            OverlayPlayerStack(
                 bottomPlayer: model.leftPlayer,
                 topPlayer: model.rightPlayer,
                 topOpacity: model.topLayerOpacity,
                 blend: model.blend
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            #else
-            Color.black
-                .overlay(Text("Overlay").foregroundStyle(.secondary))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            #endif
 
             overlayControls
 
