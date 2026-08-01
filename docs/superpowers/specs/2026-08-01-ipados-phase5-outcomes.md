@@ -104,6 +104,18 @@ auto-opening it breaks the tests loudly instead of having them silently pass
 for the wrong reason. **Anything that taps this app must dismiss the picker
 first and fail loudly if it is absent.**
 
+## VERIFIED BY THE USER, 2026-08-01
+
+**The macOS overlay renders correctly, including Difference mode.** This was the
+one rule whose iPad proof did not transfer: `.blendMode(.difference)` was
+measured on iOS, and AppKit hosting is a different compositor path. Confirmed by
+eye on the Mac. The eyeball list below is therefore **closed**, not outstanding.
+
+Consequence: `Sources/SkiVideoViewer/macOS/OverlayPlayerView.swift` was kept
+solely as the one-line revert path (swap `OverlayPlayerStack` back to
+`OverlayPlayerView` in `Shared/ComparisonView.swift`). That reason is gone —
+the file is unreferenced dead code and can be deleted.
+
 ## The macOS overlay decision and its eyeball list
 
 Mid-phase, the controller identified and disclosed its own process error: the
