@@ -365,14 +365,130 @@ struct ComparisonView: View {
         runStart = .notRunning
     }
 
+    /// The shape of `SubjectAnalyzer.runStart`, as `record` calls it.
+    ///
+    /// Injectable for the same reason `SubjectSessionModel.AnalyseFunction` is:
+    /// the pass is a ~20s read of the whole clip, and the assertion that an
+    /// unchanged pick does **not** run it has to be a call count, not a
+    /// stopwatch. A test that timed it would pass on a fast machine and on a
+    /// cached read whether or not the reuse rule existed.
+    typealias RunStartMeasurement = (URL, ClipAnalysis, [Int]) async throws -> SubjectRunStart.Outcome
+
+    /// The stored pick that already answers for `segmentIDs`, or nil when the
+    /// question has changed and the previous answer does not apply.
+    ///
+    /// **Sets, not ordered arrays.** `selectedInTimeOrder` is deterministic, so
+    /// two picks made through the sheet usually produce the same array — but the
+    /// operator's own C0094 sidecar stores `[15, 8, 6, 3, 4, 5, 1]`, which is
+    /// not time order, so an ordered comparison would have recomputed that clip
+    /// on every confirm forever. The same segments in a different order are the
+    /// same subject.
+    ///
+    /// A stale analysis is not reused: `parameters` changing means the segment
+    /// ids themselves were produced by different settings, so "segment 6" in the
+    /// stored pick and "segment 6" in the list the operator just picked from are
+    /// not necessarily the same detections. That is a different question, not the
+    /// same one asked twice.
+    static func reusablePick(
+        in analysis: ClipAnalysis, isStale: Bool, segmentIDs: [Int]
+    ) -> SubjectPick? {
+        guard !isStale, let stored = analysis.subject else { return nil }
+        guard Set(stored.segmentIDs) == Set(segmentIDs), !segmentIDs.isEmpty else { return nil }
+        return stored
+    }
+
+    /// What confirming a pick did, and the start it left in force.
+    ///
+    /// The two cases are kept apart rather than collapsed into a time because
+    /// the sheet must not claim work it did not do: `.reused` completes with no
+    /// spinner at all, and telling the operator "finding the run start, about
+    /// twenty seconds" for a pass that never ran is the report of a lie.
+    enum ConfirmOutcome: Equatable {
+        /// The stored answer applied. No pass was run; the payload is the
+        /// effective start, which is the operator's correction wherever they
+        /// made one.
+        case reused(TimeInterval)
+        /// A fresh pass measured this start.
+        case measured(TimeInterval)
+        /// The pass ran and found no start to sync on. The payload is what to
+        /// tell the operator.
+        case unmeasurable(String)
+    }
+
+    /// Records a confirmed pick on `session`, running the run-start pass only
+    /// when the stored answer does not apply.
+    ///
+    /// **Static and internal so the decision can be driven from a test.**
+    /// `ComparisonView` builds its own `ComparisonModel` in `init`, so a
+    /// rendered one cannot be handed a session that already holds a pick — the
+    /// same reason `correction(for:anchoredAt:)` and `stored(_:)` are static.
+    /// And this is the path that reported "it recomputes every time".
+    ///
+    /// The reuse branch re-confirms with **`stored.correctedRunStart`**, not
+    /// with nothing. `confirm`'s parameter defaults to nil precisely so that a
+    /// *fresh* detection drops a correction that no longer describes it — which
+    /// makes omitting it here a silent revert. On the operator's C0094 that is a
+    /// drop from a corrected 18.290s back to a detected 0.640s: not a slow path,
+    /// a lost eighteen seconds of judgement.
+    @MainActor
+    static func record(
+        segmentIDs: [Int], clip: URL, in session: SubjectSessionModel,
+        measuringWith measure: RunStartMeasurement,
+        reportingSaveFailure onSaveFailure: (Error) -> Void = { _ in }
+    ) async throws -> ConfirmOutcome {
+        guard let analysis = session.analysis else { throw SubjectSessionModel.SessionError.noAnalysis }
+
+        let stored: StoredRunStart
+        let corrected: TimeInterval?
+        let outcome: ConfirmOutcome
+
+        if let reusable = reusablePick(in: analysis, isStale: session.isStale, segmentIDs: segmentIDs) {
+            stored = reusable.runStart
+            corrected = reusable.correctedRunStart
+            outcome = .reused(reusable.syncTime)
+        } else {
+            let measured = try await measure(clip, analysis, segmentIDs)
+            // Before the write, not after: the operator's Cancel means "do not
+            // record this pick", and a cancellation that arrived while the pass
+            // was unwinding must not still reach the sidecar.
+            try Task.checkCancellation()
+            guard let time = Self.stored(measured) else {
+                return .unmeasurable(Self.message(for: measured))
+            }
+            stored = time
+            // Deliberately nil: a correction is to a particular detected start,
+            // and this is not that start.
+            corrected = nil
+            outcome = .measured(time.syncTime)
+        }
+
+        do {
+            try session.confirm(
+                segmentIDs: segmentIDs, runStart: stored,
+                correctedRunStart: corrected, for: clip
+            )
+        } catch {
+            // Surfaced once and moved past: the pick is in memory and good for
+            // this session, and refusing the sync because a sidecar could not be
+            // written would throw away twenty seconds of the operator's work
+            // over a file permission.
+            onSaveFailure(error)
+        }
+        return outcome
+    }
+
     /// The half of the interaction the sheet deliberately does not own: a
     /// second full read of the clip to find where the picked subject's run
-    /// begins.
+    /// begins — *unless the sidecar already answers for exactly these
+    /// segments*, in which case there is nothing to read.
     ///
-    /// The sheet stays up in `.working` for all of it. That is the point —
-    /// `onConfirm` returns instantly and this takes about as long as the
-    /// analysis did, so dismissing here would leave the operator looking at a
-    /// window that does nothing for twenty seconds.
+    /// When the pass does run the sheet stays up in `.working` for all of it.
+    /// That is the point — `onConfirm` returns instantly and this takes about as
+    /// long as the analysis did, so dismissing here would leave the operator
+    /// looking at a window that does nothing for twenty seconds. When the stored
+    /// answer is reused, `.working` is never entered at all: the decision is made
+    /// here, synchronously, before any task is started, so the operator does not
+    /// see a spinner flash for work that did not happen.
     private func confirmSubject(side: ComparisonSide, clip: URL, segmentIDs: [Int]) {
         let session = subjects.session(for: side)
         // Unreachable in practice — the confirm button only exists in the
@@ -385,7 +501,10 @@ struct ComparisonView: View {
             return
         }
         runStartTask?.cancel()
-        runStart = .working
+        let reusing = Self.reusablePick(
+            in: analysis, isStale: session.isStale, segmentIDs: segmentIDs
+        ) != nil
+        runStart = reusing ? .notRunning : .working
         // `@MainActor` explicitly, though a `Task` started from here inherits
         // it anyway. Measured with a probe of this exact shape — a `Task`
         // spawned inside a `View`'s method — rather than assumed: the task
@@ -396,22 +515,21 @@ struct ComparisonView: View {
         // actor that owns them.
         runStartTask = Task { @MainActor in
             do {
-                let outcome = try await SubjectAnalyzer.runStart(
-                    clip: clip, analysis: analysis, segmentIDs: segmentIDs
+                let outcome = try await Self.record(
+                    segmentIDs: segmentIDs, clip: clip, in: session,
+                    measuringWith: { clip, analysis, ids in
+                        try await SubjectAnalyzer.runStart(
+                            clip: clip, analysis: analysis, segmentIDs: ids
+                        )
+                    },
+                    reportingSaveFailure: { error in
+                        sidecarWarning = "\(clip.lastPathComponent): \(error). The pick still applies for this session."
+                    }
                 )
                 if Task.isCancelled { return }
-                guard let stored = Self.stored(outcome) else {
-                    runStart = .failed(Self.message(for: outcome))
+                if case let .unmeasurable(message) = outcome {
+                    runStart = .failed(message)
                     return
-                }
-                do {
-                    try session.confirm(segmentIDs: segmentIDs, runStart: stored, for: clip)
-                } catch {
-                    // Surfaced once and moved past: the pick is in memory and
-                    // good for this session, and refusing the sync because a
-                    // sidecar could not be written would throw away twenty
-                    // seconds of the operator's work over a file permission.
-                    sidecarWarning = "\(clip.lastPathComponent): \(error). The pick still applies for this session."
                 }
                 runStart = .notRunning
                 runStartTask = nil
