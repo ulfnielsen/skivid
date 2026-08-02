@@ -317,29 +317,8 @@ struct ComparisonView: View {
         }
     }
 
-    @ViewBuilder
     private var videos: some View {
-        switch model.layout {
-        case .sideBySide:
-            HStack(spacing: 1) {
-                ComparisonPane(model: model, side: .left)
-                // Constrained deliberately: a bare `Divider()` inside an
-                // `HStack` is vertically greedy and squeezes the video.
-                Divider().frame(width: 1)
-                ComparisonPane(model: model, side: .right)
-            }
-        case .overlay:
-            // Both platforms use the SwiftUI stack. macOS previously had its
-            // own NSViewRepresentable overlay, whose CALayer.compositingFilter
-            // approach is a silent no-op on iOS.
-            OverlayPlayerStack(
-                bottomPlayer: model.leftPlayer,
-                topPlayer: model.rightPlayer,
-                topOpacity: model.topLayerOpacity,
-                blend: model.blend
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        ComparisonVideos(model: model)
     }
 
     /// What `.sheet(item:)` needs: the side being picked, plus the clip it was
@@ -363,6 +342,88 @@ struct ComparisonView: View {
         .buttonStyle(.plain)
         .padding(12)
         .accessibilityLabel("Close comparison")
+    }
+}
+
+/// The video area: whichever layout is selected, and nothing else.
+/// `ComparisonView` hangs the status chip on it and puts the chrome below it.
+///
+/// **Its own view, and internal, so a test can render exactly what ships.**
+/// This was a `private var videos` on `ComparisonView`, unreachable from a
+/// test: `ComparisonView` owns its model as a `@StateObject` and builds it in
+/// `init`, so there is no way to hand it a model with a clip loaded or a layout
+/// selected. A test that rebuilt this composition for itself would have gone on
+/// passing after the chips below were deleted from the shipped one — which is
+/// the mutation `ClipChooserTests` has to be able to catch.
+struct ComparisonVideos: View {
+    @ObservedObject var model: ComparisonModel
+
+    @ViewBuilder
+    var body: some View {
+        switch model.layout {
+        case .sideBySide:
+            HStack(spacing: 1) {
+                ComparisonPane(model: model, side: .left)
+                // Constrained deliberately: a bare `Divider()` inside an
+                // `HStack` is vertically greedy and squeezes the video.
+                Divider().frame(width: 1)
+                ComparisonPane(model: model, side: .right)
+            }
+        case .overlay:
+            // Both platforms use the SwiftUI stack. macOS previously had its
+            // own NSViewRepresentable overlay, whose CALayer.compositingFilter
+            // approach is a silent no-op on iOS.
+            OverlayPlayerStack(
+                bottomPlayer: model.leftPlayer,
+                topPlayer: model.rightPlayer,
+                topOpacity: model.topLayerOpacity,
+                blend: model.blend
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottomLeading) { overlayChoosers }
+        }
+    }
+
+    /// The overlay layout's clip choosers, which it had none of.
+    ///
+    /// Switching to Overlay with a side empty left no way to load it and no way
+    /// to swap either clip: the branch above builds an `OverlayPlayerStack`,
+    /// which contains no `chooseVideo` call and no filename menu, so the only
+    /// routes to a clip lived in `ComparisonPane` and side-by-side was the only
+    /// layout that had one. That is a feature deletion rather than a trade-off,
+    /// and it is half of the reported "I don't see a way to select the
+    /// comparison video anymore".
+    ///
+    /// **Here rather than inside `OverlayPlayerStack`.** That view is a pure
+    /// renderer — its doc comment is entirely about blend modes and it takes
+    /// two players, not a model — and keeping it that way is what lets the
+    /// overlay compositing be tested without one.
+    ///
+    /// Bottom-leading, matching the pane chips, and clear of the status chip,
+    /// which is top-*trailing* and a constant 340pt wide precisely so that "it
+    /// cannot reach what is under it" is checkable; see `ComparisonStatusChip`,
+    /// and the measured case where an unbounded version of it covered a pane's
+    /// filename.
+    ///
+    /// Both clips are drawn into the same rect here, so unlike a pane chip
+    /// neither has anything around it to say which clip it swaps — hence
+    /// `sidedTitle`, which puts the side in the visible title too.
+    private var overlayChoosers: some View {
+        HStack(spacing: 8) {
+            ClipSourceMenu(
+                model: model,
+                side: .left,
+                appearance: .overlayChip,
+                title: ClipSourceMenu.sidedTitle(model, .left)
+            )
+            ClipSourceMenu(
+                model: model,
+                side: .right,
+                appearance: .overlayChip,
+                title: ClipSourceMenu.sidedTitle(model, .right)
+            )
+        }
+        .padding(8)
     }
 }
 
