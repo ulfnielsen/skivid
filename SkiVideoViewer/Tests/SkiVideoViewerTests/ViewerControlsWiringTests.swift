@@ -250,6 +250,63 @@ final class ViewerControlsWiringTests: XCTestCase {
         )
     }
 
+    /// Kills the mutation of deleting `.allowsHitTesting(false)` from
+    /// `ViewerPane`'s status chip. The chip floats over the video in the
+    /// top-trailing corner; hit-testable, it eats the play/pause tap meant for
+    /// the video underneath it, and nothing else in the repo notices — the
+    /// screenshot is identical either way and the test above taps the *centre*
+    /// of the pane, well clear of the chip.
+    ///
+    /// **This has to live on macOS, which was not obvious.** Task 4 first put
+    /// it in the iPad UI suite, tapping the chip's own accessibility frame with
+    /// XCUITest, and it passed with the modifier deleted: measured on an iPad
+    /// Pro 11-inch (M5), UIKit routes the tap straight past the overlay to the
+    /// gesture below whether or not the chip claims hits, so on iPadOS the
+    /// modifier has no observable effect at all. AppKit does not — measured
+    /// here, the tap leaves `rate` at 0 without it and sets it to 1 with it.
+    /// The iPad test is still worth having (it is the only coverage of
+    /// tap-to-play on iPadOS at all), but it is this one that kills the
+    /// mutation.
+    ///
+    /// Same real-`NSWindow` technique as the test above; see its comment for
+    /// why `view.mouseDown(with:)` does not work.
+    func testTappingWhereTheStatusChipSitsStillTogglesPlayback() throws {
+        let model = try makeModel(videoNames: ["run1.mp4"])
+        XCTAssertEqual(model.player.rate, 0, "precondition: nothing is playing yet")
+
+        let width: CGFloat = 800
+        let height: CGFloat = 400
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun").frame(width: width, height: height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        host.layoutSubtreeIfNeeded()
+
+        // Inside the pill: the chip is top-trailing with 12pt of outer padding,
+        // and its `Text` is capped at 320pt with 10pt of horizontal and 5pt of
+        // vertical padding around it, so this lands roughly in the middle of a
+        // 340×24 capsule. AppKit's origin is bottom-left, hence the subtraction
+        // from `height`.
+        let point = CGPoint(x: width - 12 - 170, y: height - 12 - 15)
+        window.sendEvent(mouseEvent(.leftMouseDown, at: point, windowNumber: window.windowNumber))
+        window.sendEvent(mouseEvent(.leftMouseUp, at: point, windowNumber: window.windowNumber))
+
+        XCTAssertEqual(
+            model.player.rate, 1,
+            """
+            the status chip must not swallow the play/pause tap: a click at \
+            \(point), inside the chip's capsule, left the player stopped
+            """
+        )
+    }
+
     // MARK: - The scrubber wired into ContentView.detail
 
     /// Kills the mutation of replacing `ContentView.detail`'s
