@@ -30,18 +30,58 @@ import SwiftUI
 struct ComparisonStatusChip: View {
     let status: String
 
-    var body: some View {
+    /// What alignment is doing right now, when that is worth saying — in
+    /// practice, that it has stepped aside for a stretch the pass measured as
+    /// unalignable.
+    ///
+    /// Defaulted to nil so the layout tests keep measuring the pill they were
+    /// written against, and so every other caller is unaffected.
+    var alignmentNote: String?
+
+    /// A **concatenated `Text`, not a `VStack` with an `if` in it** — and that
+    /// is not a style choice, it is the measured way to add a second line here.
+    ///
+    /// The obvious version, `VStack { Text(status); if let note { Text(note) } }`,
+    /// makes `ComparisonStatusChipTests` fail in a way that has nothing to do
+    /// with what it measures: its `GeometryReader` probe stops reporting
+    /// entirely and every frame reads `.zero`, at *every* call site including
+    /// the ones passing no note. Bisected — a `VStack` with both `Text`s
+    /// unconditional reports fine, and the same `VStack` with the `if` does not
+    /// — so a structural conditional inside the view this chip is measured
+    /// through is what breaks preference propagation out of the `.background`.
+    /// Do not "tidy" this back into a stack.
+    ///
+    /// Two `Text`s unconditionally was the other candidate, and it costs 16pt
+    /// of pill height for an empty second line whenever there is no note
+    /// (measured: 41pt against 25pt). Concatenation costs nothing: an empty
+    /// `Text` contributes no line.
+    private var label: Text {
         Text(status)
+            + Text(alignmentNote.map { "\n\($0)" } ?? "")
+            // Dimmer than the status: an aside about why the picture looks the
+            // way it does, not a report of what the operator's last action did.
+            // `foregroundColor` rather than `foregroundStyle` because the
+            // `Text`-returning overload of the latter is macOS 14, and this
+            // package deploys to 13.
+            .foregroundColor(.white.opacity(0.6))
+    }
+
+    var body: some View {
+        label
             .font(.caption)
             .foregroundStyle(.white.opacity(0.85))
             .multilineTextAlignment(.center)
-            .lineLimit(2)
+            // Two lines for the status, and two more for the note when there is
+            // one. A value, not a branch in the view tree — see `label`.
+            .lineLimit(alignmentNote == nil ? 2 : 4)
             .frame(maxWidth: 320)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(.thinMaterial, in: Capsule())
             .allowsHitTesting(false)
-            .accessibilityLabel("Status: \(status)")
+            .accessibilityLabel(
+                alignmentNote.map { "Status: \(status). \($0)" } ?? "Status: \(status)"
+            )
     }
 }

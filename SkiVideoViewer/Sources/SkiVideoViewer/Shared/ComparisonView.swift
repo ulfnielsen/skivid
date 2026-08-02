@@ -56,12 +56,17 @@ enum RunStartPhase: Equatable {
 struct ComparisonView: View {
     @StateObject private var model: ComparisonModel
     @StateObject private var subjects = SubjectSessions()
+    /// How this pair lines up spatially. One per window, like `subjects`: a
+    /// track describes a *pair*, so it belongs to the comparison and not to
+    /// either side.
+    @StateObject private var alignment = AlignmentSessionModel()
     let closeWindow: () -> Void
 
     /// Non-nil while the subject sheet is up, and the side it is up for.
     @State private var picking: PickingSide?
     @State private var runStart: RunStartPhase = .notRunning
     @State private var runStartTask: Task<Void, Never>?
+    @State private var alignmentTask: Task<Void, Never>?
     /// A sidecar that could not be written. Surfaced once, plainly; the pick
     /// itself is kept and the sync still applies.
     @State private var sidecarWarning: String?
@@ -92,7 +97,8 @@ struct ComparisonView: View {
                 // constant. The 8pt inset lives here because it is a placement
                 // decision, not part of the pill.
                 .overlay(alignment: .topTrailing) {
-                    ComparisonStatusChip(status: model.status).padding(8)
+                    ComparisonStatusChip(status: model.status, alignmentNote: alignmentNote)
+                        .padding(8)
                 }
 
             // One surface for the chrome, as every deleted control row had.
@@ -101,7 +107,12 @@ struct ComparisonView: View {
             // backgrounds; it changes no height.
             VStack(spacing: 0) {
                 if model.layout == .overlay {
-                    OverlayBlendBar(model: model)
+                    OverlayBlendBar(
+                        model: model,
+                        alignment: alignment,
+                        canComputeAlignment: canComputeAlignment,
+                        onComputeAlignment: { computeAlignment() }
+                    )
                 }
                 ComparisonScrubber(model: model)
                     .padding(.horizontal, 12)
@@ -121,6 +132,12 @@ struct ComparisonView: View {
         // URL itself is not published; `load` sets both together.
         .task(id: model.leftName) { loadStoredSubject(.left) }
         .task(id: model.rightName) { loadStoredSubject(.right) }
+        // Keyed on the pair *and* the run starts, because a track is only
+        // meaningful for the starts it was measured against — picking the
+        // subject again on one side is exactly the event that makes a stored
+        // track stale, and the sidecar has to be re-read against the new
+        // number for `isStale` to say so.
+        .task(id: alignmentKey) { loadStoredAlignment() }
         .sheet(item: $picking) { picking in
             SubjectSheet(
                 session: subjects.session(for: picking.side),
@@ -143,6 +160,20 @@ struct ComparisonView: View {
         } message: {
             Text(sidecarWarning ?? "")
         }
+        // Its own alert rather than folded into the one above: the two fail
+        // for different reasons and are recovered from differently, and the
+        // pick alert's title names the pick.
+        .alert(
+            "The alignment could not be saved",
+            isPresented: Binding(
+                get: { alignment.saveWarning != nil },
+                set: { if !$0 { alignment.dismissSaveWarning() } }
+            )
+        ) {
+            Button("OK") { alignment.dismissSaveWarning() }
+        } message: {
+            Text(alignment.saveWarning ?? "")
+        }
         // An 11-inch iPad is 834pt wide in portrait, so a hard 1000pt minimum
         // clips. macOS keeps it: the Compare window is resizable and needs a
         // floor. Same shape as `ContentView`'s minimum-size conditional.
@@ -157,8 +188,100 @@ struct ComparisonView: View {
         #endif
         .onDisappear {
             runStartTask?.cancel()
+            alignmentTask?.cancel()
+            alignment.cancel()
             model.close()
         }
+    }
+
+    // MARK: - Alignment
+
+    /// Everything a stored track has to be checked against. A `.task(id:)` key
+    /// rather than three separate tasks, because the load is one decision made
+    /// from all four values and re-running it on each in turn would read the
+    /// sidecar against a half-updated pair.
+    private var alignmentKey: String {
+        let starts = detectedStarts
+        return [
+            model.leftName,
+            model.rightName,
+            starts.map { String($0.left) } ?? "-",
+            starts.map { String($0.right) } ?? "-",
+        ].joined(separator: "|")
+    }
+
+    /// The pass needs a local file on each side and a run start on each. The
+    /// same two conditions gate the Compute button, so it cannot offer work
+    /// that `computeAlignment` would then decline to start.
+    private var canComputeAlignment: Bool {
+        clip(for: .left) != nil && clip(for: .right) != nil && detectedStarts != nil
+    }
+
+    private func loadStoredAlignment() {
+        guard
+            let left = clip(for: .left),
+            let right = clip(for: .right),
+            let starts = detectedStarts
+        else {
+            // Not merely "leave it alone": a track loaded for the previous pair
+            // would go on answering for a comparison it does not describe.
+            alignment.reset()
+            return
+        }
+        alignment.loadStored(
+            left: left, right: right,
+            leftStart: starts.left, rightStart: starts.right
+        )
+    }
+
+    private func computeAlignment() {
+        guard
+            let left = clip(for: .left),
+            let right = clip(for: .right),
+            let starts = detectedStarts
+        else { return }
+        alignmentTask?.cancel()
+        // `@MainActor` explicitly, as `confirmSubject` does and for the same
+        // measured reason: the task body starts on the main thread, the pass
+        // itself runs off it, and the state writes land back on the actor that
+        // owns them.
+        alignmentTask = Task { @MainActor in
+            await alignment.compute(
+                left: left, right: right,
+                leftStart: starts.left, rightStart: starts.right
+            )
+        }
+    }
+
+    /// Where the playhead is *within the run*, which is the only clock an
+    /// alignment track is indexed by.
+    ///
+    /// Measured from the left clip, because that is the reference side: the
+    /// pass records each sample's time as the left clip's own offset from its
+    /// run start. While the pair is synced the right clip is at the same run
+    /// phase by construction, so either would do; taking it from one side means
+    /// there is no second answer to disagree with.
+    private var runPhase: TimeInterval? {
+        guard let starts = detectedStarts else { return nil }
+        return model.leftTime - starts.left
+    }
+
+    /// What the renderer is handed. `.zero` for every reason the gate says
+    /// identity — Align off, no track, a stale track, outside the measured
+    /// span, or a stretch the gate disengaged on.
+    private var alignmentTranslation: CGVector {
+        guard let runPhase else { return .zero }
+        return alignment.translation(at: runPhase) ?? .zero
+    }
+
+    /// Said only when alignment is on and this instant *was* measured, so the
+    /// operator reads an unaligned stretch as a decision the pass made rather
+    /// than as the feature having quietly failed. Outside the measured span
+    /// there is nothing to explain and the chip stays as it was.
+    private var alignmentNote: String? {
+        guard model.layout == .overlay, let runPhase else { return nil }
+        guard alignment.isDisengaged(at: runPhase) else { return nil }
+        return "Not aligned here — the cameras share too little of the view."
     }
 
     // MARK: - Subjects
@@ -318,7 +441,7 @@ struct ComparisonView: View {
     }
 
     private var videos: some View {
-        ComparisonVideos(model: model)
+        ComparisonVideos(model: model, translation: alignmentTranslation)
     }
 
     /// What `.sheet(item:)` needs: the side being picked, plus the clip it was
@@ -358,6 +481,13 @@ struct ComparisonView: View {
 struct ComparisonVideos: View {
     @ObservedObject var model: ComparisonModel
 
+    /// The gated translation for this instant, already resolved by
+    /// `ComparisonView` — this view neither owns the track nor consults the
+    /// gate. Only the overlay layout uses it: side-by-side draws the two clips
+    /// in separate rects, where moving one within its own pane would align
+    /// nothing to anything.
+    var translation: CGVector = .zero
+
     @ViewBuilder
     var body: some View {
         switch model.layout {
@@ -377,7 +507,11 @@ struct ComparisonVideos: View {
                 bottomPlayer: model.leftPlayer,
                 topPlayer: model.rightPlayer,
                 topOpacity: model.topLayerOpacity,
-                blend: model.blend
+                blend: model.blend,
+                // The right clip is the floating one — the pass registers it
+                // onto the left — and it is the one on top here, so the
+                // translation goes to `topPlayer`.
+                translation: translation
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .bottomLeading) { overlayChoosers }
