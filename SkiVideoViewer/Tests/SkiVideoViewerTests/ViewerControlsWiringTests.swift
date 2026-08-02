@@ -76,10 +76,39 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// `ViewerControlBar.stepButton`. Three clips, not two: with only two,
     /// stepping `+1` and `-1` from index 0 land on the same clip, so a test
     /// that only checked "the clip changed" could not tell a sign flip on
-    /// the `Next` button's offset from a correct one. `transportButtons`
-    /// walks the tree in declaration order — the six transport buttons
-    /// first, then `clipStepping`'s Previous (index 6) and Next (index 7) —
-    /// confirmed the same way `SharedControlsWiringTests` confirms
+    /// the `Next` button's offset from a correct one.
+    ///
+    /// **Buttons are located by `TransportAction.allCases.count`, not a bare
+    /// literal `7`, but this is still positional, not label-based.** Review
+    /// asked for lookup by `accessibilityLabel`/title, matching how
+    /// `SharedControlsWiringTests` locates `playPauseIndex` — and how
+    /// `ComparisonControlBar`'s anchor button is found by trailing position
+    /// after the transport. I tried the AppKit-equivalent technique
+    /// extensively before falling back to position, and it does not work in
+    /// this harness: after a real (non-`.prohibited`-only) `NSWindow`,
+    /// `layoutSubtreeIfNeeded()`, `displayIfNeeded()` and a run-loop spin,
+    /// every one of `NSButton.toolTip`, `.accessibilityLabel()`, the legacy
+    /// `.accessibilityAttributeValue(.description/.title/.help)`, and
+    /// `host.accessibilityChildren()` come back nil or empty on every
+    /// button — confirmed by walking the entire AppKit subview tree and
+    /// finding nothing non-empty anywhere. Cross-process introspection
+    /// through the real `AXUIElement` API (`AXUIElementCreateApplication`
+    /// against this process's own pid) returns `kAXErrorNotImplemented`
+    /// (-25208): `AXIsProcessTrusted()` is `true` here, but the `swift test`
+    /// host process itself never registers as an accessible application, so
+    /// there is no accessibility tree to query — a different failure mode
+    /// than the tap gesture's (that one was fixed by adding a real
+    /// `NSWindow`; this one needs the process itself to be a real app, which
+    /// `swift test` cannot provide). Reading `NSButton.isEnabled` directly
+    /// (below) works because that is a plain AppKit property, not routed
+    /// through Accessibility. Pinning "Previous clip"/"Next clip" text to
+    /// its button is Task 4's job, on the iPad XCUITest runner, whose
+    /// `XCUIElement` queries read a UIKit accessibility tree that is
+    /// actually populated.
+    ///
+    /// `transportButtons` walks the AppKit tree in declaration order — the
+    /// six transport buttons first, then `clipStepping`'s Previous, then
+    /// Next — confirmed the same way `SharedControlsWiringTests` confirms
     /// `ComparisonControlBar`'s seven-button order.
     func testClickingNextClipInViewerControlBarMovesTheModel() throws {
         let model = try makeModel(videoNames: ["run1.mp4", "run2.mp4", "run3.mp4"])
@@ -91,7 +120,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
 
-        buttons[7].performClick(nil)
+        buttons[TransportAction.allCases.count + 1].performClick(nil)
 
         XCTAssertEqual(
             model.currentVideo?.lastPathComponent, "run2.mp4",
@@ -102,7 +131,8 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// The other direction of the test above, killing the same class of
     /// mutation on the `by: -1` literal specifically — see that test's
     /// comment for why two clips cannot distinguish the two buttons from
-    /// each other.
+    /// each other, and for why lookup here is positional rather than by
+    /// label.
     func testClickingPreviousClipInViewerControlBarMovesTheModel() throws {
         let model = try makeModel(videoNames: ["run1.mp4", "run2.mp4", "run3.mp4"])
         XCTAssertEqual(model.currentVideo?.lastPathComponent, "run1.mp4", "precondition")
@@ -113,7 +143,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
 
-        buttons[6].performClick(nil)
+        buttons[TransportAction.allCases.count].performClick(nil)
 
         XCTAssertEqual(
             model.currentVideo?.lastPathComponent, "run3.mp4",
@@ -126,7 +156,20 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// `SharedControlsWiringTests.testADisabledTransportDoesNotInvokePerform`,
     /// extended to the clip-stepping buttons `TransportControls` does not
     /// own.
-    func testADisabledViewerControlBarDoesNotInvokeAnyCallback() throws {
+    ///
+    /// Asserts the real `NSButton.isEnabled`, not a model-side effect.
+    /// Review caught that the model-side version of this test — clicking all
+    /// eight buttons and asserting `player.rate == 0` /
+    /// `currentVideo == nil` — cannot fail: `ViewerModel.togglePlayback`
+    /// already guards on `currentVideo != nil` and `changeVideo(by:)` already
+    /// guards on `currentAthlete`, so those two assertions hold whether or
+    /// not `ViewerControlBar` disables anything at all. Confirmed by
+    /// review's own measurement: removing both `isEnabled`/`.disabled` gates
+    /// left the whole suite green. `NSButton.isEnabled` is a plain AppKit
+    /// property (unlike the accessibility properties above, it does not
+    /// depend on this process having a working Accessibility tree), and it
+    /// is also the property Task 4's iPad tests read.
+    func testADisabledViewerControlBarDoesNotEnableAnyButton() throws {
         let model = ViewerModel(
             input: AppKitInputSource(),
             folderPicker: AppKitFolderPicker(),
@@ -139,12 +182,72 @@ final class ViewerControlsWiringTests: XCTestCase {
 
         let buttons = transportButtons(in: host)
         XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
+
+        for (index, button) in buttons.enumerated() {
+            XCTAssertFalse(button.isEnabled, "button at index \(index) must read as disabled with nothing loaded")
+        }
+
+        // Belt and suspenders: also confirm a click through a disabled
+        // button genuinely does nothing, now that `isEnabled` itself is
+        // pinned above.
         for button in buttons {
             button.performClick(nil)
         }
-
         XCTAssertEqual(model.player.rate, 0, "a disabled transport must not invoke perform")
         XCTAssertNil(model.currentVideo, "a disabled clip-stepping control must not invoke changeVideo")
+    }
+
+    /// Kills the mutation of replacing `ViewerPane`'s
+    /// `.onTapGesture { model.applyTransport(.playPause) }` with
+    /// `.onTapGesture { }`. This is the gap disclosed as untestable in the
+    /// first pass of this file: `.onTapGesture` installs no discoverable
+    /// `NSGestureRecognizer` on any view in the hosted tree (confirmed by
+    /// dumping `gestureRecognizers` on every subview — always empty), which
+    /// is what made `performClick`/`sendAction`, the technique the rest of
+    /// this file uses, inapplicable here.
+    ///
+    /// The missing ingredient was a real `NSWindow`, not the event. Calling
+    /// `view.mouseDown(with:)` directly on the hosted view — what a first
+    /// attempt reaches for — leaves `rate` at 0: SwiftUI's tap-gesture
+    /// recognition lives in the window's event-dispatch path, not in the
+    /// view's own `mouseDown`/`mouseUp` overrides. Routing the same
+    /// synthetic events through `window.sendEvent(_:)` against a real
+    /// (still off-screen, `.prohibited`-policy) `NSWindow` reaches it.
+    ///
+    /// **macOS only.** On iPadOS `ViewerPane` still renders through
+    /// `NativePlayerView`, backed by an `AVPlayerViewController` with its
+    /// own UIKit gesture arbitration — a different subsystem this
+    /// AppKit-event technique says nothing about. Tapping the video on iPad
+    /// stays a Task 4 XCUITest step.
+    func testTappingTheViewerPaneTogglesPlaybackOnMacOS() throws {
+        let model = try makeModel(videoNames: ["run1.mp4"])
+        XCTAssertEqual(model.player.rate, 0, "precondition: nothing is playing yet")
+
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun").frame(width: 400, height: 300)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        // `.orderFront`, not `.makeKeyAndOrderFront`: the click technique
+        // below only needs the window in the window server, not key/focused
+        // — matching `ComparisonLayoutMeasurementTests.chipFrame`'s window,
+        // which never becomes key either.
+        window.orderFront(nil)
+        host.layoutSubtreeIfNeeded()
+
+        let point = CGPoint(x: 200, y: 150)
+        window.sendEvent(mouseEvent(.leftMouseDown, at: point, windowNumber: window.windowNumber))
+        window.sendEvent(mouseEvent(.leftMouseUp, at: point, windowNumber: window.windowNumber))
+
+        XCTAssertEqual(
+            model.player.rate, 1,
+            "tapping the viewer pane through a real window must toggle playback"
+        )
     }
 
     // MARK: - The scrubber wired into ContentView.detail
@@ -245,6 +348,24 @@ final class ViewerControlsWiringTests: XCTestCase {
             if let found = nsSlider(in: sub) { return found }
         }
         return nil
+    }
+
+    /// A synthetic left-click event at a point in window coordinates,
+    /// dispatched through `window.sendEvent(_:)` rather than called on a
+    /// view directly — see `testTappingTheViewerPaneTogglesPlaybackOnMacOS`
+    /// for why the window is the load-bearing part.
+    private func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint, windowNumber: Int) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type,
+            location: point,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )!
     }
 
     // MARK: - Fixtures

@@ -41,15 +41,25 @@ struct ViewerPane: View {
     /// screen's chip is: unbounded it runs past the video's edge, and
     /// hit-testable it eats taps meant for the video underneath — which here is
     /// the play/pause gesture.
+    ///
+    /// `.frame(maxWidth: 320)` sits on the `Text`, *before* the padding and
+    /// background — matching `ComparisonStatusChip`, and not the order
+    /// review caught here originally. After the background it caps the
+    /// transparent container the capsule sits inside rather than the capsule
+    /// itself, which lets the pill grow and shrink with every word in
+    /// `model.status` instead of holding a constant width. Measured in an
+    /// 800pt container: with the frame after the background the pill's right
+    /// edge moved ~70pt as the status text changed; with it here, first, the
+    /// width is constant.
     private var statusChip: some View {
         Text(model.status)
             .font(.caption)
             .foregroundStyle(.white.opacity(0.85))
             .lineLimit(1)
+            .frame(maxWidth: 320)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(.black.opacity(0.45), in: Capsule())
-            .frame(maxWidth: 320)
             .padding(12)
             .allowsHitTesting(false)
             .accessibilityLabel("Status: \(model.status)")
