@@ -463,7 +463,7 @@ public final class ComparisonModel: ObservableObject {
         isSynced = true
         syncOrigin = .manual
         target = .both
-        status = "Synchronized from L \(Self.timecode(leftTime)) and R \(Self.timecode(rightTime))."
+        status = "Synchronized from L \(Timecode.string(leftTime)) and R \(Timecode.string(rightTime))."
     }
 
     /// Seeks both clips to the given times and syncs there.
@@ -587,13 +587,6 @@ public final class ComparisonModel: ObservableObject {
         // the main window's input source again.
         input?.onIntent = nil
         input?.setEnabled(false)
-    }
-
-    public static func timecode(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "00:00.0" }
-        let minutes = Int(seconds) / 60
-        let remainder = seconds - Double(minutes * 60)
-        return String(format: "%02d:%04.1f", minutes, remainder)
     }
 
     private func player(for side: ComparisonSide) -> AVPlayer {
