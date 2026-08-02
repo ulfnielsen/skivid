@@ -43,6 +43,10 @@ final class ComparisonControlBarLayoutTests: XCTestCase {
     /// Nothing else in the repo would notice that coming back. The iPad UI
     /// tests cannot reach the synced state at all — `setSyncPoints()` requires
     /// two loaded clips and no UI test can load one.
+    ///
+    /// Still true with the subject button in the bar: both states measure a
+    /// 941pt ideal width, and the same 112pt wrapped height at 834pt and
+    /// 744pt.
     func testTheBarIsTheSameHeightSyncedAsAligning() throws {
         let aligning = ComparisonModel()
         let synced = try makeSyncedModel()
@@ -66,31 +70,56 @@ final class ComparisonControlBarLayoutTests: XCTestCase {
         }
     }
 
-    /// The wrap itself, at the measured threshold. 880.5pt is the bar's ideal
-    /// width, so 881pt fits on one row and 880pt does not — and every iPad
+    /// The wrap itself, at the measured threshold. 941pt is the bar's ideal
+    /// width, so 941pt fits on one row and 940pt does not — and every iPad
     /// portrait width is below it, which is why the screenshots at 834pt and
     /// 744pt show a two-row bar and three rows of chrome rather than two.
     ///
-    /// Asserted as "one row is shorter than two, and the change happens
-    /// between 880 and 881" rather than as absolute point values, because the
-    /// row heights are macOS metrics (60pt/112pt here) and would not
-    /// transfer.
-    func testTheBarWrapsBetween880And881Points() throws {
+    /// **Re-measured, not relaxed.** The threshold was 881pt (an 880.5pt ideal
+    /// width) until the subject button joined the bar; the button's 44pt frame
+    /// plus the `HStack`'s 16pt spacing is exactly the 60pt difference. This
+    /// number is a measurement of the shipped bar, so it moves whenever a
+    /// control does, and moving it is the point of the test rather than a
+    /// nuisance: the two assertions that *guard* something are the two below
+    /// it, and both still hold.
+    ///
+    /// Asserted as "one row is shorter than two, the change happens between
+    /// 940 and 941, and two rows are not three" rather than as absolute point
+    /// values, because the row heights are macOS metrics (60pt/112pt here) and
+    /// would not transfer.
+    func testTheBarWrapsBetween940And941Points() throws {
         let model = ComparisonModel()
-        let oneRow = barHeight(model: model, width: 881)
-        let twoRows = barHeight(model: model, width: 880)
+        let oneRow = barHeight(model: model, width: 941)
+        let twoRows = barHeight(model: model, width: 940)
 
         XCTAssertGreaterThan(
             twoRows,
             oneRow,
-            "880pt must wrap to a taller layout than 881pt; measured \(twoRows) vs \(oneRow)"
+            "940pt must wrap to a taller layout than 941pt; measured \(twoRows) vs \(oneRow)"
         )
         for width in [834.0, 744.0] as [CGFloat] {
+            let height = barHeight(model: model, width: width)
             XCTAssertEqual(
-                barHeight(model: model, width: width),
+                height,
                 twoRows,
                 accuracy: 0.5,
                 "\(width)pt is below the threshold and must use the wrapped layout"
+            )
+            // Two rows, not three — the assertion the brief calls out, and not
+            // implied by the equality above: if a control no longer fitted, the
+            // wrapped layout's own rows would wrap in turn and *both* measured
+            // heights would grow together. A third row costs a full row plus
+            // its spacing, so it cannot hide under twice a single row's height:
+            // measured, 112pt for two rows against 60pt for one, and 308pt at a
+            // width narrow enough (400pt) to force the inner rows to break.
+            XCTAssertLessThan(
+                height,
+                oneRow * 2,
+                """
+                the bar needs more than two rows at \(width)pt (\(height)pt \
+                against \(oneRow)pt for a single row), which takes a third row \
+                of chrome off the video
+                """
             )
         }
     }

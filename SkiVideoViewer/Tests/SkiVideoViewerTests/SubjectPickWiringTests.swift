@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import SwiftUI
 import XCTest
 @testable import SkiVideoCore
@@ -285,6 +286,406 @@ final class SubjectPickWiringTests: XCTestCase {
             "something nobody anticipated",
             "an unrecognised failure is shown as it arrived, not swallowed"
         )
+    }
+
+    // MARK: - The control bar's entry point
+
+    /// **The rule the whole control is built around**, and the one the brief's
+    /// first mutation attacks: the sheet opens for the *targeted* side, the
+    /// same `scrubbedSide` the scrubber and the time label follow.
+    ///
+    /// Two targets, not one. With a single target a hardcoded side is
+    /// indistinguishable from the rule, exactly as
+    /// `testTappingACardTogglesThatSegmentInTheModel` needs two cards. `.both`
+    /// resolves to `.left`, so it is checked too — a `model.target == .right`
+    /// written in place of `scrubbedSide` would pass the first two cases and
+    /// fail nothing without it.
+    ///
+    /// Unlike the sheet's own controls, the bar's buttons are `.borderless`
+    /// and so are real `NSButton`s — the same tree walk
+    /// `SharedControlsWiringTests` uses, with `performClick`.
+    func testFindSubjectOpensTheSheetForTheTargetedSide() throws {
+        // `.both` needs the synced model: `ComparisonModel.target`'s `didSet`
+        // silently demotes a selection `availableTargets` does not contain,
+        // and an aligning model does not offer `.both` at all. Found the hard
+        // way — the first version of this test set `.both` on an aligning
+        // model, which stayed on `.right` from the previous iteration and
+        // failed with the very "fixed side" message the mutation would give.
+        let aligning = ComparisonModel()
+        let synced = try makeSyncedModel()
+        var opened: [ComparisonSide] = []
+
+        for (model, target, expected) in [
+            (aligning, ComparisonTarget.left, ComparisonSide.left),
+            (aligning, .right, .right),
+            (synced, .both, .left),
+        ] {
+            model.target = target
+            XCTAssertEqual(model.target, target, "precondition: the model must actually hold \(target)")
+            let host = NSHostingView(
+                rootView: ComparisonControlBar(
+                    model: model,
+                    analysableSides: [.left, .right],
+                    onFindSubject: { opened.append($0) }
+                )
+                .frame(width: 1000, height: 200)
+            )
+            host.layoutSubtreeIfNeeded()
+
+            let buttons = barButtons(in: host)
+            XCTAssertEqual(
+                buttons.count, 8,
+                "precondition: six transport buttons, the subject button, then the anchor"
+            )
+            buttons[6].performClick(nil)
+            XCTAssertEqual(
+                opened.last, expected,
+                "targeting \(target) must open the sheet for \(expected), not for a fixed side"
+            )
+        }
+        XCTAssertEqual(opened.count, 3, "every click must have opened the sheet exactly once")
+    }
+
+    /// The other half: a side with no clip has nothing to analyse, so the
+    /// button must be inert rather than opening a sheet over an empty player.
+    /// Without this, a button disabled unconditionally would pass the test
+    /// above — `performClick` fires SwiftUI's action regardless of
+    /// `NSButton.target`, but not through `.disabled`.
+    func testFindSubjectIsInertForASideWithNoClip() throws {
+        let model = ComparisonModel()
+        model.target = .right
+        var opened: [ComparisonSide] = []
+        let host = NSHostingView(
+            rootView: ComparisonControlBar(
+                model: model,
+                analysableSides: [.left],
+                onFindSubject: { opened.append($0) }
+            )
+            .frame(width: 1000, height: 200)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let buttons = barButtons(in: host)
+        XCTAssertEqual(buttons.count, 8, "precondition: the subject button is at index 6")
+        XCTAssertFalse(buttons[6].isEnabled, "a side with no clip must read as unavailable")
+        buttons[6].performClick(nil)
+        XCTAssertTrue(opened.isEmpty, "a side with no clip must not open the sheet")
+    }
+
+    /// **The brief's second mutation**: make the `contextMenu` unconditional.
+    ///
+    /// A menu whose only item is disabled still pops up — an empty grey box
+    /// under the operator's right-click, which is the failure
+    /// `ComparisonControlBar` documents for the anchor and repeats here. So
+    /// this asserts there is **no menu at all** while the two clips have no
+    /// stored subject, which is the common case; a mutant that always attaches
+    /// the menu produces one and fails.
+    ///
+    /// Measured, not assumed: `NSView.menu(for:)` on the hosted tree returns
+    /// SwiftUI's context menu with its item titles and enabled states, and
+    /// returns nil where no `.contextMenu` was applied. Confirmed by probing a
+    /// bare `Button` with and without one before writing this.
+    func testTheSyncMenuIsAbsentUntilBothSidesHaveASubject() throws {
+        let model = ComparisonModel()
+
+        let without = try subjectButtonMenu(model: model, canSync: false)
+        XCTAssertNil(
+            without,
+            """
+            the subject button offers a context menu before either side has a \
+            stored subject; it would pop up empty: \
+            \(without?.items.map(\.title) ?? [])
+            """
+        )
+
+        let with = try subjectButtonMenu(model: model, canSync: true)
+        let titles = try XCTUnwrap(with, "both sides having a subject must offer the menu").items.map(\.title)
+        XCTAssertEqual(
+            titles, ["Sync from detected starts"],
+            "the menu must offer the sync, and nothing else"
+        )
+    }
+
+    /// The menu's item actually reaches the closure, which nothing above
+    /// checks: a menu that merely renders is a menu that does nothing.
+    func testTheSyncMenuItemInvokesItsAction() throws {
+        let model = ComparisonModel()
+        var synced = 0
+        let menu = try XCTUnwrap(
+            subjectButtonMenu(model: model, canSync: true, onSync: { synced += 1 })
+        )
+        let item = try XCTUnwrap(menu.items.first)
+        XCTAssertTrue(
+            NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item),
+            "the menu item must have a live action"
+        )
+        XCTAssertEqual(synced, 1, "Sync from detected starts must invoke its closure exactly once")
+    }
+
+    /// The context menu attached to the subject button, or nil if it has none.
+    ///
+    /// Asks the button itself rather than the hosting view so the anchor's own
+    /// conditional menu cannot be mistaken for this one.
+    private func subjectButtonMenu(
+        model: ComparisonModel,
+        canSync: Bool,
+        onSync: @escaping () -> Void = {}
+    ) throws -> NSMenu? {
+        let bar = ComparisonControlBar(
+            model: model,
+            analysableSides: [.left, .right],
+            canSyncFromDetectedStarts: canSync,
+            onSyncFromDetectedStarts: onSync
+        )
+        let scene = show(bar, width: 1000, height: 200)
+        let buttons = barButtons(in: scene.host)
+        XCTAssertEqual(buttons.count, 8, "precondition: the subject button is at index 6")
+        let button = buttons[6]
+        let point = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        return button.menu(for: mouseEvent(
+            .rightMouseDown, at: point, windowNumber: scene.window.windowNumber
+        ))
+    }
+
+    /// Two clips loaded and synced, so `.both` is a selectable target. Same
+    /// technique as `ComparisonControlBarLayoutTests.makeSyncedModel`:
+    /// `AVPlayerItem` accepts any URL and reports failure asynchronously, so
+    /// an empty file gives a player a `currentItem`, which is all
+    /// `hasTwoVideos` — and therefore `setSyncPoints()` — requires.
+    private func makeSyncedModel() throws -> ComparisonModel {
+        let model = ComparisonModel()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        for (name, side) in [("left.mov", ComparisonSide.left), ("right.mov", .right)] {
+            let url = root.appendingPathComponent(name)
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+            model.load(url, side: side)
+        }
+        model.setSyncPoints()
+        XCTAssertTrue(model.isSynced, "the harness must actually reach the synced state")
+        return model
+    }
+
+    /// The bar's buttons in tree order, which is declaration order: the six
+    /// transport buttons in `TransportAction.allCases` order, then the subject
+    /// button, then the anchor. Real `NSButton`s because both are `.borderless`
+    /// — unlike the sheet's controls, which SwiftUI draws itself. Every test
+    /// that indexes into this asserts the count first.
+    private func barButtons(in view: NSView) -> [NSButton] {
+        var found: [NSButton] = []
+        if let button = view as? NSButton { found.append(button) }
+        for sub in view.subviews { found.append(contentsOf: barButtons(in: sub)) }
+        return found
+    }
+
+    // MARK: - The way out, in every state
+
+    /// `SubjectPickSheet` has no dismiss of its own — measured in Task 3 and
+    /// stated in its report — so presenting it bare traps the operator in all
+    /// four of its states: idle offers only "Find subject", analysing only
+    /// "Cancel analysis" (which returns to idle, not out), ready only "Use as
+    /// subject", failed only "Retry". `SubjectSheet`'s header is the way out,
+    /// and this checks it in **each** state rather than in the one that is
+    /// easy to reach, because a header hidden behind a `switch` would still
+    /// pass a single-state test.
+    ///
+    /// All four states are reachable only through `SubjectSessionModel`'s
+    /// injectable `analyse` seam — `state` is `private(set)` — which is what
+    /// Task 2 added it for.
+    func testDoneDismissesTheSheetInEveryState() async throws {
+        let clip = URL(fileURLWithPath: "/dev/null")
+
+        for (name, session) in try await allFourStates(clip: clip) {
+            var done = 0
+            let scene = show(
+                SubjectSheet(
+                    session: session,
+                    clip: clip,
+                    sideTitle: "Left clip",
+                    phase: .notRunning,
+                    onConfirm: { _ in },
+                    onCancelRunStart: {},
+                    onDone: { done += 1 }
+                ),
+                width: 520, height: 620
+            )
+            settle(scene)
+
+            let buttons = controls(in: scene.host)
+            XCTAssertFalse(buttons.isEmpty, "\(name): the sheet must render at least the Done button")
+            // Declaration order: the header is above the state's own content,
+            // so Done is first in the tree.
+            click(buttons[0], in: scene.window)
+            XCTAssertEqual(done, 1, "\(name): Done must dismiss the sheet")
+        }
+    }
+
+    /// The run-start pass is a second ~20s read of the clip that begins the
+    /// instant `onConfirm` returns. This pins that the operator sees it: while
+    /// it runs the sheet shows its own working state — not the segment grid it
+    /// was on, which would look like a button that did nothing — and offers a
+    /// Cancel that reaches the caller.
+    ///
+    /// The control count is the assertion that distinguishes the two: the
+    /// working state is Done plus Cancel and nothing else, where the grid it
+    /// replaces has a card per segment plus "Use as subject".
+    func testTheRunStartPassIsShownAndCanBeCancelled() async throws {
+        let clip = URL(fileURLWithPath: "/dev/null")
+        let session = try await readySession(clip: clip)
+
+        let onGrid = show(sheet(session: session, clip: clip, phase: .notRunning), width: 520, height: 620)
+        settle(onGrid)
+        let gridControls = controls(in: onGrid.host).count
+        XCTAssertGreaterThan(gridControls, 2, "precondition: the ready grid shows Done, two cards and confirm")
+
+        var cancelled = 0
+        let working = show(
+            SubjectSheet(
+                session: session,
+                clip: clip,
+                sideTitle: "Left clip",
+                phase: .working,
+                onConfirm: { _ in },
+                onCancelRunStart: { cancelled += 1 },
+                onDone: {}
+            ),
+            width: 520, height: 620
+        )
+        settle(working)
+
+        let buttons = controls(in: working.host)
+        XCTAssertEqual(
+            buttons.count, 2,
+            "the working state must replace the grid, showing only Done and Cancel"
+        )
+        click(buttons[1], in: working.window)
+        XCTAssertEqual(cancelled, 1, "Cancel must reach the caller's run-start task")
+    }
+
+    private func sheet(
+        session: SubjectSessionModel, clip: URL, phase: RunStartPhase
+    ) -> SubjectSheet {
+        SubjectSheet(
+            session: session, clip: clip, sideTitle: "Left clip", phase: phase,
+            onConfirm: { _ in }, onCancelRunStart: {}, onDone: {}
+        )
+    }
+
+    /// One session per `SubjectSessionModel.State`, each driven there through
+    /// the real `analyse(clip:)` with a stand-in analyser.
+    private func allFourStates(clip: URL) async throws -> [(String, SubjectSessionModel)] {
+        let idle = SubjectSessionModel()
+
+        let analysing = SubjectSessionModel { _, progress in
+            progress(0.4)
+            // Long enough that the state cannot escape `.analysing` during the
+            // test; cancelled in teardown.
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+            throw CancellationError()
+        }
+        let running = Task { await analysing.analyse(clip: clip) }
+        addTeardownBlock { running.cancel() }
+        // `RunLoop.run(until:)` is unavailable from an async context, so this
+        // yields instead — enough, because the state change it waits on is a
+        // `@MainActor` hop rather than a run-loop source.
+        let deadline = Date().addingTimeInterval(5)
+        while !isAnalysing(analysing.state), Date() < deadline {
+            await Task.yield()
+        }
+        XCTAssertTrue(isAnalysing(analysing.state), "precondition: the analysing state must be reached")
+
+        let ready = try await readySession(clip: clip)
+
+        let failed = SubjectSessionModel { _, _ in
+            throw SubjectAnalyzer.AnalysisError.noPeopleFound("clip.mov")
+        }
+        await failed.analyse(clip: clip)
+        guard case .failed = failed.state else {
+            throw XCTSkip("precondition: the failed state must be reached, got \(failed.state)")
+        }
+
+        return [("idle", idle), ("analysing", analysing), ("ready", ready), ("failed", failed)]
+    }
+
+    private func readySession(clip: URL) async throws -> SubjectSessionModel {
+        let segments = pairInReverseTimeOrder()
+        let session = SubjectSessionModel { _, _ in
+            ClipAnalysis(
+                version: 1, analysedAt: Date(), parameters: .current,
+                segments: segments, subject: nil
+            )
+        }
+        await session.analyse(clip: clip)
+        guard case .ready = session.state else {
+            throw XCTSkip("precondition: the ready state must be reached, got \(session.state)")
+        }
+        return session
+    }
+
+    // MARK: - The run start, and the sync that follows
+
+    /// `ComparisonView` is the one place a `SubjectRunStart.Outcome` becomes
+    /// something storable, and the two cases that carry a time carry it under
+    /// different names. Mapping `alreadyRunning` to `nil` — or to a
+    /// `.started(time: 0, …)` — would sync one clip on its first frame with
+    /// nothing to indicate it, which is precisely what `StoredRunStart`'s own
+    /// comment forbids.
+    func testEveryRunStartOutcomeMapsToWhatCanBeStored() {
+        XCTAssertEqual(
+            ComparisonView.stored(.started(RunStart(time: 18.64, baseline: 1.2, threshold: 2.16))),
+            .started(time: 18.64, baseline: 1.2, threshold: 2.16)
+        )
+        XCTAssertEqual(
+            ComparisonView.stored(.alreadyRunning(firstSeen: 4.42)),
+            .alreadyRunning(firstSeen: 4.42),
+            "a clip that began mid-run syncs on its first sample, not on zero"
+        )
+        XCTAssertNil(ComparisonView.stored(.neverMoves(baseline: 0.4, threshold: 0.72)))
+        XCTAssertNil(ComparisonView.stored(.noSamples))
+
+        for outcome in [
+            SubjectRunStart.Outcome.neverMoves(baseline: 0.4, threshold: 0.72), .noSamples,
+        ] {
+            XCTAssertFalse(
+                ComparisonView.message(for: outcome).isEmpty,
+                "an outcome with no run start owes the operator a sentence: \(outcome)"
+            )
+        }
+    }
+
+    /// The side-to-session rule, stated once so it can be checked once: the
+    /// sheet, the confirm and the stored-sidecar reload all go through
+    /// `session(for:)`, and a swapped pair here would write the left clip's
+    /// pick into the right clip's sidecar.
+    func testEachSideGetsItsOwnSubjectSession() {
+        let sessions = SubjectSessions()
+        XCTAssertTrue(sessions.session(for: .left) === sessions.left)
+        XCTAssertTrue(sessions.session(for: .right) === sessions.right)
+        XCTAssertFalse(sessions.left === sessions.right, "the two sides must not share one session")
+    }
+
+    /// A nested `ObservableObject` publishes nothing to its parent by itself,
+    /// so `SubjectSessions` forwards both children's `objectWillChange`.
+    ///
+    /// This is not a Combine formality: "Sync from detected starts" is derived
+    /// from `pickedSubject` on both sessions, so without the forwarding the
+    /// menu stays absent after the second pick until something unrelated
+    /// happens to redraw the bar. Caught by reading the view, and pinned here
+    /// because a headless test cannot see a menu that failed to appear.
+    func testASessionChangeRepublishesToTheParent() async {
+        let sessions = SubjectSessions()
+        var published = 0
+        let token = sessions.objectWillChange.sink { _ in published += 1 }
+        defer { token.cancel() }
+
+        await sessions.left.analyse(clip: URL(fileURLWithPath: "/dev/null/missing.mov"))
+        XCTAssertGreaterThan(published, 0, "a left-session change must republish to the parent")
+
+        let afterLeft = published
+        await sessions.right.analyse(clip: URL(fileURLWithPath: "/dev/null/missing.mov"))
+        XCTAssertGreaterThan(published, afterLeft, "a right-session change must republish too")
     }
 
     // MARK: - Fixtures
