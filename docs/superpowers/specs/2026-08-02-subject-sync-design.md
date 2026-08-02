@@ -246,3 +246,37 @@ On the real footage, in the app:
 - The main viewer's entry point. The sheet is self-contained, so adding it there later is
   small; the comparison window is where sync is used and is the smaller surface to get
   right first.
+- **Spatially aligning the two clips.** That is Phase C; see below.
+
+## Phase C — landmark alignment, after this lands
+
+Overlay mode draws both clips into the same rect with no spatial alignment, so difference
+mode is only readable when both runs happened to be filmed from about the same camera
+position. Aligning them on background landmarks is the obvious next step, and it belongs
+**after** this work rather than beside it: registration compares terrain, and terrain only
+matches when both clips are at the same point in the run. Time sync is the precondition.
+
+The registration machinery already exists in the `landmark-align` worktree — per-frame
+`VNTranslationalImageRegistrationRequest`, temporal smoothing, a give-up rule, and
+`OverlayClipWriter`. Only `FrameRegistration.swift` was ported here, and only because
+`SubjectRunStart` uses it to cancel a single clip's camera pan. Nothing registers one clip
+against the other.
+
+**Do not port it before re-measuring it.** Its one recorded finding is that alignment
+decays as the clip goes on:
+
+| source time | best residual | overlap |
+|---|---|---|
+| 2.0 s | 4.92 | 0.842 |
+| 3.5 s | 6.05 | 0.878 |
+| 5.0 s | 9.04 | 0.759 |
+
+which is what the give-up rule was built around. But that was measured on **wrongly-synced
+footage of the wrong two skiers**: at equal elapsed time the two clips showed different
+parts of different runs, so the terrain diverging says nothing about whether alignment
+works. The thresholds derived from it inherit the same problem.
+
+So Phase C starts with a measurement, not an implementation: re-run the alignment sweep on
+a correctly-synced pair and see how long registration actually holds. If it still collapses
+within a few seconds, the honest outcome is not to ship it. If it holds, port it and wire
+it to Overlay mode using the sync point this work detects.
