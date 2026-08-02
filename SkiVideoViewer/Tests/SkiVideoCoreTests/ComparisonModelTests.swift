@@ -801,6 +801,109 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 0.01,
                        "the sync point must move by the distance travelled, not the distance asked for")
     }
+
+    // MARK: - Applying a sync point that came from somewhere else
+    //
+    // `applySync` takes two plain times. The model deliberately does not learn
+    // where they came from — only that they did not come from the operator, so
+    // the status chip can attribute them.
+    //
+    // `makeAlignedModel()` stands in for the brief's `loadedPair()`: this file
+    // has no such helper, and two zero-byte clips are what every other test
+    // here uses to get a loaded pair.
+
+    func testApplySyncSetsBothSidesAndRecordsItsOrigin() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.applySync(left: 18.64, right: 4.42)
+
+        XCTAssertTrue(model.isSynced)
+        XCTAssertEqual(model.leftSyncPoint.seconds, 18.64, accuracy: 0.05)
+        XCTAssertEqual(model.rightSyncPoint.seconds, 4.42, accuracy: 0.05)
+        guard case let .detected(left, right) = model.syncOrigin else {
+            return XCTFail("expected detected, got \(model.syncOrigin)")
+        }
+        XCTAssertEqual(left, 18.64, accuracy: 1e-9)
+        XCTAssertEqual(right, 4.42, accuracy: 1e-9)
+    }
+
+    func testAManualSyncAfterADetectedOneTakesTheOrigin() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.applySync(left: 18.64, right: 4.42)
+        XCTAssertNotEqual(model.syncOrigin, .manual, "precondition: the sync must be attributed to detection")
+
+        model.setSyncPoints()
+
+        XCTAssertEqual(model.syncOrigin, .manual)
+    }
+
+    func testClearingSyncResetsTheOrigin() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.applySync(left: 18.64, right: 4.42)
+        XCTAssertNotEqual(model.syncOrigin, .manual, "precondition: the sync must be attributed to detection")
+
+        model.removeSync()
+
+        XCTAssertFalse(model.isSynced)
+        XCTAssertEqual(model.syncOrigin, .manual)
+    }
+
+    /// Every other route that drops sync goes through `clearSync`, so loading a
+    /// clip must reset the attribution too — otherwise the chip keeps crediting
+    /// a detection that no longer applies to the clip on screen.
+    func testLoadingAClipAlsoResetsTheOrigin() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.applySync(left: 18.64, right: 4.42)
+
+        model.load(try makeVideoFile("replacement.mp4"), side: .left)
+
+        XCTAssertFalse(model.isSynced)
+        XCTAssertEqual(model.syncOrigin, .manual)
+    }
+
+    /// `alreadyRunning` yields a time at or before the first frame, and a
+    /// detected start can in principle exceed a clip's duration. Neither should
+    /// leave the pair half-synced.
+    ///
+    /// The upper bound is untestable here — a zero-byte fixture reports its
+    /// duration as NaN, so every clip is effectively infinite. See
+    /// `ComparisonBoundsTests.testApplySyncClampsBothEndsIntoRealClips` for
+    /// that half, on real media.
+    func testApplySyncClampsATimeBeyondTheClipRatherThanRefusing() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.applySync(left: -3.0, right: 9_999.0)
+
+        XCTAssertTrue(model.isSynced)
+        XCTAssertGreaterThanOrEqual(model.leftSyncPoint.seconds, 0)
+    }
+
+    /// A detected sync needs both clips, exactly as a manual one does: syncing
+    /// off a single loaded clip would lock the pair to a sync point on a player
+    /// with no item, whose time is NaN.
+    func testApplySyncWithOnlyOneClipLoadedDoesNotSync() throws {
+        let model = ComparisonModel()
+        defer { model.close() }
+        model.load(try makeVideoFile("left.mp4"), side: .left)
+
+        model.applySync(left: 3, right: 4)
+
+        XCTAssertFalse(model.isSynced)
+        XCTAssertEqual(model.syncOrigin, .manual,
+                       "a refused sync must not be attributed to a detection")
+    }
+
+    func testSyncOriginStartsManual() {
+        let model = makeModel()
+        defer { model.close() }
+
+        XCTAssertEqual(model.syncOrigin, .manual)
+    }
 }
 
 /// The bounds tests, on **real decodable media**.
@@ -980,6 +1083,53 @@ final class ComparisonBoundsTests: XCTestCase {
                        "the nudged side's sync point follows its clip")
         XCTAssertEqual(model.rightSyncPoint.seconds, 8, accuracy: 0.05,
                        "the untouched side's sync point must not move when nothing is out of range")
+    }
+
+    /// `applySync` on real media, in range: the sync points must land on the
+    /// times asked for. Worth its own case because `setSyncPoints()` reads
+    /// `AVPlayer.currentTime()`, and a seek on a real item completes
+    /// asynchronously — if `currentTime()` lagged the seek, a detected sync
+    /// would silently anchor on wherever the playheads happened to be.
+    func testApplySyncOnRealMediaAnchorsOnTheTimesAskedFor() throws {
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 20)
+        defer { model.close() }
+
+        model.applySync(left: 3, right: 7)
+
+        XCTAssertTrue(model.isSynced)
+        XCTAssertEqual(model.leftSyncPoint.seconds, 3, accuracy: 0.05)
+        XCTAssertEqual(model.rightSyncPoint.seconds, 7, accuracy: 0.05)
+        XCTAssertEqual(model.syncOrigin, .detected(left: 3, right: 7))
+    }
+
+    /// The half the zero-byte fixtures cannot see. A detected start at or before
+    /// the first frame, and one past the end of its clip, in the same call: both
+    /// must land on a real frame and the pair must end up fully synced, because
+    /// half a sync is worse than none.
+    func testApplySyncClampsBothEndsIntoRealClips() throws {
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 20)
+        defer { model.close() }
+
+        model.applySync(left: -3, right: 9_999)
+
+        XCTAssertTrue(model.isSynced, "a clamped detection must still sync the pair")
+        XCTAssertGreaterThanOrEqual(model.leftSyncPoint.seconds, 0,
+                                    "a sync point below zero names no frame; it was \(model.leftSyncPoint.seconds)")
+        XCTAssertLessThanOrEqual(model.leftSyncPoint.seconds, model.leftDuration + 0.01)
+        XCTAssertGreaterThanOrEqual(model.rightSyncPoint.seconds, 0)
+        XCTAssertLessThanOrEqual(
+            model.rightSyncPoint.seconds,
+            model.rightDuration + 0.01,
+            """
+            a sync point past the end of its clip names no frame; it was \
+            \(model.rightSyncPoint.seconds) on a \(model.rightDuration)s clip
+            """
+        )
+        // Both playheads must agree with the sync points they were taken from,
+        // or the pair is locked to an offset neither clip is actually at.
+        settle(model)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, model.leftSyncPoint.seconds, accuracy: 0.05)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, model.rightSyncPoint.seconds, accuracy: 0.05)
     }
 
     // MARK: - Fixtures

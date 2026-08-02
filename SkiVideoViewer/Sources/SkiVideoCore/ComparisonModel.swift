@@ -75,6 +75,17 @@ public enum TransportAction: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+/// Where the current sync points came from.
+///
+/// Published so the status chip can attribute them. A detected sync is applied
+/// immediately, before the operator has seen it, and on measured evidence it is
+/// sometimes wrong by a second or more — attribution is what makes that
+/// recoverable rather than mystifying.
+public enum SyncOrigin: Equatable, Sendable {
+    case manual
+    case detected(left: TimeInterval, right: TimeInterval)
+}
+
 /// Platform-agnostic state for the two-video comparison window. Like
 /// `ViewerModel`, everything platform-specific reaches it through the seams in
 /// `Seams.swift`, so an iPadOS target can present the same model.
@@ -91,6 +102,10 @@ public final class ComparisonModel: ObservableObject {
     @Published public private(set) var leftDuration = 0.0
     @Published public private(set) var rightDuration = 0.0
     @Published public private(set) var isSynced = false
+    /// Attribution for the sync points `isSynced` gates. Written only where
+    /// sync is established or dropped — `setSyncPoints`, `applySync`,
+    /// `clearSync` — so it cannot disagree with `isSynced`.
+    @Published public private(set) var syncOrigin: SyncOrigin = .manual
     @Published public private(set) var status = "Choose two videos and align them independently."
     @Published public var layout: ComparisonLayout = .sideBySide
     @Published public var overlayOpacity: Double = 0.5
@@ -446,13 +461,48 @@ public final class ComparisonModel: ObservableObject {
         leftSyncPoint = leftPlayer.currentTime()
         rightSyncPoint = rightPlayer.currentTime()
         isSynced = true
+        syncOrigin = .manual
         target = .both
         status = "Synchronized from L \(Self.timecode(leftTime)) and R \(Self.timecode(rightTime))."
+    }
+
+    /// Seeks both clips to the given times and syncs there.
+    ///
+    /// Two plain `TimeInterval`s, deliberately: the model does not learn where
+    /// they came from — sidecars, a detector, a future import — only that they
+    /// did not come from the operator, which is what `syncOrigin` records. That
+    /// ignorance is what lets the detection layer change without touching
+    /// transport code.
+    ///
+    /// Times are clamped into each clip's duration by `seek(_:to:)`: a detected
+    /// start can be negative or at the first frame (a run already in progress
+    /// when the camera rolled) or, in principle, beyond the end, and either
+    /// would otherwise leave the pair half-synced — which is worse than not
+    /// syncing at all. Clamping is not repeated here; doing it twice would mean
+    /// the rule lived in two places.
+    ///
+    /// Sync itself is established by `setSyncPoints()` and nothing else, so the
+    /// `L_cur - L_sync == R_cur - R_sync` invariant is set up the one existing
+    /// way. `syncOrigin` is overwritten *after* that call, because
+    /// `setSyncPoints` credits the operator.
+    public func applySync(left: TimeInterval, right: TimeInterval) {
+        seek(leftPlayer, to: left)
+        seek(rightPlayer, to: right)
+        setSyncPoints()
+        // `setSyncPoints` refuses without two videos, and a refused sync must
+        // not be attributed to a detection that never took effect.
+        guard isSynced else { return }
+        syncOrigin = .detected(left: left, right: right)
     }
 
     public func removeSync() {
         pauseBoth()
         isSynced = false
+        // Also here, not only in `clearSync`: this method does not route
+        // through it — it repeats the drop itself — so an assignment there
+        // alone would leave the chip crediting a detection the user just threw
+        // away.
+        syncOrigin = .manual
         if target == .both { target = lastTouchedTarget }
         status = "Independent controls restored. Align the videos and set new sync points when ready."
     }
@@ -630,6 +680,9 @@ public final class ComparisonModel: ObservableObject {
             pauseBoth()
         }
         isSynced = false
+        // Every route that drops sync other than `removeSync` arrives here —
+        // loading a clip, changing the alignment — so this covers all of them.
+        syncOrigin = .manual
         if target == .both { target = lastTouchedTarget }
         status = message
     }
