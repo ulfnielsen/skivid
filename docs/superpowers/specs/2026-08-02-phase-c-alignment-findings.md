@@ -80,3 +80,40 @@ on a second synced pair.
 Nothing here has been ported into the app. `FrameRegistration` is in `SkiVideoCore` only
 because `SubjectRunStart` uses it to cancel one clip's own camera pan; nothing registers one
 clip against another. The rest still lives in the `landmark-align` worktree.
+
+---
+
+## Addendum: the second pair (2026-08-02)
+
+The spec required the sweep to be repeated on a second synced pair before the thresholds
+were considered settled. Done, on `Idun Nielsen/C0082.MP4` (run start 3.8 s) against
+`Marc/C0089.MP4` (already running at first frame, 0.1 s), t = 0…17.
+
+**Overlap essentially never reaches the engage threshold.** Of 35 samples, one clears 0.68
+(t = 16.5, 0.816); the next highest are 0.609 and 0.605, and everything else is at or below
+0.432. Under the shipped gate this pair is never aligned.
+
+**That is the correct outcome, not a threshold problem.** Registration finds genuinely low
+residuals here — t = 5.0 reads 6.28 against an identity of 16.42, "better by 10.14" — but on
+an overlap of 0.146. The composite (`/tmp/pair2-t5/diff-translational-0.5.png`) shows why:
+the warped frame is pushed almost entirely off the top-left corner, the terrain inside that
+small rectangle matches, and the remaining 85 % of the picture has nothing to compare
+against at all. A superb residual measured over a sliver says nothing about the alignment
+an operator would see.
+
+Three things follow:
+
+1. **The thresholds carry over unchanged.** They were derived on one pair and are here
+   exercised on a pair they reject wholesale, which is the harder test of the two. Nothing
+   in the second pair argues for moving them.
+2. **Residual alone is not a quality signal, and overlap is not a secondary check.** This is
+   the design's central bet — gate on overlap — and the second pair is the case that would
+   have exposed it as wrong. It does not.
+3. **Alignment is a pair-dependent feature, and the honest answer is often "no".** It
+   applies when the two runs were filmed from similar camera positions on the same course
+   and declines otherwise. The app must therefore say when alignment is unavailable for a
+   pair rather than presenting an Align control that appears broken — the status chip
+   already reports disengagement, and a pair that never engages should read the same way.
+
+What is still unmeasured: whether the flicker at t ≈ 4.7 on the first pair is visible in
+motion, and whether the 5-sample median wants to be longer. Both need the running app.
