@@ -17,7 +17,7 @@ final class AlignmentGateTests: XCTestCase {
 
     private func sampled(_ overlaps: [Double], spacing: TimeInterval) -> AlignmentTrack {
         AlignmentTrack(
-            version: 1, computedAt: Date(timeIntervalSince1970: 1_754_140_000),
+            version: AlignmentTrack.currentVersion, computedAt: Date(timeIntervalSince1970: 1_754_140_000),
             leftClip: "L.MP4", rightClip: "R.MP4",
             leftStart: 18.56, rightStart: 4.40, parameters: .current,
             samples: overlaps.enumerated().map { index, overlap in

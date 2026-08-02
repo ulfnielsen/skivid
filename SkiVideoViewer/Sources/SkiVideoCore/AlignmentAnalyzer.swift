@@ -108,7 +108,7 @@ public enum AlignmentAnalyzer {
         progress(1)
 
         return AlignmentTrack(
-            version: 1,
+            version: AlignmentTrack.currentVersion,
             computedAt: Date(),
             leftClip: left.lastPathComponent,
             rightClip: right.lastPathComponent,
@@ -160,12 +160,23 @@ public enum AlignmentAnalyzer {
         // at 320px means the same thing to a consumer drawing at 1920px. Both
         // components divide by *width*, not by width and height separately,
         // which keeps the vector's aspect true.
+        //
+        // **`dy` is negated, and that is not a sign slip to tidy away.** Vision
+        // registers in a bottom-left origin with y increasing *upward*; this
+        // project's convention — stated for every coordinate crossing a public
+        // API, and already followed by `PoseDetection.box` — is top-left origin
+        // with y increasing *downward*, which is also what a SwiftUI `.offset`
+        // wants. Without the flip the vector is right in x and inverted in y,
+        // so alignment pushes the two clips further apart by exactly the amount
+        // it should have brought them together. Measured in the running app on
+        // C0084 + C0094: at dy = 0 the shared banner sat ~100pt apart, and
+        // applying dy = -0.0656 took it to ~205pt.
         let width = Double(reference.width)
         return AlignmentSample(
             time: time,
             translation: CGVector(
                 dx: Double(warp.columns.2.x) / width,
-                dy: Double(warp.columns.2.y) / width
+                dy: -Double(warp.columns.2.y) / width
             ),
             overlap: measured.overlapFraction,
             residual: measured.meanAbsoluteDifference,

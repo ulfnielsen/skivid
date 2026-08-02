@@ -28,7 +28,16 @@ public enum AlignmentTrackStore {
     public static func load(left: URL, right: URL) -> AlignmentTrack? {
         guard let data = try? Data(contentsOf: sidecarURL(left: left, right: right))
         else { return nil }
-        return try? decoder.decode(AlignmentTrack.self, from: data)
+        guard let track = try? decoder.decode(AlignmentTrack.self, from: data)
+        else { return nil }
+        // A track written in an older convention is refused, not adapted. Only
+        // one older version exists — version 1 stored `dy` in Vision's y-up
+        // space — and a reader applying it would push the two clips apart by
+        // exactly the amount it should have brought them together, with nothing
+        // on screen to say so. Refusing costs one recomputation; using it costs
+        // the operator's trust in every alignment they look at afterwards.
+        guard track.version >= AlignmentTrack.currentVersion else { return nil }
+        return track
     }
 
     /// Writes the sidecar, throwing if it cannot. Callers surface the failure

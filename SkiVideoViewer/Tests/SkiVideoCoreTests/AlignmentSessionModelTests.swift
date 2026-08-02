@@ -46,7 +46,7 @@ final class AlignmentSessionModelTests: XCTestCase {
         rightStart: TimeInterval = 4.40
     ) -> AlignmentTrack {
         AlignmentTrack(
-            version: 1, computedAt: Date(timeIntervalSince1970: 1_754_140_000),
+            version: AlignmentTrack.currentVersion, computedAt: Date(timeIntervalSince1970: 1_754_140_000),
             leftClip: left.lastPathComponent, rightClip: right.lastPathComponent,
             leftStart: leftStart, rightStart: rightStart, parameters: .current,
             samples: overlaps.enumerated().map { index, overlap in

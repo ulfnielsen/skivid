@@ -17,7 +17,7 @@ final class AlignmentTrackTests: XCTestCase {
 
     private func track(leftStart: TimeInterval = 18.56) -> AlignmentTrack {
         AlignmentTrack(
-            version: 1,
+            version: AlignmentTrack.currentVersion,
             computedAt: Date(timeIntervalSince1970: 1_754_140_000),
             leftClip: "C0094.MP4", rightClip: "C0092.MP4",
             leftStart: leftStart, rightStart: 4.40,
@@ -61,6 +61,40 @@ final class AlignmentTrackTests: XCTestCase {
 
         XCTAssertEqual(
             AlignmentTrackStore.load(left: left, right: right)?.samples.count, 2
+        )
+    }
+
+    /// A track written before the y-axis convention was fixed must be refused,
+    /// not adapted and not used.
+    ///
+    /// Version 1 stored `dy` in Vision's bottom-left, y-up space. Applied by a
+    /// reader expecting top-left, y-down, it moves the floating clip the wrong
+    /// way — pushing the pair apart by exactly the distance it should have
+    /// closed. Measured in the running app before the fix: a shared banner went
+    /// from ~100pt apart at `dy = 0` to ~205pt at `dy = -0.0656`.
+    ///
+    /// Nothing on screen would say so, which is why this refuses rather than
+    /// migrating: a wrong number that looks like an answer is worse than no
+    /// answer, and recomputing costs fifteen seconds.
+    func testATrackFromTheOlderConventionIsRefused() throws {
+        let left = directory.appendingPathComponent("C0094.MP4")
+        let right = directory.appendingPathComponent("C0092.MP4")
+        try AlignmentTrackStore.save(track(), left: left, right: right)
+
+        // Rewrite the stored version as 1, leaving everything else intact — the
+        // file a build from before the fix would have produced.
+        let url = AlignmentTrackStore.sidecarURL(left: left, right: right)
+        let original = try String(contentsOf: url, encoding: .utf8)
+        let downgraded = original.replacingOccurrences(
+            of: "\"version\" : \(AlignmentTrack.currentVersion)",
+            with: "\"version\" : 1"
+        )
+        XCTAssertNotEqual(downgraded, original, "the downgrade did not apply")
+        try Data(downgraded.utf8).write(to: url)
+
+        XCTAssertNil(
+            AlignmentTrackStore.load(left: left, right: right),
+            "a version 1 track loaded; its dy is inverted and would misalign silently"
         )
     }
 

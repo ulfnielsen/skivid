@@ -57,6 +57,16 @@ public struct AlignmentSample: Codable, Equatable, Sendable {
 /// run starts it was computed against, so both are recorded and every load
 /// checks them — see `isStale`.
 public struct AlignmentTrack: Codable, Equatable, Sendable {
+    /// The convention this file's translations are written in.
+    ///
+    /// Version 1 stored `dy` in Vision's bottom-left, y-up space; version 2
+    /// stores it top-left, y-down, matching every other coordinate that
+    /// crosses a public API here. A version 1 track applied by a version 2
+    /// reader would push the clips apart by exactly the amount it should
+    /// bring them together, so `AlignmentTrackStore` refuses to load one
+    /// rather than let it be silently wrong.
+    public static let currentVersion = 2
+
     public let version: Int
     public let computedAt: Date
     public let leftClip: String

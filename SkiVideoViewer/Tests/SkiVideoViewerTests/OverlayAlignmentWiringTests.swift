@@ -406,7 +406,7 @@ final class OverlayAlignmentWiringTests: XCTestCase {
         leftStartWhenLoading: TimeInterval = 18.56
     ) throws -> AlignmentSessionModel {
         let stored = AlignmentTrack(
-            version: 1, computedAt: Date(timeIntervalSince1970: 1_754_140_000),
+            version: AlignmentTrack.currentVersion, computedAt: Date(timeIntervalSince1970: 1_754_140_000),
             leftClip: left.lastPathComponent, rightClip: right.lastPathComponent,
             leftStart: 18.56, rightStart: 4.40, parameters: .current,
             samples: (0..<60).map { index in
