@@ -1,13 +1,22 @@
 import SkiVideoCore
 import SwiftUI
 
-/// Layout picker, target selector, transport, time and the sync anchor — the
-/// one row that replaces the previous three transports.
+/// Layout picker, target selector, transport, time, the subject button and the
+/// sync anchor — the one row that replaces the previous three transports.
 ///
 /// Wraps to two rows rather than shrinking when it does not fit: every control
 /// keeps its 44pt row at every width. `ViewThatFits` tries the single row first
 /// and falls through to the stacked one, which is also the last candidate and
 /// so the one used when nothing fits.
+///
+/// **The bar's ideal width is 941pt** — re-measured with
+/// `ComparisonControlBarLayoutTests` when the subject button was added, up from
+/// 881pt (the 880.5pt figure quoted in `targetPicker` below) by exactly the
+/// button's 44pt frame plus the `HStack`'s 16pt spacing. So one row above
+/// 941pt, two below, and every iPad portrait width is below it. Adding another
+/// control moves this number again; re-measure it rather than adjusting a
+/// control to preserve it, and update
+/// `testTheBarWrapsBetween940And941Points` with what you measured.
 ///
 /// **The 44pt rule applies to the controls we build, not to system controls.**
 /// The anchor is a plain `Button` and is genuinely 44×44, by `frame` plus
@@ -34,6 +43,24 @@ import SwiftUI
 struct ComparisonControlBar: View {
     @ObservedObject var model: ComparisonModel
 
+    /// The sides that have a clip loaded, so the subject button can refuse a
+    /// side with nothing to analyse. A set rather than a `Bool` because the
+    /// button follows the target and the target changes without the bar being
+    /// rebuilt by its caller.
+    var analysableSides: Set<ComparisonSide> = []
+
+    /// Whether *both* sides have a stored subject with a run start. Gates the
+    /// whole secondary menu, not merely its item; see `subjectButton`.
+    var canSyncFromDetectedStarts = false
+
+    /// Opens the subject sheet for the side the bar is targeting. The side is
+    /// decided here, by the same `scrubbedSide` rule the scrubber and the time
+    /// label follow, and handed out — so the bar has one notion of which side
+    /// controls act on, and a test can see which side it chose.
+    var onFindSubject: (ComparisonSide) -> Void = { _ in }
+
+    var onSyncFromDetectedStarts: () -> Void = {}
+
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 16) {
@@ -42,6 +69,7 @@ struct ComparisonControlBar: View {
                 transport
                 Spacer(minLength: 8)
                 timeLabel
+                subjectButton
                 anchorButton
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -54,6 +82,7 @@ struct ComparisonControlBar: View {
                     transport
                     Spacer(minLength: 8)
                     timeLabel
+                    subjectButton
                     anchorButton
                 }
             }
@@ -87,9 +116,9 @@ struct ComparisonControlBar: View {
     /// (830.5pt vs 880.5pt), which put the wrap threshold *between* the two
     /// states at exactly the 834pt the spec calls out — so tapping the anchor
     /// on an 11-inch iPad in portrait reflowed the bar from one row to two and
-    /// resized the video above it. A constant width makes the threshold
-    /// (880.5pt) the same in both states, and keeps the transport from
-    /// shifting sideways when `Both` appears.
+    /// resized the video above it. A constant width makes the threshold the
+    /// same in both states — 941pt today, see the type comment — and keeps the
+    /// transport from shifting sideways when `Both` appears.
     private var targetPicker: some View {
         Picker("Controls", selection: $model.target) {
             ForEach(model.availableTargets) { Text($0.title).tag($0) }
@@ -164,5 +193,55 @@ struct ComparisonControlBar: View {
 
     private var anchorLabel: String {
         model.isSynced ? "Return to sync points" : "Set sync points"
+    }
+
+    /// One control for the whole subject feature, not two.
+    ///
+    /// It opens the picking sheet for the **targeted** side — `scrubbedSide`,
+    /// the rule the scrubber and the time label already follow — so the bar
+    /// keeps a single notion of which side controls act on. A second button
+    /// for "sync from detected starts" would cost another 44pt plus its 16pt
+    /// gap, and the anchor already shows that a primary action plus a
+    /// `contextMenu` is the shape that fits here.
+    ///
+    /// Same conditional shape as `anchorButton`, for the same measured
+    /// reason: a menu whose only item is gated still counts as a context menu
+    /// and pops up empty, so the whole menu is conditional rather than its
+    /// contents. Empty here would be the common case — neither clip has a
+    /// stored subject until the operator has picked one on both.
+    @ViewBuilder
+    private var subjectButton: some View {
+        if canSyncFromDetectedStarts {
+            subjectControl.contextMenu {
+                Button("Sync from detected starts") { onSyncFromDetectedStarts() }
+            }
+        } else {
+            subjectControl
+        }
+    }
+
+    private var subjectControl: some View {
+        Button {
+            onFindSubject(model.target.scrubbedSide)
+        } label: {
+            Image(systemName: "person.crop.rectangle")
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(subjectLabel)
+        .accessibilityLabel(subjectLabel)
+        .accessibilityIdentifier("Find subject")
+        // Nothing to analyse on a side with no clip. Not `hasTwoVideos`: one
+        // clip is enough to pick a subject in, and the pick is stored beside
+        // that clip whether or not the other side is loaded yet.
+        .disabled(!analysableSides.contains(model.target.scrubbedSide))
+    }
+
+    /// Names the side, because the button acts on the targeted one and a label
+    /// that did not say so would be the one control in the bar whose effect
+    /// the operator cannot predict from reading it.
+    private var subjectLabel: String {
+        model.target.scrubbedSide == .left ? "Find subject in left clip" : "Find subject in right clip"
     }
 }

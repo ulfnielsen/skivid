@@ -43,6 +43,10 @@ final class ComparisonControlBarLayoutTests: XCTestCase {
     /// Nothing else in the repo would notice that coming back. The iPad UI
     /// tests cannot reach the synced state at all — `setSyncPoints()` requires
     /// two loaded clips and no UI test can load one.
+    ///
+    /// Still true with the subject button in the bar: both states measure a
+    /// 941pt ideal width, and the same 112pt wrapped height at 834pt and
+    /// 744pt.
     func testTheBarIsTheSameHeightSyncedAsAligning() throws {
         let aligning = ComparisonModel()
         let synced = try makeSyncedModel()
@@ -66,31 +70,56 @@ final class ComparisonControlBarLayoutTests: XCTestCase {
         }
     }
 
-    /// The wrap itself, at the measured threshold. 880.5pt is the bar's ideal
-    /// width, so 881pt fits on one row and 880pt does not — and every iPad
+    /// The wrap itself, at the measured threshold. 941pt is the bar's ideal
+    /// width, so 941pt fits on one row and 940pt does not — and every iPad
     /// portrait width is below it, which is why the screenshots at 834pt and
     /// 744pt show a two-row bar and three rows of chrome rather than two.
     ///
-    /// Asserted as "one row is shorter than two, and the change happens
-    /// between 880 and 881" rather than as absolute point values, because the
-    /// row heights are macOS metrics (60pt/112pt here) and would not
-    /// transfer.
-    func testTheBarWrapsBetween880And881Points() throws {
+    /// **Re-measured, not relaxed.** The threshold was 881pt (an 880.5pt ideal
+    /// width) until the subject button joined the bar; the button's 44pt frame
+    /// plus the `HStack`'s 16pt spacing is exactly the 60pt difference. This
+    /// number is a measurement of the shipped bar, so it moves whenever a
+    /// control does, and moving it is the point of the test rather than a
+    /// nuisance: the two assertions that *guard* something are the two below
+    /// it, and both still hold.
+    ///
+    /// Asserted as "one row is shorter than two, the change happens between
+    /// 940 and 941, and two rows are not three" rather than as absolute point
+    /// values, because the row heights are macOS metrics (60pt/112pt here) and
+    /// would not transfer.
+    func testTheBarWrapsBetween940And941Points() throws {
         let model = ComparisonModel()
-        let oneRow = barHeight(model: model, width: 881)
-        let twoRows = barHeight(model: model, width: 880)
+        let oneRow = barHeight(model: model, width: 941)
+        let twoRows = barHeight(model: model, width: 940)
 
         XCTAssertGreaterThan(
             twoRows,
             oneRow,
-            "880pt must wrap to a taller layout than 881pt; measured \(twoRows) vs \(oneRow)"
+            "940pt must wrap to a taller layout than 941pt; measured \(twoRows) vs \(oneRow)"
         )
         for width in [834.0, 744.0] as [CGFloat] {
+            let height = barHeight(model: model, width: width)
             XCTAssertEqual(
-                barHeight(model: model, width: width),
+                height,
                 twoRows,
                 accuracy: 0.5,
                 "\(width)pt is below the threshold and must use the wrapped layout"
+            )
+            // Two rows, not three — the assertion the brief calls out, and not
+            // implied by the equality above: if a control no longer fitted, the
+            // wrapped layout's own rows would wrap in turn and *both* measured
+            // heights would grow together. A third row costs a full row plus
+            // its spacing, so it cannot hide under twice a single row's height:
+            // measured, 112pt for two rows against 60pt for one, and 308pt at a
+            // width narrow enough (400pt) to force the inner rows to break.
+            XCTAssertLessThan(
+                height,
+                oneRow * 2,
+                """
+                the bar needs more than two rows at \(width)pt (\(height)pt \
+                against \(oneRow)pt for a single row), which takes a third row \
+                of chrome off the video
+                """
             )
         }
     }
@@ -226,6 +255,108 @@ final class ComparisonStatusChipTests: XCTestCase {
                 "the chip is clipped at \(width)pt: \(frame)"
             )
         }
+    }
+
+    /// The detected-sync sentence is a new candidate for longest status, and
+    /// the chip is a constant 340pt clipped to two lines. If it does not fit,
+    /// it is silently truncated — the failure mode the chip's width cap exists
+    /// to prevent.
+    ///
+    /// **Not measured through `chipFrame`/`ComparisonStatusChip`.** That view
+    /// applies `.lineLimit(2)`, which caps the laid-out height at two lines'
+    /// worth for *any* text that needs two lines or more — a sentence that
+    /// needs exactly two and one that needs five report the identical height,
+    /// because both are truncated down to the same two-line box. A first
+    /// version of this test compared `chipFrame` heights and passed even after
+    /// the status was deliberately tripled in length (mutation-checked per the
+    /// task brief), which is exactly the "harness measures nothing" failure
+    /// the brief warned about. So this measures the *unclipped* text instead —
+    /// same font, same 320pt max width, same centered multiline layout as
+    /// `ComparisonStatusChip.body`, just without the `.lineLimit(2)` that
+    /// hides an overflow from view.
+    func testTheDetectedSyncStatusFitsTheChip() throws {
+        let model = ComparisonModel()
+        defer { model.close() }
+        let leftFile = try makeVideoFile("left.mov")
+        let rightFile = try makeVideoFile("right.mov")
+        model.load(leftFile, side: .left)
+        model.load(rightFile, side: .right)
+        model.applySync(left: 18.64, right: 4.42)
+
+        let actual = naturalTextHeight(model.status)
+        // An explicit newline, not a wrap: two short segments forced onto two
+        // lines give the same per-line height a wrapped two-line paragraph
+        // would, without depending on where any particular sentence happens
+        // to wrap.
+        let twoLines = naturalTextHeight("line one\nline two")
+
+        XCTAssertLessThanOrEqual(
+            actual, twoLines + 1,
+            "the detected-sync status needs more than two lines (\(actual)pt vs \(twoLines)pt for two): \(model.status)"
+        )
+    }
+
+    /// The unclipped counterpart to `chipFrame`: renders `Text` styled exactly
+    /// as `ComparisonStatusChip.body` does — `.caption` font, centered,
+    /// `maxWidth: 320` — but without `.lineLimit(2)`, so a sentence that wraps
+    /// past two lines shows up as a taller measured frame instead of being
+    /// silently cropped to the same two-line box.
+    private func naturalTextHeight(_ text: String) -> CGFloat {
+        let box = FrameBox()
+        let host = NSHostingView(rootView: TextHeightProbe(text: text, report: { box.frame = $0 }))
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 340, height: 600),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        let deadline = Date().addingTimeInterval(5)
+        while box.frame == .zero, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertNotEqual(
+            box.frame,
+            .zero,
+            "the geometry probe never reported; the measurement below would be meaningless"
+        )
+        return box.frame.height
+    }
+
+    private struct TextHeightProbe: View {
+        let text: String
+        let report: (CGRect) -> Void
+
+        var body: some View {
+            Text(text)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ChipFrameKey.self, value: proxy.frame(in: .local))
+                    }
+                )
+                .onPreferenceChange(ChipFrameKey.self) { report($0) }
+        }
+    }
+
+    /// `AVPlayerItem` accepts any URL and reports failure asynchronously, so
+    /// an empty file is enough to give a player a `currentItem` — which is all
+    /// `hasTwoVideos`, and therefore `applySync`'s `setSyncPoints()` call,
+    /// require. Mirrors the fixture helper `ComparisonModelTests` uses.
+    private func makeVideoFile(_ name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+        return url
     }
 
     /// The rendered frame of the pill inside a container laid out exactly as

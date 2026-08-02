@@ -259,11 +259,13 @@ final class SharedControlsWiringTests: XCTestCase {
     /// to observe.
     ///
     /// The button index is not assumed: confirmed empirically that
-    /// `ComparisonControlBar` renders exactly seven `NSButton`s — the six
-    /// transport buttons in `TransportAction.allCases` order, then the
-    /// anchor — by loading two clips, clicking the button at
+    /// `ComparisonControlBar` renders exactly eight `NSButton`s — the six
+    /// transport buttons in `TransportAction.allCases` order, then the subject
+    /// button, then the anchor — by loading two clips, clicking the button at
     /// `TransportAction.allCases.firstIndex(of: .playPause)` and observing
-    /// `leftPlayer.rate` actually become `1`.
+    /// `leftPlayer.rate` actually become `1`. It was seven until the subject
+    /// button joined the bar; the transport still comes first, so the index
+    /// this test clicks is unchanged.
     func testClickingPlayPauseInComparisonControlBarMovesTheModel() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -278,14 +280,17 @@ final class SharedControlsWiringTests: XCTestCase {
         XCTAssertEqual(model.leftPlayer.rate, 0, "precondition: nothing is playing yet")
 
         // Wide enough that `ViewThatFits` picks the single-row branch — see
-        // `ComparisonControlBarLayoutTests`, which pins 881pt as one row. The
+        // `ComparisonControlBarLayoutTests`, which pins 941pt as one row. The
         // dedicated `transport` property is shared by both branches, so
         // either would do; this just avoids depending on which one renders.
         let host = NSHostingView(rootView: ComparisonControlBar(model: model).frame(width: 1000, height: 200))
         host.layoutSubtreeIfNeeded()
 
         let buttons = transportButtons(in: host)
-        XCTAssertEqual(buttons.count, 7, "precondition: the six transport buttons plus the anchor")
+        XCTAssertEqual(
+            buttons.count, 8,
+            "precondition: the six transport buttons, the subject button, then the anchor"
+        )
 
         let playPauseIndex = try XCTUnwrap(TransportAction.allCases.firstIndex(of: .playPause))
         buttons[playPauseIndex].performClick(nil)
