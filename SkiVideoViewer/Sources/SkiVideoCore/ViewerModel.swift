@@ -23,6 +23,12 @@ public final class ViewerModel: ObservableObject {
     @Published private(set) var videoIndex = 0
     @Published public private(set) var status = "Choose an organized video directory"
     @Published public var errorMessage: String?
+    /// Position and length of the current clip, for the scrubber and the time
+    /// readout. Published for the same reason `ComparisonModel` publishes its
+    /// pair: `AVPlayer` reports neither, so a view that wants them has to be
+    /// told.
+    @Published public private(set) var currentTime = 0.0
+    @Published public private(set) var duration = 0.0
 
     public let player = AVPlayer()
 
@@ -38,6 +44,8 @@ public final class ViewerModel: ObservableObject {
     private var lastTapDirection: ScrubDirection?
     private var lastTapTime = Date.distantPast
     private var driveMediaByURL: [URL: DriveMedia] = [:]
+    private var timeObserver: Any?
+    private var durationObserver: NSKeyValueObservation?
 
     private let input: PlaybackInputSource
     private let folderPicker: FolderPicker
@@ -65,6 +73,7 @@ public final class ViewerModel: ObservableObject {
         self.input.onIntent = { [weak self] intent in
             self?.handle(intent)
         }
+        startObservingTime()
     }
 
     /// Internal: the model subscribes itself to `input.onIntent`, so no caller
@@ -297,6 +306,43 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
+    /// The viewer's six transport actions, in one entry point mirroring
+    /// `ComparisonModel.applyTransport`. One shape across both screens means
+    /// one shared `TransportControls` view can drive either.
+    public func applyTransport(_ action: TransportAction) {
+        // Any in-flight arrow hold ends first. Without this the hold's state
+        // survives the press — `heldDirection` stays set, and `beginArrow`
+        // refuses every later hold.
+        endArrow(performTap: false)
+        switch action {
+        case .back5: seek(seconds: -5)
+        case .back1: seek(seconds: -1)
+        case .forward1: seek(seconds: 1)
+        case .forward5: seek(seconds: 5)
+        case .playPause: togglePlayback()
+        case .slow:
+            guard currentVideo != nil else { return }
+            player.playImmediately(atRate: 0.25)
+            status = "Quarter speed"
+        }
+    }
+
+    /// Absolute seek, for the scrubber. `cancelPendingSeeks` first so a drag
+    /// coalesces instead of queueing one seek per pixel.
+    public func scrub(to seconds: Double) {
+        guard player.currentItem != nil else { return }
+        endArrow(performTap: false)
+        player.currentItem?.cancelPendingSeeks()
+        var target = max(0, seconds)
+        if duration > 0 { target = min(target, duration) }
+        currentTime = target
+        player.seek(
+            to: CMTime(seconds: target, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
     func beginArrow(_ direction: ScrubDirection) {
         guard currentVideo != nil, heldDirection == nil else { return }
         heldDirection = direction
@@ -334,15 +380,51 @@ public final class ViewerModel: ObservableObject {
         holdPausedManually = false
     }
 
+    /// 0.1s matches the comparison screen's interval: fast enough that the
+    /// scrubber thumb tracks playback without visible stepping, slow enough not
+    /// to publish on every frame.
+    private func startObservingTime() {
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            Task { @MainActor in
+                guard let self else { return }
+                self.currentTime = time.seconds.isFinite ? time.seconds : 0
+            }
+        }
+    }
+
+    /// The periodic observer cannot carry duration: it does not fire while
+    /// paused, and a freshly loaded clip is paused. `ComparisonModel` learned
+    /// the same thing — the duration arrives asynchronously, after the item
+    /// does.
+    private func observeDuration(of item: AVPlayerItem) {
+        durationObserver = item.observe(\.duration, options: [.initial, .new]) { [weak self, weak item] _, _ in
+            Task { @MainActor in
+                guard let self, let item, self.player.currentItem === item else { return }
+                let seconds = item.duration.seconds
+                guard seconds.isFinite, seconds > 0 else { return }
+                self.duration = seconds
+            }
+        }
+    }
+
     private func loadCurrentVideo() {
         guard let currentVideo else { return }
+        let item: AVPlayerItem
         if let media = driveMediaByURL[currentVideo] {
-            player.replaceCurrentItem(with: AVPlayerItem(url: media.streamingURL))
+            item = AVPlayerItem(url: media.streamingURL)
         } else {
-            player.replaceCurrentItem(with: AVPlayerItem(url: currentVideo))
+            item = AVPlayerItem(url: currentVideo)
         }
+        player.replaceCurrentItem(with: item)
+        // Reset before observing: the previous clip's figures would otherwise
+        // drive the scrubber until the new duration arrives, which for a remote
+        // Drive item can be a visible moment.
+        currentTime = 0
+        duration = 0
+        observeDuration(of: item)
         player.pause()
-        status = "Paused · Space to play"
+        status = "Paused"
     }
 
     private func seek(seconds: Double) {
