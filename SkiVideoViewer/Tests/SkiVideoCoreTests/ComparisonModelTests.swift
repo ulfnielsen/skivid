@@ -989,9 +989,12 @@ final class ComparisonBoundsTests: XCTestCase {
     /// bounds test run before that would measure the same absent bounds the
     /// zero-byte fixtures give.
     private func makeRealMediaModel(leftSeconds: Double, rightSeconds: Double) throws -> ComparisonModel {
+        let root = temporaryDirectory ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        temporaryDirectory = root
         let model = ComparisonModel()
-        model.load(try makeRealVideoFile("left.mov", seconds: leftSeconds), side: .left)
-        model.load(try makeRealVideoFile("right.mov", seconds: rightSeconds), side: .right)
+        model.load(try makeRealVideoFile(in: root, name: "left.mov", seconds: leftSeconds), side: .left)
+        model.load(try makeRealVideoFile(in: root, name: "right.mov", seconds: rightSeconds), side: .right)
         waitUntil("the clips' durations must be known before any bound can be tested") {
             model.leftDuration > 0 && model.rightDuration > 0
         }
@@ -1035,59 +1038,4 @@ final class ComparisonBoundsTests: XCTestCase {
         XCTAssertTrue(condition(), message)
     }
 
-    /// A real H.264 clip of a known length. 160×90 at 30fps keeps a 20s clip to
-    /// 600 tiny frames, which encodes in a fraction of a second; the per-frame
-    /// grey level changes so the encoder cannot collapse the clip into
-    /// something with a different duration than asked for.
-    private func makeRealVideoFile(_ name: String, seconds: Double, fps: Int32 = 30) throws -> URL {
-        let root = temporaryDirectory ?? FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        temporaryDirectory = root
-        let url = root.appendingPathComponent(name)
-
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 160,
-            AVVideoHeightKey: 90,
-        ])
-        input.expectsMediaDataInRealTime = false
-        writer.add(input)
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-                kCVPixelBufferWidthKey as String: 160,
-                kCVPixelBufferHeightKey as String: 90,
-            ]
-        )
-        XCTAssertTrue(writer.startWriting(), "could not start writing the fixture: \(String(describing: writer.error))")
-        writer.startSession(atSourceTime: .zero)
-
-        let frames = Int(seconds * Double(fps))
-        for frame in 0..<frames {
-            while !input.isReadyForMoreMediaData {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
-            }
-            let pool = try XCTUnwrap(adaptor.pixelBufferPool, "the writer gave no pixel buffer pool")
-            var buffer: CVPixelBuffer?
-            XCTAssertEqual(CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer), kCVReturnSuccess)
-            let pixels = try XCTUnwrap(buffer)
-            CVPixelBufferLockBaseAddress(pixels, [])
-            if let base = CVPixelBufferGetBaseAddress(pixels) {
-                memset(base, Int32(frame % 251), CVPixelBufferGetBytesPerRow(pixels) * CVPixelBufferGetHeight(pixels))
-            }
-            CVPixelBufferUnlockBaseAddress(pixels, [])
-            XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps)))
-        }
-        input.markAsFinished()
-        writer.endSession(atSourceTime: CMTime(value: CMTimeValue(frames), timescale: fps))
-
-        let written = expectation(description: "fixture written")
-        writer.finishWriting { written.fulfill() }
-        wait(for: [written], timeout: 60)
-        XCTAssertEqual(writer.status, .completed, "fixture encode failed: \(String(describing: writer.error))")
-        return url
-    }
 }

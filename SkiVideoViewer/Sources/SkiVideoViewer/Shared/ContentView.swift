@@ -183,45 +183,19 @@ struct ContentView: View {
     private var detail: some View {
         VStack(spacing: 0) {
             if let athlete = model.currentAthlete {
-                NativePlayerView(player: model.player)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ViewerPane(model: model, athleteName: athlete.name)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(athlete.name)
-                                .font(.title2.bold())
-                            Text(model.clipDescription)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(model.status)
-                            .foregroundStyle(.secondary)
-                    }
+                VStack(spacing: 0) {
+                    TimelineScrubber(
+                        time: model.currentTime,
+                        duration: model.duration,
+                        onScrub: { model.scrub(to: $0) }
+                    )
+                    .accessibilityIdentifier("Viewer timeline")
+                    .padding(.horizontal, 12)
 
-                    HStack(spacing: 12) {
-                        Button {
-                            model.changeVideo(by: -1)
-                        } label: {
-                            Label("Previous", systemImage: "backward.end.fill")
-                        }
-                        Button {
-                            model.togglePlayback()
-                        } label: {
-                            Label("Play / Pause", systemImage: "playpause.fill")
-                        }
-                        Button {
-                            model.changeVideo(by: 1)
-                        } label: {
-                            Label("Next", systemImage: "forward.end.fill")
-                        }
-                        Spacer()
-                        Text("↑/↓ clips  ·  Page Up/Down athletes  ·  ⌘F find athlete  ·  Space play/pause  ·  ←/→ tap, double-tap, or hold")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
+                    ViewerControlBar(model: model)
                 }
-                .padding(16)
                 .background(.bar)
             } else {
                 emptyState(
