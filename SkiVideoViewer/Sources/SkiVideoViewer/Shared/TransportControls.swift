@@ -20,6 +20,12 @@ struct TransportControls: View {
         }
     }
 
+    /// `contentShape` below is deliberate and load-bearing: these are plain
+    /// `Button`s, so it genuinely enlarges the hit region to 44×44. Do not copy
+    /// it onto a `Picker` or a `Slider` — measured three times with dispatched
+    /// `NSEvent` clicks, a parent's content shape cannot route hits into a child
+    /// control's segments, and its only effect there is swallowing clicks meant
+    /// for what sits behind.
     private func button(_ action: TransportAction) -> some View {
         let appearance = Self.appearance(of: action)
         return Button {
@@ -35,12 +41,6 @@ struct TransportControls: View {
         .disabled(!isEnabled)
     }
 
-    /// `contentShape` above is deliberate and load-bearing: these are plain
-    /// `Button`s, so it genuinely enlarges the hit region to 44×44. Do not copy
-    /// it onto a `Picker` or a `Slider` — measured three times with dispatched
-    /// `NSEvent` clicks, a parent's content shape cannot route hits into a child
-    /// control's segments, and its only effect there is swallowing clicks meant
-    /// for what sits behind.
     private static func appearance(of action: TransportAction) -> (symbol: String, label: String) {
         switch action {
         case .back5: return ("gobackward.5", "Back 5 seconds")

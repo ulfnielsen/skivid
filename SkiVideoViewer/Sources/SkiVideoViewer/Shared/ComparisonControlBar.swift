@@ -39,14 +39,7 @@ struct ComparisonControlBar: View {
             HStack(spacing: 16) {
                 layoutPicker
                 targetPicker
-                TransportControls(isEnabled: model.hasTwoVideos) { action in
-                    // Always through `applyTransport`, never the per-side model
-                    // methods it wraps: `lastTouchedSide` is written only there
-                    // and in `load`, so a control that bypasses it leaves that
-                    // state stale and the demotion off `.both` lands on the
-                    // wrong side.
-                    model.applyTransport(action)
-                }
+                transport
                 Spacer(minLength: 8)
                 timeLabel
                 anchorButton
@@ -58,14 +51,7 @@ struct ComparisonControlBar: View {
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 16) {
-                    TransportControls(isEnabled: model.hasTwoVideos) { action in
-                        // Always through `applyTransport`, never the per-side model
-                        // methods it wraps: `lastTouchedSide` is written only there
-                        // and in `load`, so a control that bypasses it leaves that
-                        // state stale and the demotion off `.both` lands on the
-                        // wrong side.
-                        model.applyTransport(action)
-                    }
+                    transport
                     Spacer(minLength: 8)
                     timeLabel
                     anchorButton
@@ -111,6 +97,20 @@ struct ComparisonControlBar: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 160, height: 44)
+    }
+
+    /// One definition, referenced from both `ViewThatFits` branches — not
+    /// restated in each — so the routing through `applyTransport` lives in
+    /// exactly one place.
+    private var transport: some View {
+        TransportControls(isEnabled: model.hasTwoVideos) { action in
+            // Always through `applyTransport`, never the per-side model
+            // methods it wraps: `lastTouchedSide` is written only there
+            // and in `load`, so a control that bypasses it leaves that
+            // state stale and the demotion off `.both` lands on the
+            // wrong side.
+            model.applyTransport(action)
+        }
     }
 
     /// Follows the target, like the scrubber: a Right-targeted bar reading out
