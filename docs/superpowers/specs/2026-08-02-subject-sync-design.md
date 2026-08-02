@@ -149,6 +149,53 @@ New:
 Once both sides have a stored subject, **Sync from detected starts** applies both in one
 action, reading the sidecars without recomputing.
 
+## Merging with the viewer redesign
+
+`viewer-redesign` is in flight and has completed Tasks 1–2 of 4. Those are already on that
+branch and touch files this work also touches:
+
+- `ComparisonModel.swift` — the timecode formatter moved out to `Timecode.swift`
+- `ComparisonControlBar.swift` — the six transport buttons extracted into a shared
+  `TransportControls`
+- `ComparisonScrubber.swift` — the timeline extracted into a shared `TimelineScrubber`
+- `ViewerModel.swift` — gained `currentTime`, `duration`, transport and scrub
+
+Its remaining Tasks 3–4 create `ViewerPane.swift` and `ViewerControlBar.swift`, modify
+`ContentView.swift`, and add layout and UI tests. **They do not return to any comparison
+file.**
+
+This work is therefore split into two phases that can proceed independently.
+
+### Phase A — core, no UI
+
+The ported detection files, `ClipAnalysis`, `ClipAnalysisStore`, `SubjectAnalyzer`,
+`SubjectPickModel`, and the `ComparisonModel` additions. Every file is new except
+`ComparisonModel.swift`, where the change is two additions in a region the redesign does not
+touch. Phase A branches off `main` and can land at any time, in parallel.
+
+### Phase B — the sheet and the entry points
+
+`SubjectPickSheet.swift` plus the two actions in `ComparisonControlBar`. **Branch this off
+`main` after `viewer-redesign` merges**, not before. Not because the hunks would conflict —
+they probably would not — but because the redesign establishes the conventions this sheet
+must follow, and writing it against the pre-merge shape means rewriting it after:
+
+- Reuse `TransportControls` and `TimelineScrubber` if the sheet needs a preview transport;
+  do not build a third variant.
+- Follow the `ViewThatFits` two-row pattern and the 44pt-touch-target rule already
+  documented at the top of `ComparisonControlBar.swift`. The 44pt rule applies to controls
+  we build, not to system controls.
+- Follow the accessibility-identifier convention Task 3 establishes, including the
+  `Status: ` prefix on status chips, so the UI tests can address the new surface the same
+  way.
+
+### Explicitly avoided
+
+The design puts **no marker on the comparison scrubber** for the detected run start, and no
+entry point in the main viewer. Both would land in files the redesign is actively
+restructuring, for a benefit the status chip already delivers. If a scrubber marker turns
+out to be wanted, it is a small follow-up once both branches are merged.
+
 ## Testing
 
 The pure parts get unit tests in `SkiVideoCoreTests`:
