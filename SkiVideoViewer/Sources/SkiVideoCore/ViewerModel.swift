@@ -76,6 +76,16 @@ public final class ViewerModel: ObservableObject {
         startObservingTime()
     }
 
+    /// `ViewerModel` has no `close()` the way `ComparisonModel` does — it is
+    /// expected to live for the app's lifetime — but `removeTimeObserver` is
+    /// cheap and correct to call anyway rather than leave `timeObserver` as
+    /// write-only storage.
+    deinit {
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+        }
+    }
+
     /// Internal: the model subscribes itself to `input.onIntent`, so no caller
     /// outside the module drives it directly.
     func handle(_ intent: PlaybackIntent) {
@@ -319,7 +329,13 @@ public final class ViewerModel: ObservableObject {
         case .back1: seek(seconds: -1)
         case .forward1: seek(seconds: 1)
         case .forward5: seek(seconds: 5)
-        case .playPause: togglePlayback()
+        case .playPause:
+            // `endArrow` above already cleared `heldDirection`, so unlike the
+            // Space key — which reaches `togglePlayback` directly via
+            // `handle(.togglePlayback)` and so can resume/pause a live hold —
+            // this button always takes the plain play/pause branch. Intentional:
+            // the transport's Play/Pause exits a hold rather than steering it.
+            togglePlayback()
         case .slow:
             guard currentVideo != nil else { return }
             player.playImmediately(atRate: 0.25)
