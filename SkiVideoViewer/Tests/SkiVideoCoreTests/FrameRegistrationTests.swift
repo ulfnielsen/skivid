@@ -5,94 +5,6 @@ import simd
 import SkiVideoCore
 @testable import SkiVideoCore
 
-/// A test-local stand-in for the worktree's `RegistrationResidual`, which
-/// this port deliberately excludes from `SkiVideoCore` (it is validation
-/// tooling for `RegistrationLab`/`OverlayExport`, not part of the detection
-/// core). `testApplyingTheRecoveredWarpReducesTheResidual` below needs some
-/// way to quantify "closer to aligned", so the measurement — not the
-/// production type — is copied here, scoped to this file only.
-private enum TestResidual {
-    static let identityWarp = matrix_float3x3(1)
-
-    static func meanAbsoluteDifference(
-        reference: CGImage,
-        floating: CGImage,
-        warp: matrix_float3x3
-    ) -> Double {
-        let width = reference.width
-        let height = reference.height
-        let frame = CGRect(x: 0, y: 0, width: width, height: height)
-
-        let transform = CGAffineTransform(
-            a: CGFloat(warp.columns.0.x), b: CGFloat(warp.columns.0.y),
-            c: CGFloat(warp.columns.1.x), d: CGFloat(warp.columns.1.y),
-            tx: CGFloat(warp.columns.2.x), ty: CGFloat(warp.columns.2.y)
-        )
-
-        let warped = CIImage(cgImage: floating)
-            .transformed(by: transform)
-            .cropped(to: frame)
-
-        guard
-            let referenceGray = grayscaleBytes(from: CIImage(cgImage: reference), in: frame),
-            let warpedGray = grayscaleBytes(from: warped, in: frame),
-            let warpedAlpha = alphaBytes(from: warped, in: frame)
-        else {
-            return 255
-        }
-
-        var total = 0.0
-        var counted = 0
-        for index in 0..<(width * height) where warpedAlpha[index] > 127 {
-            total += abs(Double(referenceGray[index]) - Double(warpedGray[index]))
-            counted += 1
-        }
-
-        guard counted > 0 else { return 255 }
-        return total / Double(counted)
-    }
-
-    private static let context = CIContext(options: [.useSoftwareRenderer: false])
-
-    private static func grayscaleBytes(from image: CIImage, in frame: CGRect) -> [UInt8]? {
-        guard let cgImage = context.createCGImage(image, from: frame) else { return nil }
-        return bytesFromGrayscaleCGImage(cgImage)
-    }
-
-    private static func alphaBytes(from image: CIImage, in frame: CGRect) -> [UInt8]? {
-        guard let cgImage = context.createCGImage(image, from: frame) else { return nil }
-        return alphaFromCGImage(cgImage)
-    }
-
-    private static func bytesFromGrayscaleCGImage(_ cgImage: CGImage) -> [UInt8]? {
-        let width = cgImage.width
-        let height = cgImage.height
-        var bytes = [UInt8](repeating: 0, count: width * height)
-        guard let context = CGContext(
-            data: &bytes, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return nil }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return bytes
-    }
-
-    private static func alphaFromCGImage(_ cgImage: CGImage) -> [UInt8]? {
-        let width = cgImage.width
-        let height = cgImage.height
-        var bytes = [UInt8](repeating: 0, count: width * height)
-        guard let context = CGContext(
-            data: &bytes, width: width, height: height,
-            bitsPerComponent: 8, bytesPerRow: width,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
-        ) else { return nil }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return bytes
-    }
-}
-
 final class FrameRegistrationTests: XCTestCase {
     private func makePair(
         _ transform: CGAffineTransform
@@ -202,30 +114,30 @@ final class FrameRegistrationTests: XCTestCase {
             by: CGAffineTransform(translationX: 40, y: 17)
         )
 
-        let before = TestResidual.meanAbsoluteDifference(
+        let before = RegistrationResidual.measure(
             reference: reference,
             floating: floating,
-            warp: TestResidual.identityWarp
+            warp: RegistrationResidual.identityWarp
         )
         let result = try FrameRegistration.register(
             reference: reference,
             floating: floating,
             method: .translational
         )
-        let after = TestResidual.meanAbsoluteDifference(
+        let after = RegistrationResidual.measure(
             reference: reference,
             floating: floating,
             warp: result.warp
         )
 
         XCTAssertLessThan(
-            after,
-            before,
+            after.meanAbsoluteDifference,
+            before.meanAbsoluteDifference,
             "applying the recovered warp must reduce the residual"
         )
         // Recovering an exact translation should land essentially on top of
         // the reference, not merely somewhat closer.
-        XCTAssertLessThan(after, 1.0)
+        XCTAssertLessThan(after.meanAbsoluteDifference, 1.0)
     }
 
     func testDegenerateWarpIsRejected() throws {
