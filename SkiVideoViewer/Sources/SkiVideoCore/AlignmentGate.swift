@@ -41,6 +41,9 @@ public enum AlignmentGate {
     ///     bad windows sit at 0.49 and below.
     ///   - easeSeconds: how long the translation takes to shrink to identity
     ///     after a disengage.
+    ///   - overlapWindow: how many samples the median filter spans before the
+    ///     overlap is compared against the thresholds. 5 samples is 0.2 s at the
+    ///     pass's 25 Hz. Pass 1 to gate on the raw overlap.
     ///
     /// ## Why two thresholds and not one
     ///
@@ -73,12 +76,51 @@ public enum AlignmentGate {
     /// disengage eases the *last engaged* translation down to zero over
     /// `easeSeconds` (a hard cut is a visible jump, and the boundary is crossed
     /// several times in 17 s) and then returns `nil`.
+    ///
+    /// ## Why the overlap is median-filtered before it is gated
+    ///
+    /// The findings sampled a 0.5 s grid. Run at the pass's real 25 Hz, the
+    /// "bad" stretch t = 4.5 – 7.5 turns out not to be a clean step: registration
+    /// flips between two solutions on adjacent frames — a small shift
+    /// (dy ≈ −0.04, overlap ≈ 0.79, residual 3.5 against identity 9.8) and a
+    /// large one (dy ≈ −0.42, overlap ≈ 0.23). Samples 4.44 – 4.68 take the
+    /// large solution, 4.72 – 4.92 come back to the small one and register well,
+    /// and only 4.96 onward is genuinely bad. The original sweep happened to
+    /// land on 4.50 and 5.00, both large-shift frames, which is why it read as a
+    /// step.
+    ///
+    /// So the boundary is a **flicker, not a transition**, and hysteresis cannot
+    /// help: the flicker is in the raw overlap and swings clear across the band,
+    /// well below `disengageBelow`. Ungated, alignment would switch on and off
+    /// within 0.3 s around t ≈ 4.7 and again near t ≈ 14 — a clip twitching in
+    /// and out of position, with only the 0.25 s ease to soften it.
+    ///
+    /// A median over a small odd window suppresses isolated flips while leaving
+    /// a genuine multi-second transition intact. **Median and not mean**: the
+    /// mean of 0.79 and 0.23 lands mid-band, in the hysteresis gap, doing
+    /// nothing useful, whereas the median just picks whichever of the two
+    /// solutions the neighbourhood actually favours. The filter never invents a
+    /// value that was not measured.
+    ///
+    /// Only the overlap used for the **decision** is filtered. The translation
+    /// returned is always the measured one — the decision is what is noisy here,
+    /// not the geometry.
+    ///
+    /// ## Known: the engage threshold sits right on the data's edge
+    ///
+    /// The pass reports the second good window starting at 7.80, not the 8.00 of
+    /// the findings, because the t = 8.0 sample measures overlap 0.668 – 0.679 —
+    /// just under `engageAbove`. The edge of a good window is sitting exactly on
+    /// the threshold. That has deliberately **not** been fixed by moving the
+    /// threshold: it is one clip pair, and the second-pair sweep is what should
+    /// decide it.
     public static func translation(
         in track: AlignmentTrack,
         at time: TimeInterval,
         engageAbove: Double = 0.68,
         disengageBelow: Double = 0.55,
-        easeSeconds: Double = 0.25
+        easeSeconds: Double = 0.25,
+        overlapWindow: Int = 5
     ) -> CGVector? {
         let samples = track.samples
         guard let first = samples.first, let last = samples.last else { return nil }
@@ -88,8 +130,10 @@ public enum AlignmentGate {
         // exactly the stale-warp failure above, so both ends are identity.
         guard time >= first.time, time <= last.time else { return nil }
 
+        let decisionOverlaps = medianFilteredOverlaps(of: samples, window: overlapWindow)
         let states = engagementStates(
-            of: samples, engageAbove: engageAbove, disengageBelow: disengageBelow
+            of: samples, using: decisionOverlaps,
+            engageAbove: engageAbove, disengageBelow: disengageBelow
         )
 
         // Bracket `time`. Landing exactly on a sample collapses the bracket, so
@@ -134,18 +178,54 @@ public enum AlignmentGate {
         var lastDisengage: (time: TimeInterval, translation: CGVector)?
     }
 
+    /// The overlap series the gate makes its decisions on: a centred median of
+    /// each sample's neighbourhood.
+    ///
+    /// The window is **clamped** at the track's edges rather than padded or
+    /// wrapped, so early and late samples are filtered over whatever
+    /// neighbourhood exists. A window of 1 (or 0) is the identity, which is what
+    /// makes the filter opt-out. An even window is rounded up to the next odd
+    /// one, since a centred median has no meaning otherwise.
+    ///
+    /// The median is taken as the upper-middle element of the sorted
+    /// neighbourhood, never an average of two — an average could produce an
+    /// overlap that no frame pair actually measured, which is the very thing
+    /// median-over-mean was chosen to avoid.
+    private static func medianFilteredOverlaps(
+        of samples: [AlignmentSample],
+        window: Int
+    ) -> [Double] {
+        let half = max(0, window) / 2
+        guard half > 0 else { return samples.map(\.overlap) }
+
+        var filtered: [Double] = []
+        filtered.reserveCapacity(samples.count)
+        for index in samples.indices {
+            let low = max(0, index - half)
+            let high = min(samples.count - 1, index + half)
+            let neighbourhood = samples[low...high].map(\.overlap).sorted()
+            filtered.append(neighbourhood[neighbourhood.count / 2])
+        }
+        return filtered
+    }
+
     /// Walks the samples in order, carrying the engaged/disengaged state.
     ///
     /// This is the hysteresis. Engaged becomes disengaged only on a sample
-    /// strictly *below* `disengageBelow`; disengaged becomes engaged only on
-    /// one strictly *above* `engageAbove`. A sample in the band between them
-    /// changes nothing.
+    /// whose *decision* overlap is strictly **below** `disengageBelow`;
+    /// disengaged becomes engaged only on one strictly **above** `engageAbove`.
+    /// A sample in the band between them changes nothing.
+    ///
+    /// `overlaps` is the median-filtered series, parallel to `samples`. The
+    /// samples themselves are still the source of every translation returned;
+    /// only the decision reads the filtered value.
     ///
     /// The walk always starts from the beginning of the track rather than from
     /// the query point, because the state at any instant is the whole history
     /// of the signal up to it — that is what a hysteretic gate means.
     private static func engagementStates(
         of samples: [AlignmentSample],
+        using overlaps: [Double],
         engageAbove: Double,
         disengageBelow: Double
     ) -> [Engagement] {
@@ -155,8 +235,9 @@ public enum AlignmentGate {
         states.reserveCapacity(samples.count)
 
         for (index, sample) in samples.enumerated() {
+            let overlap = overlaps[index]
             if state.engaged {
-                if sample.overlap < disengageBelow {
+                if overlap < disengageBelow {
                     state.engaged = false
                     // The ease starts from the last translation that was
                     // actually trusted — the previous sample's, not this one's.
@@ -164,7 +245,7 @@ public enum AlignmentGate {
                     // sample to have engaged us.
                     state.lastDisengage = (sample.time, samples[index - 1].translation)
                 }
-            } else if sample.overlap > engageAbove {
+            } else if overlap > engageAbove {
                 state.engaged = true
             }
             states.append(state)
