@@ -27,10 +27,25 @@ public final class SubjectSessionModel: ObservableObject {
         }
     }
 
+    /// The shape of `SubjectAnalyzer.analyse`, minus the parameters this model
+    /// never overrides. Injectable so tests can stand in a fake for the ~16s
+    /// real analyser — the transitions in `analyse(clip:)` (success, cancel,
+    /// known failure, unknown failure, and a second run superseding a first)
+    /// are exactly the ones a frozen `.analysing` state would hide, and they
+    /// are not reachable from a unit test through the real Vision pipeline.
+    public typealias AnalyseFunction = @Sendable (
+        URL, @escaping @Sendable (Double) -> Void
+    ) async throws -> ClipAnalysis
+
     @Published public private(set) var state: State = .idle
     @Published public private(set) var isStale = false
 
+    private let performAnalysis: AnalyseFunction
     private var currentTask: Task<ClipAnalysis, Error>?
+    /// Bumped on every `analyse(clip:)` call so a run superseded by a later
+    /// one can tell, once its cancellation unwinds, that it is no longer the
+    /// run of record and must not overwrite `state` with its own outcome.
+    private var generation = 0
 
     public var analysis: ClipAnalysis? {
         if case let .ready(analysis) = state { return analysis }
@@ -39,7 +54,11 @@ public final class SubjectSessionModel: ObservableObject {
 
     public var pickedSubject: SubjectPick? { analysis?.subject }
 
-    public init() {}
+    public init(analyse: @escaping AnalyseFunction = { clip, progress in
+        try await SubjectAnalyzer.analyse(clip: clip, progress: progress)
+    }) {
+        self.performAnalysis = analyse
+    }
 
     /// Reads the sidecar if there is one, moving to `.ready`. Returns what it
     /// found so a caller can decide whether to offer analysis.
@@ -70,13 +89,16 @@ public final class SubjectSessionModel: ObservableObject {
     /// to `.failed` with a description.
     public func analyse(clip: URL) async {
         cancel()
+        generation += 1
+        let myGeneration = generation
         isStale = false
         state = .analysing(progress: 0)
 
+        let performAnalysis = self.performAnalysis
         let task = Task { [weak self] () -> ClipAnalysis in
-            try await SubjectAnalyzer.analyse(clip: clip) { progress in
+            try await performAnalysis(clip) { progress in
                 Task { @MainActor in
-                    self?.updateProgress(progress)
+                    self?.updateProgress(progress, generation: myGeneration)
                 }
             }
         }
@@ -84,16 +106,26 @@ public final class SubjectSessionModel: ObservableObject {
 
         do {
             let result = try await task.value
-            state = .ready(result)
-            isStale = false
+            if myGeneration == generation {
+                state = .ready(result)
+                isStale = false
+            }
         } catch is CancellationError {
-            state = .idle
+            if myGeneration == generation {
+                state = .idle
+            }
         } catch let error as SubjectAnalyzer.AnalysisError {
-            state = .failed(error.description)
+            if myGeneration == generation {
+                state = .failed(error.description)
+            }
         } catch {
-            state = .failed(String(describing: error))
+            if myGeneration == generation {
+                state = .failed(String(describing: error))
+            }
         }
-        currentTask = nil
+        if myGeneration == generation {
+            currentTask = nil
+        }
     }
 
     public func cancel() {
@@ -118,7 +150,8 @@ public final class SubjectSessionModel: ObservableObject {
         try ClipAnalysisStore.save(updated, for: clip)
     }
 
-    private func updateProgress(_ value: Double) {
+    private func updateProgress(_ value: Double, generation: Int) {
+        guard generation == self.generation else { return }
         guard case .analysing = state else { return }
         state = .analysing(progress: value)
     }

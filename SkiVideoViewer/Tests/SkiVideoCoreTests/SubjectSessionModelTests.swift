@@ -1,5 +1,22 @@
+import Combine
 import XCTest
 @testable import SkiVideoCore
+
+/// A struct unrelated to `SubjectAnalyzer.AnalysisError`, standing in for the
+/// error case most likely to fall through an incomplete `catch` — one the
+/// model's own error type doesn't already special-case.
+private struct FakeUnrelatedError: Error {}
+
+/// Serializes call counting across the concurrent `analyse(clip:)` calls in
+/// `testAnalysingTwiceCancelsTheFirstRun`, since the fake's closure is
+/// `@Sendable` and both calls run on the same `SubjectSessionModel` instance.
+private actor CallCounter {
+    private var count = 0
+    func next() -> Int {
+        count += 1
+        return count
+    }
+}
 
 @MainActor
 final class SubjectSessionModelTests: XCTestCase {
@@ -120,5 +137,122 @@ final class SubjectSessionModelTests: XCTestCase {
 
         XCTAssertTrue(session.isStale)
         XCTAssertEqual(loaded?.subject?.segmentIDs, [1], "a stale pick is kept, not dropped")
+    }
+
+    // MARK: - analyse(clip:) transitions
+
+    func testASuccessfulRunEndsReadyAndPublishesProgressToOne() async {
+        let expected = analysis(subject: nil)
+        let session = SubjectSessionModel(analyse: { _, progress in
+            progress(0.28)
+            progress(0.71)
+            progress(1.0)
+            return expected
+        })
+
+        var observedProgress: [Double] = []
+        let subscription = session.$state.sink { state in
+            if case let .analysing(progress) = state {
+                observedProgress.append(progress)
+            }
+        }
+        defer { subscription.cancel() }
+
+        await session.analyse(clip: clip())
+
+        guard case let .ready(result) = session.state else {
+            return XCTFail("expected ready, got \(session.state)")
+        }
+        XCTAssertEqual(result, expected)
+        XCTAssertEqual(observedProgress.last, 1.0, "progress must reach 1.0 before the run reports ready")
+    }
+
+    func testCancellationReturnsToIdleNotFailed() async {
+        let session = SubjectSessionModel(analyse: { _, _ in
+            throw CancellationError()
+        })
+
+        await session.analyse(clip: clip())
+
+        guard case .idle = session.state else {
+            return XCTFail("a cancelled run must return to idle, not failed; got \(session.state)")
+        }
+    }
+
+    func testAKnownAnalysisFailureEndsFailedWithItsDescription() async {
+        let underlying = SubjectAnalyzer.AnalysisError.noPeopleFound("C0094.MP4")
+        let session = SubjectSessionModel(analyse: { _, _ in
+            throw underlying
+        })
+
+        await session.analyse(clip: clip())
+
+        guard case let .failed(message) = session.state else {
+            return XCTFail("expected failed, got \(session.state)")
+        }
+        XCTAssertEqual(message, underlying.description)
+        XCTAssertEqual(message, "no people were detected in C0094.MP4",
+                        "the operator sees this string verbatim, not a Swift enum dump")
+    }
+
+    func testAnUnexpectedErrorNeverLeavesStateAnalysing() async {
+        let session = SubjectSessionModel(analyse: { _, _ in
+            throw FakeUnrelatedError()
+        })
+
+        await session.analyse(clip: clip())
+
+        if case .analysing = session.state {
+            XCTFail("state must never be left on .analysing after the analysis function throws")
+        }
+        guard case .failed = session.state else {
+            return XCTFail("expected failed, got \(session.state)")
+        }
+    }
+
+    func testCancelWhileIdleIsHarmless() {
+        let session = SubjectSessionModel()
+
+        session.cancel()
+
+        guard case .idle = session.state else {
+            return XCTFail("expected idle, got \(session.state)")
+        }
+    }
+
+    func testAnalysingTwiceCancelsTheFirstRun() async {
+        let second = analysis(subject: SubjectPick(
+            segmentIDs: [2], runStart: .alreadyRunning(firstSeen: 0.63)
+        ))
+        let counter = CallCounter()
+        let session = SubjectSessionModel(analyse: { _, _ in
+            let callNumber = await counter.next()
+            if callNumber == 1 {
+                // Never completes on its own; only cancellation ends it.
+                while true {
+                    try Task.checkCancellation()
+                    try await Task.sleep(nanoseconds: 5_000_000)
+                }
+            }
+            return second
+        })
+
+        let firstRun = Task { await session.analyse(clip: self.clip("first.MP4")) }
+        // Give the first run time to start its loop before superseding it.
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        await session.analyse(clip: clip("second.MP4"))
+        // Let the first run's cancellation finish unwinding before asserting,
+        // so a bug that lets it clobber state afterward would be caught here
+        // rather than racing the assertion below.
+        _ = await firstRun.value
+
+        guard case let .ready(result) = session.state else {
+            return XCTFail(
+                "expected the second run's result, got \(session.state) " +
+                "(a superseded first run must not overwrite state once cancelled)"
+            )
+        }
+        XCTAssertEqual(result, second)
     }
 }
