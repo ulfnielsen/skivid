@@ -371,7 +371,7 @@ struct ComparisonView: View {
 ///
 /// **The way out is not decoration.** `SubjectPickSheet` never calls
 /// `dismiss()` and has no Close of its own in any of its four states, so
-/// presenting it bare traps the operator: idle offers only "Find subject",
+/// presenting it bare traps the operator: idle offers only "Start analysis",
 /// analysing only "Cancel analysis" (which returns to idle, not out),
 /// ready only "Use as subject", and failed only "Retry". Done sits in a header
 /// above all four and is the only control that is present in every state.

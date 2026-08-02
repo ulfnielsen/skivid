@@ -13,8 +13,29 @@ public final class SubjectPickModel: ObservableObject {
     public let segments: [AnalysedSegment]
     @Published public private(set) var selected: [Int] = []
 
-    public init(segments: [AnalysedSegment]) {
+    /// `selected` seeds the model from a stored pick, so reopening the sheet
+    /// shows the operator's own judgement back rather than an empty grid that
+    /// reads as "your pick was lost".
+    ///
+    /// **A stored selection is filtered, not trusted.** A sidecar can name an
+    /// id that no longer exists (re-analysed with different settings, or
+    /// hand-edited) or two ids that overlap in time, which the interactive path
+    /// cannot produce and the rest of this type's invariants assume away — the
+    /// union of two overlapping segments is two people blended into one
+    /// trajectory, which is the failure this class exists to prevent. So each
+    /// id goes through the same gates `toggle` applies, **in the order given**:
+    /// unknown ids are dropped, duplicates are dropped, and of two overlapping
+    /// ids the first named wins and the later one is simply not selected —
+    /// where it then reports its own `exclusionReason` like any other clash.
+    /// The alternative is trusting a file over the invariant.
+    public init(segments: [AnalysedSegment], selected: [Int] = []) {
         self.segments = segments
+        for id in selected {
+            guard let segment = segments.first(where: { $0.id == id }) else { continue }
+            guard !self.selected.contains(id) else { continue }
+            guard isSelectable(segment) else { continue }
+            self.selected.append(id)
+        }
     }
 
     public var selectedInTimeOrder: [Int] {

@@ -480,11 +480,61 @@ final class SubjectPickWiringTests: XCTestCase {
         return found
     }
 
+    // MARK: - A stored pick, seeded back into the sheet
+
+    /// The second link in the seeding, which `SubjectPickModelTests` cannot
+    /// see: the model restores a stored selection, but only if the *sheet*
+    /// hands it one. Kills the mutation of `selected: []` in
+    /// `SubjectPickSheet`'s `ReadySection`.
+    ///
+    /// Asserted as behaviour rather than as pixels, because a headless macOS
+    /// test cannot read which card is drawn selected: with the pick seeded,
+    /// "Use as subject" is live on arrival and confirms the stored ids with
+    /// **no card tapped at all**. Unseeded it is disabled —
+    /// `.disabled(pick.selected.isEmpty)` — so the click produces nothing and
+    /// this fails.
+    ///
+    /// The stored id is the *second* declared segment, so a seed that ignored
+    /// what it was given and selected the first card, or everything, is
+    /// visible too.
+    func testReopeningTheSheetRestoresTheStoredPick() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let clip = root.appendingPathComponent("clip.mov")
+
+        let session = try await readySession(clip: clip)
+        try session.confirm(
+            segmentIDs: [2], runStart: .alreadyRunning(firstSeen: 4.42), for: clip
+        )
+        XCTAssertEqual(
+            session.pickedSubject?.segmentIDs, [2],
+            "precondition: the session must hold the stored pick the sheet reads"
+        )
+
+        var confirmed: [[Int]] = []
+        let scene = show(
+            SubjectPickSheet(session: session, clip: clip, onConfirm: { confirmed.append($0) }),
+            width: 520, height: 620
+        )
+        settle(scene)
+
+        let buttons = controls(in: scene.host)
+        XCTAssertEqual(buttons.count, 3, "precondition: two cards plus the confirm button")
+        click(buttons[2], in: scene.window)
+
+        XCTAssertEqual(
+            confirmed, [[2]],
+            "a reopened sheet must arrive with the stored pick already selected, not empty"
+        )
+    }
+
     // MARK: - The way out, in every state
 
     /// `SubjectPickSheet` has no dismiss of its own — measured in Task 3 and
     /// stated in its report — so presenting it bare traps the operator in all
-    /// four of its states: idle offers only "Find subject", analysing only
+    /// four of its states: idle offers only "Start analysis", analysing only
     /// "Cancel analysis" (which returns to idle, not out), ready only "Use as
     /// subject", failed only "Retry". `SubjectSheet`'s header is the way out,
     /// and this checks it in **each** state rather than in the one that is

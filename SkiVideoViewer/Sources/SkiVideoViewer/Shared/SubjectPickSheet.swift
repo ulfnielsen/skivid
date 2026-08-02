@@ -37,6 +37,12 @@ struct SubjectPickSheet: View {
                 // from a list that no longer contains them.
                 ReadySection(
                     segments: analysis.segments,
+                    // Seeded from the stored pick, so a clip whose sidecar was
+                    // read back opens showing the operator's own selection
+                    // rather than an empty grid that reads as "the pick was
+                    // lost". `SubjectPickModel` filters the ids against the
+                    // segments it is given, so a stale one changes nothing.
+                    selected: session.pickedSubject?.segmentIDs ?? [],
                     clip: clip,
                     isStale: session.isStale,
                     onConfirm: onConfirm
@@ -66,14 +72,20 @@ struct SubjectPickSheet: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Find subject") {
+            // **Not "Find subject".** That identifier belongs to the control
+            // bar's button, which is what opened this sheet; while the sheet is
+            // up both would be in the tree and a UI query for it would match
+            // ambiguously. It reads better as "Start analysis" here in any
+            // case: by this point the operator has already asked to find a
+            // subject, and this button is the long job that follows.
+            Button("Start analysis") {
                 Task { await session.analyse(clip: clip) }
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .help("Find subject")
-            .accessibilityLabel("Find subject")
-            .accessibilityIdentifier("Find subject")
+            .help("Start analysis")
+            .accessibilityLabel("Start analysis")
+            .accessibilityIdentifier("Start analysis")
             Spacer(minLength: 0)
         }
         .padding(28)
@@ -162,14 +174,23 @@ struct SubjectPickSheet: View {
 /// `SubjectPickModel.segments` is a `let`, so the model cannot be updated in
 /// place when a new analysis arrives — it has to be rebuilt, which is what
 /// `SubjectPickSheet`'s `.id(...)` on this view does.
+///
+/// `selected` seeds that model once, when this view is first created, because
+/// `@StateObject`'s `wrappedValue` is evaluated only then. That is the wanted
+/// behaviour: the stored pick is a starting point, and every tap afterwards
+/// belongs to the live model, so a re-render cannot undo the operator's edits
+/// by re-seeding from the sidecar.
 private struct ReadySection: View {
     @StateObject private var pick: SubjectPickModel
     private let clip: URL
     private let isStale: Bool
     private let onConfirm: ([Int]) -> Void
 
-    init(segments: [AnalysedSegment], clip: URL, isStale: Bool, onConfirm: @escaping ([Int]) -> Void) {
-        _pick = StateObject(wrappedValue: SubjectPickModel(segments: segments))
+    init(
+        segments: [AnalysedSegment], selected: [Int], clip: URL, isStale: Bool,
+        onConfirm: @escaping ([Int]) -> Void
+    ) {
+        _pick = StateObject(wrappedValue: SubjectPickModel(segments: segments, selected: selected))
         self.clip = clip
         self.isStale = isStale
         self.onConfirm = onConfirm
