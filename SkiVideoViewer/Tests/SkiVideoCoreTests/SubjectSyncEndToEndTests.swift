@@ -48,8 +48,22 @@ final class SubjectSyncEndToEndTests: XCTestCase {
                 "footage not present: \(clip.path)"
             )
             // Start from nothing, so "reused the sidecar" cannot be an artefact
-            // of a file left by an earlier run.
-            try? FileManager.default.removeItem(at: ClipAnalysisStore.sidecarURL(for: url))
+            // of a file left by an earlier run — but the operator's own pick
+            // lives in that file, and it cost them twenty seconds and a
+            // judgement no algorithm can make.
+            //
+            // An earlier version simply deleted it, and did exactly the damage
+            // that invites: a run cancelled between the delete and the rewrite
+            // left a clip with no sidecar and the pick gone. This moves it
+            // aside and puts it back however the test ends.
+            let sidecar = ClipAnalysisStore.sidecarURL(for: url)
+            let saved = try? Data(contentsOf: sidecar)
+            try? FileManager.default.removeItem(at: sidecar)
+            defer {
+                if let saved {
+                    try? saved.write(to: sidecar, options: .atomic)
+                }
+            }
 
             let session = SubjectSessionModel()
             let firstVisit = Date()
