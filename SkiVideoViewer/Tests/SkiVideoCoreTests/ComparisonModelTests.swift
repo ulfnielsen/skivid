@@ -904,6 +904,34 @@ final class ComparisonModelTests: XCTestCase {
 
         XCTAssertEqual(model.syncOrigin, .manual)
     }
+
+    /// The status is the only thing on screen that can attribute a sync — a
+    /// detected sync is applied before the operator has seen it, and
+    /// `syncOrigin` itself is not rendered anywhere.
+    func testADetectedSyncSaysSoInTheStatus() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.applySync(left: 18.64, right: 4.42)
+
+        XCTAssertTrue(
+            model.status.lowercased().contains("detected"),
+            "a detected sync must be attributable from the status; got: \(model.status)"
+        )
+    }
+
+    /// The converse: a manual sync must not carry the word forward from a
+    /// detected one that preceded it — `setSyncPoints` overwrites the status
+    /// same as it overwrites `syncOrigin`.
+    func testAManualSyncDoesNotClaimToBeDetected() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.applySync(left: 18.64, right: 4.42)
+
+        model.setSyncPoints()
+
+        XCTAssertFalse(model.status.lowercased().contains("detected"))
+    }
 }
 
 /// The bounds tests, on **real decodable media**.

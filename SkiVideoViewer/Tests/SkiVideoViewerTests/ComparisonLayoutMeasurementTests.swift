@@ -228,6 +228,108 @@ final class ComparisonStatusChipTests: XCTestCase {
         }
     }
 
+    /// The detected-sync sentence is a new candidate for longest status, and
+    /// the chip is a constant 340pt clipped to two lines. If it does not fit,
+    /// it is silently truncated — the failure mode the chip's width cap exists
+    /// to prevent.
+    ///
+    /// **Not measured through `chipFrame`/`ComparisonStatusChip`.** That view
+    /// applies `.lineLimit(2)`, which caps the laid-out height at two lines'
+    /// worth for *any* text that needs two lines or more — a sentence that
+    /// needs exactly two and one that needs five report the identical height,
+    /// because both are truncated down to the same two-line box. A first
+    /// version of this test compared `chipFrame` heights and passed even after
+    /// the status was deliberately tripled in length (mutation-checked per the
+    /// task brief), which is exactly the "harness measures nothing" failure
+    /// the brief warned about. So this measures the *unclipped* text instead —
+    /// same font, same 320pt max width, same centered multiline layout as
+    /// `ComparisonStatusChip.body`, just without the `.lineLimit(2)` that
+    /// hides an overflow from view.
+    func testTheDetectedSyncStatusFitsTheChip() throws {
+        let model = ComparisonModel()
+        defer { model.close() }
+        let leftFile = try makeVideoFile("left.mov")
+        let rightFile = try makeVideoFile("right.mov")
+        model.load(leftFile, side: .left)
+        model.load(rightFile, side: .right)
+        model.applySync(left: 18.64, right: 4.42)
+
+        let actual = naturalTextHeight(model.status)
+        // An explicit newline, not a wrap: two short segments forced onto two
+        // lines give the same per-line height a wrapped two-line paragraph
+        // would, without depending on where any particular sentence happens
+        // to wrap.
+        let twoLines = naturalTextHeight("line one\nline two")
+
+        XCTAssertLessThanOrEqual(
+            actual, twoLines + 1,
+            "the detected-sync status needs more than two lines (\(actual)pt vs \(twoLines)pt for two): \(model.status)"
+        )
+    }
+
+    /// The unclipped counterpart to `chipFrame`: renders `Text` styled exactly
+    /// as `ComparisonStatusChip.body` does — `.caption` font, centered,
+    /// `maxWidth: 320` — but without `.lineLimit(2)`, so a sentence that wraps
+    /// past two lines shows up as a taller measured frame instead of being
+    /// silently cropped to the same two-line box.
+    private func naturalTextHeight(_ text: String) -> CGFloat {
+        let box = FrameBox()
+        let host = NSHostingView(rootView: TextHeightProbe(text: text, report: { box.frame = $0 }))
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 340, height: 600),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        let deadline = Date().addingTimeInterval(5)
+        while box.frame == .zero, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertNotEqual(
+            box.frame,
+            .zero,
+            "the geometry probe never reported; the measurement below would be meaningless"
+        )
+        return box.frame.height
+    }
+
+    private struct TextHeightProbe: View {
+        let text: String
+        let report: (CGRect) -> Void
+
+        var body: some View {
+            Text(text)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ChipFrameKey.self, value: proxy.frame(in: .local))
+                    }
+                )
+                .onPreferenceChange(ChipFrameKey.self) { report($0) }
+        }
+    }
+
+    /// `AVPlayerItem` accepts any URL and reports failure asynchronously, so
+    /// an empty file is enough to give a player a `currentItem` — which is all
+    /// `hasTwoVideos`, and therefore `applySync`'s `setSyncPoints()` call,
+    /// require. Mirrors the fixture helper `ComparisonModelTests` uses.
+    private func makeVideoFile(_ name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+        return url
+    }
+
     /// The rendered frame of the pill inside a container laid out exactly as
     /// `ComparisonView` lays it out: top-trailing over the video, with the 8pt
     /// inset that view applies. Fails the test rather than returning `.zero`

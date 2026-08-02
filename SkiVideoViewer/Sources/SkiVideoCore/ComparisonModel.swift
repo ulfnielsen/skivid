@@ -493,6 +493,7 @@ public final class ComparisonModel: ObservableObject {
         // not be attributed to a detection that never took effect.
         guard isSynced else { return }
         syncOrigin = .detected(left: left, right: right)
+        status = "Synced from detected starts · L \(Timecode.string(left)) · R \(Timecode.string(right))"
     }
 
     public func removeSync() {
