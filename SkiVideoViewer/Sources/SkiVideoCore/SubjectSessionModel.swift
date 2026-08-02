@@ -141,11 +141,24 @@ public final class SubjectSessionModel: ObservableObject {
     /// before attempting the write means that judgement survives even if the
     /// footage sits on a read-only volume or the disk is full — persistence
     /// failing is not analysis failing.
+    /// - Parameter correctedRunStart: the operator's correction to the detected
+    ///   start, when this call is recording one. It never replaces `runStart`:
+    ///   the measurement and the judgement are two different facts, and keeping
+    ///   both is what lets a re-analysis update the measurement without
+    ///   discarding the judgement. Defaults to nil, so confirming a *fresh*
+    ///   pick drops any earlier correction — a correction is to a particular
+    ///   detected start, and a new detection is not that start.
     public func confirm(
-        segmentIDs: [Int], runStart: StoredRunStart, for clip: URL
+        segmentIDs: [Int], runStart: StoredRunStart,
+        correctedRunStart: TimeInterval? = nil, for clip: URL
     ) throws {
         guard let current = analysis else { throw SessionError.noAnalysis }
-        let updated = current.with(subject: SubjectPick(segmentIDs: segmentIDs, runStart: runStart))
+        let updated = current.with(
+            subject: SubjectPick(
+                segmentIDs: segmentIDs, runStart: runStart,
+                correctedRunStart: correctedRunStart
+            )
+        )
         state = .ready(updated)
         try ClipAnalysisStore.save(updated, for: clip)
     }

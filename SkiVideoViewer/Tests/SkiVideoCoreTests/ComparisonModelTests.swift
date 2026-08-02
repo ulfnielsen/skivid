@@ -758,8 +758,16 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(model.rightPlayer.currentTime().seconds, 0, accuracy: 0.01)
     }
 
-    /// The pair must stay locked at the *new* offset: `scrub` derives its
-    /// offset from the two sync points, so it has to follow the correction.
+    /// The pair must stay locked at the *new* offset: a paired scrub derives
+    /// its offset from the two sync points, so it has to follow the correction.
+    ///
+    /// `target` goes back to `both` before the drag because that is now the
+    /// only state in which a drag is a paired one — with a side targeted the
+    /// bar corrects that clip instead, which is
+    /// `testScrubbingWithASideTargetedLeavesTheOtherClipWhereItIs` below. The
+    /// combination this used to test (targeting Right while dragging the left
+    /// clip's timeline) is one `ComparisonScrubber` cannot produce: it passes
+    /// `target.scrubbedSide`.
     func testNudgeRetargetsTheOffsetTheLockedPairKeeps() throws {
         let model = try makeSyncedModel()
         defer { model.close() }
@@ -767,6 +775,7 @@ final class ComparisonModelTests: XCTestCase {
         model.target = .right
         model.applyTransport(.forward5)
 
+        model.target = .both
         model.scrub(.left, to: 10)
 
         XCTAssertEqual(model.leftPlayer.currentTime().seconds, 10, accuracy: 0.01)
@@ -800,6 +809,154 @@ final class ComparisonModelTests: XCTestCase {
                        "cannot seek before the start")
         XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 0.01,
                        "the sync point must move by the distance travelled, not the distance asked for")
+    }
+
+    // MARK: - Correcting the start by dragging the bar
+    //
+    // Reported from use: "I can't adjust the start now, which will often be
+    // needed." Once synced, a drag moved *both* clips whatever the target said,
+    // so the only way to move one clip against the other was the 1s and 5s
+    // arrows — and a run start needs frame-level adjustment. The bar is the
+    // only control with that resolution.
+
+    /// The reported fix. With a side targeted, dragging must correct *that*
+    /// clip against the other and leave the other alone — the same meaning the
+    /// transport arrows already gave the target picker.
+    func testScrubbingWithASideTargetedLeavesTheOtherClipWhereItIs() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+        // Somewhere other than zero, so "the right clip did not move" is a
+        // claim about the right clip rather than about a fresh model.
+        model.target = .both
+        model.scrub(.left, to: 6)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 6, accuracy: 0.01,
+                       "precondition: the paired drag must have moved both clips")
+
+        model.target = .left
+        model.scrub(.left, to: 8.32)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 8.32, accuracy: 0.01,
+                       "the targeted clip must land on the time under the thumb")
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 6, accuracy: 0.01,
+                       "correcting one clip against the other must not move the other")
+        XCTAssertTrue(model.isSynced, "a correction adjusts the alignment, it does not drop it")
+    }
+
+    /// And the correction has to be durable: the sync point carries with the
+    /// clip, exactly as a nudge's does, or `returnToSyncPoints()` would come
+    /// back to the alignment being corrected.
+    func testScrubbingWithASideTargetedCarriesThatSidesSyncPoint() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.scrub(.left, to: 2.5)
+
+        XCTAssertEqual(model.leftSyncPoint.seconds, 2.5, accuracy: 0.01,
+                       "the sync point must follow the clip it names")
+        XCTAssertEqual(model.rightSyncPoint.seconds, 0, accuracy: 0.01,
+                       "the untouched side's sync point must not move")
+
+        model.target = .both
+        model.applyTransport(.forward1)
+        model.returnToSyncPoints()
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 2.5, accuracy: 0.01,
+                       "returned to the alignment being corrected instead of the corrected one")
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 0, accuracy: 0.01)
+    }
+
+    /// The behaviour the change must not silently take away: with `both`
+    /// targeted a drag still moves the locked pair, offset preserved.
+    ///
+    /// The pair is given a non-zero offset first. With both sync points at zero
+    /// "moved together" and "moved one" are indistinguishable at the right
+    /// clip's playhead, and this test is precisely about telling them apart.
+    func testScrubbingWithBothTargetedStillMovesThePairAtTheSyncOffset() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+        model.target = .right
+        model.applyTransport(.forward5)
+        XCTAssertEqual(model.rightSyncPoint.seconds - model.leftSyncPoint.seconds, 5, accuracy: 0.01,
+                       "precondition: the pair must keep a 5s offset")
+
+        model.target = .both
+        model.scrub(.left, to: 9)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 9, accuracy: 0.01)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 14, accuracy: 0.01,
+                       "a paired drag must carry the other clip at the sync offset")
+        XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 0.01,
+                       "moving the pair is not a correction; the sync points must not move")
+        XCTAssertEqual(model.rightSyncPoint.seconds, 5, accuracy: 0.01)
+    }
+
+    /// While aligning there is no pair to correct against, so a drag with a
+    /// side targeted is the plain per-side seek it always was — and in
+    /// particular it must not drop the alignment or touch a sync point.
+    func testScrubbingWhileAligningStillMovesOnlyTheDraggedClip() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.target = .left
+        model.scrub(.left, to: 4)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 4, accuracy: 0.01)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 0, accuracy: 0.01,
+                       "the clips are independent while aligning")
+        XCTAssertFalse(model.isSynced)
+        XCTAssertEqual(model.leftSyncPoint, .zero, "there is no alignment to correct yet")
+        XCTAssertEqual(model.rightSyncPoint, .zero)
+    }
+
+    /// A correction dragged past the start of the clip clamps, and the sync
+    /// point moves by the distance **actually travelled** — the subtlety
+    /// `nudge` records and this route has to inherit rather than reimplement.
+    ///
+    /// Asking for −10 from 3s travels −3, not −13. The difference is visible on
+    /// the *right* sync point: a sync point moved by the requested amount lands
+    /// at −10, and `normalizeSyncPoints()` then slides the pair +10 to bring it
+    /// back into range, dragging the untouched right sync point to 10 and
+    /// putting the pair 10s out of the alignment the operator set.
+    func testACorrectionClampedAtTheStartMovesTheSyncPointByWhatItTravelled() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+        model.target = .left
+        model.scrub(.left, to: 3)
+        XCTAssertEqual(model.leftSyncPoint.seconds, 3, accuracy: 0.01, "precondition: the correction landed at 3s")
+
+        model.scrub(.left, to: -10)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 0, accuracy: 0.01,
+                       "cannot seek before the start")
+        XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 0.01,
+                       "the sync point must move by the 3s travelled, not the 13s asked for")
+        XCTAssertEqual(model.rightSyncPoint.seconds, 0, accuracy: 0.01,
+                       """
+                       the untouched sync point moved, so the pair was slid back into range \
+                       from a sync point driven below zero — the offset the operator set is gone
+                       """)
+    }
+
+    /// The chip must not go on crediting "detected starts" once the operator
+    /// has moved one, and the sentence has to stay inside the width the chip is
+    /// pinned to.
+    func testAppliedCorrectedStartsAreAttributedAsCorrected() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.applySync(left: 16.84, right: 4.42, corrected: true)
+        let corrected = model.status
+
+        XCTAssertTrue(corrected.contains("corrected"),
+                      "a corrected start must not be credited to the detector, got \(corrected)")
+        XCTAssertLessThanOrEqual(corrected.count, 83,
+                                 "the status chip is pinned at 83 characters; this one is \(corrected.count)")
+
+        model.applySync(left: 16.84, right: 4.42)
+
+        XCTAssertTrue(model.status.contains("detected"),
+                      "an uncorrected sync must still say where it came from, got \(model.status)")
     }
 
     // MARK: - Applying a sync point that came from somewhere else
@@ -1091,6 +1248,45 @@ final class ComparisonBoundsTests: XCTestCase {
                        (L \(model.leftPlayer.currentTime().seconds), \
                        R \(model.rightPlayer.currentTime().seconds))
                        """)
+    }
+
+    /// **A drag is not one correction, it is hundreds**, and on real media they
+    /// arrive faster than the seeks they ask for complete.
+    ///
+    /// This is the case only real media can show, and it found a real defect.
+    /// Computing each correction's travel from `AVPlayer.currentTime()` reads a
+    /// playhead still standing where the *previous* event left it, so every
+    /// event shifts the sync point again by a distance the clip has already
+    /// been asked to travel. Measured before `lockedPosition(of:)`: this drag
+    /// left the clip correctly at 6.4s and the anchor at 1.6s, five seconds
+    /// adrift — a stored run start that is silently wrong, which is worse than
+    /// storing none.
+    ///
+    /// No `settle` between the events, deliberately. Settling between them is
+    /// what a test does, not what a finger does.
+    func testADragsWorthOfCorrectionsLandsTheAnchorWhereTheClipLands() throws {
+        let model = try makeRealMediaModel(leftSeconds: 20, rightSeconds: 20)
+        defer { model.close() }
+
+        try align(model, left: 8, right: 5)
+        model.setSyncPoints()
+        model.target = .left
+
+        for time in [7.6, 7.2, 6.8, 6.4] {
+            model.scrub(.left, to: time)
+        }
+        settle(model)
+
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 6.4, accuracy: 0.15,
+                       "the clip must end where the drag ended")
+        XCTAssertEqual(model.leftSyncPoint.seconds, 6.4, accuracy: 0.15,
+                       """
+                       the anchor is \(model.leftSyncPoint.seconds) where the clip is \
+                       \(model.leftPlayer.currentTime().seconds); the corrected start that gets \
+                       stored would name a frame the operator never chose
+                       """)
+        XCTAssertEqual(model.rightSyncPoint.seconds, 5, accuracy: 0.05,
+                       "the untouched side's anchor must not move at all")
     }
 
     /// The ordinary case, on real media, so the fix cannot be "always slide the

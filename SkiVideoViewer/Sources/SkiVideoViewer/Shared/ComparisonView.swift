@@ -67,6 +67,8 @@ struct ComparisonView: View {
     @State private var runStart: RunStartPhase = .notRunning
     @State private var runStartTask: Task<Void, Never>?
     @State private var alignmentTask: Task<Void, Never>?
+    /// The pending write of a corrected start; see `scheduleCorrectionWrite`.
+    @State private var correctionTask: Task<Void, Never>?
     /// A sidecar that could not be written. Surfaced once, plainly; the pick
     /// itself is kept and the sync still applies.
     @State private var sidecarWarning: String?
@@ -119,7 +121,7 @@ struct ComparisonView: View {
                 ComparisonControlBar(
                     model: model,
                     analysableSides: analysableSides,
-                    canSyncFromDetectedStarts: detectedStarts != nil,
+                    canSyncFromDetectedStarts: runStarts != nil,
                     onFindSubject: { side in openSubjectSheet(side) },
                     onSyncFromDetectedStarts: { syncFromDetectedStarts() }
                 )
@@ -138,6 +140,11 @@ struct ComparisonView: View {
         // track stale, and the sidecar has to be re-read against the new
         // number for `isStale` to say so.
         .task(id: alignmentKey) { loadStoredAlignment() }
+        // The anchor moving is the only signal that the operator corrected a
+        // start — `scrub` and `nudge` both express a correction by carrying the
+        // sync point — so the write hangs off that rather than off any one
+        // control.
+        .onChange(of: model.syncPoints) { _ in scheduleCorrectionWrite() }
         .sheet(item: $picking) { picking in
             SubjectSheet(
                 session: subjects.session(for: picking.side),
@@ -187,6 +194,12 @@ struct ComparisonView: View {
         .overlay(alignment: .topLeading) { closeButton }
         #endif
         .onDisappear {
+            // Flushed, not merely cancelled: closing the window within 0.3s of
+            // the last adjustment is an ordinary thing to do — correct the
+            // start, look at it, close — and the debounce must not be the
+            // reason that correction is lost.
+            correctionTask?.cancel()
+            persistCorrections()
             runStartTask?.cancel()
             alignmentTask?.cancel()
             alignment.cancel()
@@ -201,7 +214,7 @@ struct ComparisonView: View {
     /// from all four values and re-running it on each in turn would read the
     /// sidecar against a half-updated pair.
     private var alignmentKey: String {
-        let starts = detectedStarts
+        let starts = runStarts
         return [
             model.leftName,
             model.rightName,
@@ -214,14 +227,14 @@ struct ComparisonView: View {
     /// same two conditions gate the Compute button, so it cannot offer work
     /// that `computeAlignment` would then decline to start.
     private var canComputeAlignment: Bool {
-        clip(for: .left) != nil && clip(for: .right) != nil && detectedStarts != nil
+        clip(for: .left) != nil && clip(for: .right) != nil && runStarts != nil
     }
 
     private func loadStoredAlignment() {
         guard
             let left = clip(for: .left),
             let right = clip(for: .right),
-            let starts = detectedStarts
+            let starts = runStarts
         else {
             // Not merely "leave it alone": a track loaded for the previous pair
             // would go on answering for a comparison it does not describe.
@@ -238,7 +251,7 @@ struct ComparisonView: View {
         guard
             let left = clip(for: .left),
             let right = clip(for: .right),
-            let starts = detectedStarts
+            let starts = runStarts
         else { return }
         alignmentTask?.cancel()
         // `@MainActor` explicitly, as `confirmSubject` does and for the same
@@ -262,7 +275,7 @@ struct ComparisonView: View {
     /// phase by construction, so either would do; taking it from one side means
     /// there is no second answer to disagree with.
     private var runPhase: TimeInterval? {
-        guard let starts = detectedStarts else { return nil }
+        guard let starts = runStarts else { return nil }
         return model.leftTime - starts.left
     }
 
@@ -308,12 +321,26 @@ struct ComparisonView: View {
     /// The pair of stored run starts, or nil unless *both* sides have one.
     /// Also what gates the secondary menu, so the menu cannot offer a sync it
     /// would then decline to perform.
-    private var detectedStarts: (left: TimeInterval, right: TimeInterval)? {
+    ///
+    /// `SubjectPick.syncTime`, not `runStart.syncTime`: the start that applies
+    /// is the operator's correction wherever they made one. That is what makes
+    /// a correction survive a reopen without re-analysis, and it feeds
+    /// `alignmentKey` too — so correcting a start marks a track measured
+    /// against the old one as no longer describing this pair, which is exactly
+    /// what it is.
+    private var runStarts: (left: TimeInterval, right: TimeInterval)? {
         guard
-            let left = subjects.left.pickedSubject?.runStart.syncTime,
-            let right = subjects.right.pickedSubject?.runStart.syncTime
+            let left = subjects.left.pickedSubject?.syncTime,
+            let right = subjects.right.pickedSubject?.syncTime
         else { return nil }
         return (left, right)
+    }
+
+    /// Whether either side's start is a correction rather than a measurement.
+    /// Only the status sentence reads it — see `ComparisonModel.applySync`.
+    private var startsAreCorrected: Bool {
+        subjects.left.pickedSubject?.correctedRunStart != nil
+            || subjects.right.pickedSubject?.correctedRunStart != nil
     }
 
     private func loadStoredSubject(_ side: ComparisonSide) {
@@ -407,8 +434,102 @@ struct ComparisonView: View {
     /// clip's first sample. `ComparisonModel.applySync` records the origin, so
     /// the status says the sync came from detected starts.
     private func syncFromDetectedStarts() {
-        guard let starts = detectedStarts else { return }
-        model.applySync(left: starts.left, right: starts.right)
+        guard let starts = runStarts else { return }
+        model.applySync(left: starts.left, right: starts.right, corrected: startsAreCorrected)
+    }
+
+    // MARK: - Keeping the operator's correction
+
+    /// How far the pair's anchor must move before it counts as a correction.
+    ///
+    /// Not zero: `applySync` seeks and re-reads the playheads through
+    /// `CMTime(seconds:preferredTimescale: 600)`, so a start that was merely
+    /// re-applied can differ from the stored one by up to 1/600s. 10ms is
+    /// comfortably above that and comfortably below one frame at 50fps (20ms),
+    /// so no real correction is filtered out and no rounding is written back.
+    private static let correctionEpsilon: TimeInterval = 0.01
+
+    /// A correction is written when the operator stops moving, not while they
+    /// move.
+    ///
+    /// A drag emits continuously — `TimelineScrubber` seeks live rather than on
+    /// release, deliberately, because finding a frame means watching the frames
+    /// go by — so a write per event would be hundreds of sidecar writes per
+    /// gesture. `ComparisonScrubber` exposes no drag-end (`TimelineScrubber`
+    /// keeps `onEditingChanged` to itself), and threading a new callback
+    /// through three views to persist a file is the wrong shape, so this
+    /// debounces instead: the last change wins 0.3s after the changes stop.
+    /// The release itself re-emits the final position, so the timer is measured
+    /// from a settled value.
+    private func scheduleCorrectionWrite() {
+        correctionTask?.cancel()
+        correctionTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            persistCorrections()
+        }
+    }
+
+    /// Writes each side's corrected start, if it moved.
+    ///
+    /// Only while the sync came from run starts. A manual `setSyncPoints()`
+    /// anchors the pair wherever the operator happened to park it, which is not
+    /// a claim about where the run begins, and recording it as one would write
+    /// a wrong number into a sidecar that no longer says it is wrong.
+    ///
+    /// Per side, and only when it actually moved: syncing without correcting
+    /// must not rewrite five sidecars, and dragging a start back to the
+    /// detected value must clear the correction rather than pin the same number
+    /// twice.
+    private func persistCorrections() {
+        guard case .detected = model.syncOrigin, let points = model.syncPoints else { return }
+        persistCorrection(.left, start: points.left)
+        persistCorrection(.right, start: points.right)
+    }
+
+    /// What a side's sidecar should say, given where the pair is now anchored.
+    ///
+    /// **Internal and static so the rule can be tested without a window.**
+    /// `ComparisonView` builds its own `ComparisonModel` in `init`, so there is
+    /// no way to hand a rendered one a corrected pair; the same reason
+    /// `stored(_:)` and `message(for:)` are static. And this is the rule that
+    /// decides whether the operator's twenty seconds are written or dropped.
+    static func correction(for pick: SubjectPick, anchoredAt start: TimeInterval) -> StartCorrection {
+        guard abs(pick.syncTime - start) > correctionEpsilon else { return .unchanged }
+        // Back to nil rather than to the detected value: "the operator never
+        // corrected this" and "the operator dragged it back to where the
+        // detector already had it" are the same state, and only one of them
+        // belongs on disk — a correction that says nothing is a correction that
+        // lies about the detector's error being non-zero.
+        return .write(abs(pick.runStart.syncTime - start) > correctionEpsilon ? start : nil)
+    }
+
+    /// The outcome of `correction(for:anchoredAt:)`. An enum rather than a
+    /// `TimeInterval??`, because the two nils mean opposite things: "leave the
+    /// file alone" and "write, clearing the correction".
+    enum StartCorrection: Equatable {
+        case unchanged
+        case write(TimeInterval?)
+    }
+
+    private func persistCorrection(_ side: ComparisonSide, start: TimeInterval) {
+        guard
+            let clip = clip(for: side),
+            let pick = subjects.session(for: side).pickedSubject,
+            case let .write(corrected) = Self.correction(for: pick, anchoredAt: start)
+        else { return }
+        do {
+            try subjects.session(for: side).confirm(
+                segmentIDs: pick.segmentIDs, runStart: pick.runStart,
+                correctedRunStart: corrected, for: clip
+            )
+        } catch {
+            // Same rule as a failed pick write, for the same reason: the
+            // correction is in memory and good for this session, and refusing
+            // it over a file permission would cost the operator the adjustment
+            // they just made by eye.
+            sidecarWarning = "\(clip.lastPathComponent): \(error). The corrected start still applies for this session."
+        }
     }
 
     /// The outcomes that are a time to sync on, and the two that are not.

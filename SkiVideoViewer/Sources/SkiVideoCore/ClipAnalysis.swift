@@ -142,9 +142,39 @@ public struct SubjectPick: Codable, Equatable, Sendable {
     public let segmentIDs: [Int]
     public let runStart: StoredRunStart
 
-    public init(segmentIDs: [Int], runStart: StoredRunStart) {
+    /// The operator's correction to the detected start, if they made one.
+    ///
+    /// Separate from `runStart` rather than replacing it, for the same reason
+    /// the segments are stored raw and gated on load: `runStart` records what
+    /// was *measured*, and this records what the operator *decided*. Keeping
+    /// both means a re-analysis can update the measurement without discarding
+    /// the judgement, and the size of the correction stays visible as evidence
+    /// about the detector — the detector landed within a second on three of
+    /// four ground-truth clips and 1.8s out on the fourth, and that is only
+    /// knowable if corrections are kept beside the measurements they correct.
+    ///
+    /// Optional and additive so that every sidecar written before this field
+    /// existed still decodes — six were in the operator's footage folder when
+    /// this was written, each holding twenty seconds of analysis and a
+    /// judgement no algorithm can make. `ClipAnalysisStore.load` swallows a
+    /// decode failure as "no analysis", so a required field here would have
+    /// thrown all six away in silence.
+    public let correctedRunStart: TimeInterval?
+
+    /// The start that applies: the operator's correction when there is one,
+    /// the detected start otherwise. Every caller that needs *a* time to sync
+    /// on reads this, so the precedence rule lives in one place.
+    public var syncTime: TimeInterval {
+        correctedRunStart ?? runStart.syncTime
+    }
+
+    /// `correctedRunStart` defaults to nil so that constructing a pick from a
+    /// fresh detection — which is every call site that predates the field —
+    /// says "no correction yet" without restating it.
+    public init(segmentIDs: [Int], runStart: StoredRunStart, correctedRunStart: TimeInterval? = nil) {
         self.segmentIDs = segmentIDs
         self.runStart = runStart
+        self.correctedRunStart = correctedRunStart
     }
 }
 
