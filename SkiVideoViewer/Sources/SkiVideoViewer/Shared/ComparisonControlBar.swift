@@ -10,10 +10,11 @@ import SwiftUI
 /// so the one used when nothing fits.
 ///
 /// **The 44pt rule applies to the controls we build, not to system controls.**
-/// The six transport buttons and the anchor are plain `Button`s and are
-/// genuinely 44×44, by `frame` plus `contentShape`. The two segmented pickers
-/// are not, and cannot be made so from here — 32pt is the iPadOS standard size
-/// for a segmented control, which is the size to want.
+/// The anchor is a plain `Button` and is genuinely 44×44, by `frame` plus
+/// `contentShape`; the six transport buttons are the same shape, built in
+/// `TransportControls`. The two segmented pickers are not, and cannot be made
+/// so from here — 32pt is the iPadOS standard size for a segmented control,
+/// which is the size to want.
 ///
 /// The `height: 44` frames below reserve the row — real, and what gives the
 /// two-row layout its rhythm — but they do **not** enlarge the control.
@@ -38,7 +39,14 @@ struct ComparisonControlBar: View {
             HStack(spacing: 16) {
                 layoutPicker
                 targetPicker
-                transport
+                TransportControls(isEnabled: model.hasTwoVideos) { action in
+                    // Always through `applyTransport`, never the per-side model
+                    // methods it wraps: `lastTouchedSide` is written only there
+                    // and in `load`, so a control that bypasses it leaves that
+                    // state stale and the demotion off `.both` lands on the
+                    // wrong side.
+                    model.applyTransport(action)
+                }
                 Spacer(minLength: 8)
                 timeLabel
                 anchorButton
@@ -50,7 +58,14 @@ struct ComparisonControlBar: View {
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 16) {
-                    transport
+                    TransportControls(isEnabled: model.hasTwoVideos) { action in
+                        // Always through `applyTransport`, never the per-side model
+                        // methods it wraps: `lastTouchedSide` is written only there
+                        // and in `load`, so a control that bypasses it leaves that
+                        // state stale and the demotion off `.both` lands on the
+                        // wrong side.
+                        model.applyTransport(action)
+                    }
                     Spacer(minLength: 8)
                     timeLabel
                     anchorButton
@@ -96,52 +111,6 @@ struct ComparisonControlBar: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 160, height: 44)
-    }
-
-    /// A `ForEach` over `allCases` rather than a restatement of the list:
-    /// `TransportAction`'s declaration order *is* left-to-right button order,
-    /// and the exhaustive `switch` in `appearance(of:)` means a case added to
-    /// the model cannot silently fail to appear here.
-    private var transport: some View {
-        HStack(spacing: 4) {
-            ForEach(TransportAction.allCases) { transportButton($0) }
-        }
-    }
-
-    private func transportButton(_ action: TransportAction) -> some View {
-        let appearance = Self.appearance(of: action)
-        return Button {
-            // Always through `applyTransport`, never the per-side model methods
-            // it wraps: `lastTouchedSide` is written only there and in `load`,
-            // so a control that bypasses it leaves that state stale and the
-            // demotion off `.both` then lands on the wrong side.
-            model.applyTransport(action)
-        } label: {
-            Image(systemName: appearance.symbol)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .help(appearance.label)
-        .accessibilityLabel(appearance.label)
-        .disabled(!model.hasTwoVideos)
-    }
-
-    private static func appearance(of action: TransportAction) -> (symbol: String, label: String) {
-        switch action {
-        case .back5: return ("gobackward.5", "Back 5 seconds")
-        case .back1: return ("gobackward.minus", "Back 1 second")
-        case .playPause: return ("playpause.fill", "Play or pause")
-        case .forward1: return ("goforward.plus", "Forward 1 second")
-        case .forward5: return ("goforward.5", "Forward 5 seconds")
-        // Momentary, not a toggle. `applyTransport(.slow)` is fire-and-play at
-        // 0.25×, and the rate it sets lives on `AVPlayer`, which publishes
-        // nothing — a toggle rendered from it would show stale state whenever
-        // the periodic time observer is idle, which is precisely while paused.
-        // The way back to 1× is play/pause: it pauses, and the next play starts
-        // at full rate. Labelled as the action it is.
-        case .slow: return ("tortoise.fill", "Play at quarter speed")
-        }
     }
 
     /// Follows the target, like the scrubber: a Right-targeted bar reading out
