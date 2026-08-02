@@ -48,19 +48,51 @@ struct ClipSourceMenu: View {
     /// button in the middle of the pane, where the deleted header row's control
     /// used to be reachable from.
     ///
-    /// The `maxWidth`/`maxHeight` frame is part of how it looks rather than a
-    /// caller's placement decision — it is what centres the button in the pane
-    /// — so it lives here with the appearance it belongs to.
+    /// **Draws its own background rather than relying on `.borderedProminent`,
+    /// and that is the fix for a defect seen in the running app, not a
+    /// preference.**
+    ///
+    /// Reported three times as "no selector for the right-hand side", and
+    /// finally caught in a full-window screenshot: the left pane's `.chip`
+    /// rendered perfectly while the right pane's `.prominent` rendered nothing
+    /// at all — same view, same model, same window. The difference is the
+    /// style. When a library is open, `chooser` is a `Menu` with
+    /// `.menuStyle(.button)`; `.borderedProminent` then contributes no visible
+    /// chrome, so the control occupies space and paints nothing.
+    ///
+    /// It resisted three rounds of investigation because every tool available
+    /// off-screen lies about it in a different direction: a view-tree search
+    /// finds no `NSControl` for a button that plainly renders, `ImageRenderer`
+    /// cannot draw a `Menu` at all, `cacheDisplay` renders one as empty, and
+    /// `fittingSize` reports a healthy 98x24 for a control that paints nothing.
+    /// Four measurements, none of which could see it. Only the screenshot did.
+    ///
+    /// So this is built the way `chip` is — `.plain` plus a background this
+    /// view draws itself — because that is the construction observed working in
+    /// the same window at the same moment. The fill frame goes on a wrapper so
+    /// the control keeps its natural size and is centred, rather than being
+    /// asked to stretch.
     private var prominent: some View {
-        chooser { Text(title) }
-            .buttonStyle(.borderedProminent)
+        ZStack {
+            Color.clear
+            chooser {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .frame(minHeight: 44)
+                    .background(Color.accentColor, in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
             .accessibilityLabel(spokenLabel)
             // The identifier is the *visible* title, and the label is the
             // spoken one. Overriding the label hides the title from the
             // accessibility tree entirely, so without this nothing observes it:
             // renaming the button in the UI is a mutation no test can see.
             .accessibilityIdentifier(title)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The loaded pane's chooser, and both of the overlay layout's.
