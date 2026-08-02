@@ -39,6 +39,69 @@ final class AlignmentGateTests: XCTestCase {
     /// bare non-nil check cannot.
     private func measuredDX(at index: Int) -> Double { 0.02 + Double(index) * 0.004 }
 
+    // MARK: - What the defaults are, and that they are the defaults
+
+    /// A default is worth pinning when it encodes a decision, and these two do:
+    /// the overlay masks both clips to the region they share, so overlap is
+    /// exactly the fraction of picture that survives the crop. 0.75 means
+    /// "keep at least three quarters"; 0.65 means "below this the crop costs
+    /// more than the alignment is worth".
+    ///
+    /// The constants alone would not be enough — restoring the old 0.68 / 0.55
+    /// as literals in the signature would leave them untouched — so this also
+    /// walks the defaulted call across both edges.
+    func testTheDefaultThresholdsAreThreeQuartersAndTwoThirds() {
+        XCTAssertEqual(AlignmentGate.defaultEngageAbove, 0.75, accuracy: 1e-9)
+        XCTAssertEqual(AlignmentGate.defaultDisengageBelow, 0.65, accuracy: 1e-9)
+
+        // The engage edge, through the defaulted call: 0.74 keeps too little.
+        XCTAssertNil(
+            AlignmentGate.translation(in: denseTrack(Array(repeating: 0.74, count: 11)), at: 0.20),
+            "0.74 of the picture engaged alignment; the default engage threshold is not 0.75"
+        )
+        XCTAssertNotNil(
+            AlignmentGate.translation(in: denseTrack(Array(repeating: 0.76, count: 11)), at: 0.20),
+            "0.76 of the picture did not engage alignment"
+        )
+
+        // The disengage edge: 0.66 holds what it has, 0.64 lets go.
+        let holding = denseTrack(
+            Array(repeating: 0.91, count: 11) + Array(repeating: 0.66, count: 11)
+        )
+        XCTAssertNotNil(
+            AlignmentGate.translation(in: holding, at: 0.72),
+            "0.66 disengaged; the default disengage threshold is not 0.65"
+        )
+        let letting = denseTrack(
+            Array(repeating: 0.91, count: 11) + Array(repeating: 0.64, count: 11)
+        )
+        XCTAssertNil(
+            AlignmentGate.translation(in: letting, at: 0.84),
+            "0.64 of the picture stayed aligned past the ease"
+        )
+    }
+
+    /// The band itself, at the value the old defaults would have engaged on.
+    /// 0.70 is above the old 0.68 and inside the new band, so this is the one
+    /// sample that tells the two configurations apart in both directions.
+    func testAnOverlapInsideTheNewBandChangesNothing() {
+        let fromAbove = track([0.91] + Array(repeating: 0.70, count: 5))
+        for step in 1..<6 {
+            XCTAssertNotNil(
+                AlignmentGate.translation(in: fromAbove, at: Double(step) * 0.5, overlapWindow: 1),
+                "0.70 disengaged an engaged track at sample \(step)"
+            )
+        }
+
+        let fromBelow = track([0.22] + Array(repeating: 0.70, count: 5))
+        for step in 1..<6 {
+            XCTAssertNil(
+                AlignmentGate.translation(in: fromBelow, at: Double(step) * 0.5, overlapWindow: 1),
+                "0.70 engaged a disengaged track at sample \(step)"
+            )
+        }
+    }
+
     // MARK: - The rules, on the findings' 0.5 s grid, unfiltered
 
     // These eight pin the gating rules themselves, so they run with
@@ -66,9 +129,12 @@ final class AlignmentGateTests: XCTestCase {
 
     /// The whole reason there are two thresholds. A signal wandering inside the
     /// band must hold whatever state it was in, not toggle on every sample.
+    ///
+    /// The values moved with the defaults: this test is about the band, so it
+    /// wanders inside whatever the band is, and the band is now 0.65 – 0.75.
     func testASignalOscillatingBetweenTheThresholdsDoesNotFlap() {
-        // Engages on the first sample, then wanders in 0.55...0.68 forever.
-        let wandering = track([0.91, 0.66, 0.57, 0.64, 0.58, 0.67, 0.56, 0.63])
+        // Engages on the first sample, then wanders in 0.65...0.75 forever.
+        let wandering = track([0.91, 0.74, 0.67, 0.72, 0.66, 0.73, 0.68, 0.71])
         for step in 1..<8 {
             XCTAssertNotNil(
                 AlignmentGate.translation(
@@ -79,7 +145,7 @@ final class AlignmentGateTests: XCTestCase {
         }
 
         // The mirror: starts disengaged, wanders in the band, stays off.
-        let fromBelow = track([0.22, 0.57, 0.66, 0.58, 0.64, 0.61])
+        let fromBelow = track([0.22, 0.67, 0.74, 0.68, 0.72, 0.70])
         for step in 1..<6 {
             XCTAssertNil(
                 AlignmentGate.translation(
@@ -262,8 +328,11 @@ final class AlignmentGateTests: XCTestCase {
 
     /// Hysteresis under the shipping configuration: the filter must not
     /// swallow the two-threshold behaviour the band exists for.
+    ///
+    /// The band values moved with the defaults, for the same reason as in
+    /// `testASignalOscillatingBetweenTheThresholdsDoesNotFlap`.
     func testHysteresisStillHoldsWithTheFilterEngaged() {
-        let band = [0.66, 0.57, 0.64, 0.58, 0.67, 0.56, 0.63, 0.60, 0.65, 0.59]
+        let band = [0.66, 0.74, 0.67, 0.73, 0.68, 0.72, 0.69, 0.71, 0.70, 0.74]
 
         let wandering = denseTrack([Double](repeating: 0.91, count: 10) + band)
         for index in 10..<20 {

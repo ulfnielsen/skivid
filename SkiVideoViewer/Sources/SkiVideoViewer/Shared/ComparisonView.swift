@@ -754,27 +754,7 @@ struct ComparisonVideos: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .bottomLeading) { overlayChoosers }
-            .overlay(alignment: .topLeading) { alignmentReadout }
         }
-    }
-
-    /// TEMPORARY DIAGNOSTIC — remove once "Align does nothing" is understood.
-    ///
-    /// The model chain is proven correct on the operator's own pair: the track
-    /// loads, is not stale, `canAlign` is true, and the gate returns
-    /// (0.0094, -0.1375) at run phase 0. The picture still does not move, and
-    /// reading the view layer has found nothing — so this splits the question.
-    /// A non-zero vector here with the clips stationary means `.offset` on the
-    /// `NSViewRepresentable` is the fault; a zero means the running view never
-    /// receives what the probe measured.
-    private var alignmentReadout: some View {
-        Text(String(format: "align dx %.4f  dy %.4f", translation.dx, translation.dy))
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.yellow)
-            .padding(6)
-            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-            .padding(8)
-            .allowsHitTesting(false)
     }
 
     /// The overlay layout's clip choosers, which it had none of.

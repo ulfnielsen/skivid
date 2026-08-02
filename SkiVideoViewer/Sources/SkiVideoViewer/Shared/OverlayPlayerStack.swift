@@ -13,6 +13,15 @@ import SwiftUI
 /// views: the same clips rendered white, and an `.opacity(0.5)` control
 /// rendered grey. Do not "simplify" this back toward `compositingFilter`.
 ///
+/// **Only the region the two clips share is drawn.** Offsetting the top clip
+/// leaves a strip down one side and along one edge where only one clip has
+/// picture; in blend mode that strip is a single clip at half opacity and in
+/// difference mode it is a clip differenced against black, and both read as
+/// artefacts rather than as "there is nothing to compare here". Both players
+/// are masked to their intersection — see `sharedRect` — and outside it the
+/// same black the letterbox already uses shows through, so the frame simply
+/// appears smaller.
+///
 /// **Still a pure renderer.** It takes players and values — never a track, a
 /// store or a model — which is what lets the blend compositing be tested
 /// without one, and what keeps every judgement about *whether* to align in
@@ -44,17 +53,29 @@ struct OverlayPlayerStack: View {
 
     var body: some View {
         GeometryReader { proxy in
+            // One video size for the whole geometry — the floating clip's, the
+            // same one `offset` has always scaled by. The pair is two cameras
+            // on one hill at one resolution; if that ever stops holding, the
+            // shared region needs both rects, not this one twice.
+            let videoSize = topPlayer.currentItem?.presentationSize ?? .zero
+            let shared = Self.sharedRect(for: translation, in: proxy.size, videoSize: videoSize)
             ZStack {
                 Color.black
                 SinglePlayerView(player: bottomPlayer)
+                    // The stationary clip is masked too, and to the *same*
+                    // rect. Masking only the moved one leaves the reference
+                    // showing through the strip where the other clip has no
+                    // picture at all, which is the artefact this removes.
+                    .mask { Self.sharedRegion(shared) }
                 SinglePlayerView(player: topPlayer)
-                    .offset(
-                        Self.offset(
-                            for: translation,
-                            in: proxy.size,
-                            videoSize: topPlayer.currentItem?.presentationSize ?? .zero
-                        )
-                    )
+                    .offset(Self.offset(for: translation, in: proxy.size, videoSize: videoSize))
+                    // After `.offset`, deliberately. `.offset` is a render-time
+                    // effect and does not move the layout frame a mask is
+                    // placed against, so this rect stays put in the container
+                    // while the picture slides under it — measured, by
+                    // rendering a `Color` stand-in through `ImageRenderer` at
+                    // both orderings before this line was written.
+                    .mask { Self.sharedRegion(shared) }
                     // Difference blending is defined at full opacity, so force it
                     // here as well as in the model. This cannot disagree with the
                     // model: applying the branch to a value the model has already
@@ -103,6 +124,67 @@ struct OverlayPlayerStack: View {
         return CGSize(width: translation.dx * width, height: translation.dy * width)
     }
 
+    /// The region of `container` both clips have picture in, in the
+    /// container's own coordinates: everything outside it is masked to black.
+    ///
+    /// **This is where "overlap" stops being an abstract score.** For a pure
+    /// translation the shared region is the frame inset by `|dx|` on the
+    /// horizontal side the shift moves away from and `|dy|` on the vertical
+    /// one, so its area over the frame's area *is* the overlap `AlignmentGate`
+    /// gates on. Engaging at 0.68 is visibly throwing away nearly a third of
+    /// the picture, which is why the gate's defaults moved to 0.75 / 0.65.
+    ///
+    /// **A mask, never a zoom.** Nothing here scales the shared region back up
+    /// to fill the container. It could — the arithmetic is right there — and
+    /// the pair would then change size every time the gate engaged or
+    /// disengaged. A picture that jumps scale mid-run is worse than one that
+    /// loses a border.
+    ///
+    /// **Identity is the whole container, not the video rect.** With no shift
+    /// there is no non-shared strip to hide, so the unaligned overlay draws
+    /// exactly what it drew before alignment existed. The two differ only by
+    /// the letterbox bars, which are black either way, so the step at
+    /// `translation == .zero` is arithmetic rather than anything visible.
+    ///
+    /// Static and taking explicit sizes for the same reason `offset` is: this
+    /// is the geometry that has to be *asserted*, and the four ways this
+    /// project has measured an offscreen render lying about a SwiftUI view are
+    /// listed on `offset` below.
+    static func sharedRect(for translation: CGVector, in container: CGSize, videoSize: CGSize) -> CGRect {
+        let full = CGRect(origin: .zero, size: container)
+        guard translation != .zero else { return full }
+
+        let video = videoRect(container: container, videoSize: videoSize)
+        let shift = offset(for: translation, in: container, videoSize: videoSize)
+        let moved = video.offsetBy(dx: shift.width, dy: shift.height)
+        let shared = video.intersection(moved)
+        // A shift of a whole frame or more shares nothing. `intersection`
+        // answers that with the null rect, whose origin is infinite; a mask
+        // wants an empty one.
+        return shared.isNull ? .zero : shared
+    }
+
+    /// Where the aspect-fit video actually lands inside `container`, centred,
+    /// with the letterbox or pillarbox bars outside it.
+    static func videoRect(container: CGSize, videoSize: CGSize) -> CGRect {
+        let width = renderedVideoWidth(container: container, videoSize: videoSize)
+        let height = renderedVideoHeight(container: container, videoSize: videoSize)
+        return CGRect(
+            x: (container.width - width) / 2,
+            y: (container.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    /// The mask the two players are drawn through: opaque inside `rect`,
+    /// nothing outside it, so the black already under the stack shows there.
+    private static func sharedRegion(_ rect: CGRect) -> some View {
+        Rectangle()
+            .frame(width: max(0, rect.width), height: max(0, rect.height))
+            .position(x: rect.midX, y: rect.midY)
+    }
+
     /// How wide the video actually draws inside `container`, which is not the
     /// container's own width whenever the two aspects differ.
     ///
@@ -123,5 +205,19 @@ struct OverlayPlayerStack: View {
         else { return container.width }
         let scale = min(container.width / videoSize.width, container.height / videoSize.height)
         return videoSize.width * scale
+    }
+
+    /// The other side of the same aspect fit, needed only by `videoRect` —
+    /// where the picture *starts and stops* vertically, which is not something
+    /// a normalised translation ever needed to know.
+    ///
+    /// This is not a second ruler for `dy`. Both components of a translation
+    /// still scale by the rendered **width**; see `offset`.
+    static func renderedVideoHeight(container: CGSize, videoSize: CGSize) -> CGFloat {
+        guard container.width > 0, container.height > 0,
+              videoSize.width > 0, videoSize.height > 0
+        else { return container.height }
+        let scale = min(container.width / videoSize.width, container.height / videoSize.height)
+        return videoSize.height * scale
     }
 }

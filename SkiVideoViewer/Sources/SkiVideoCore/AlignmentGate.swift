@@ -28,6 +28,17 @@ import Foundation
 /// costs most of the frame. Overlap is therefore a health signal for *shared
 /// view*, and it is already computed by the registration pass for free.
 public enum AlignmentGate {
+    /// Keep at least three quarters of the picture.
+    ///
+    /// Named rather than written into the signature because it encodes a
+    /// decision — what fraction of the frame it is worth throwing away to
+    /// bring the clips together — and a decision that is only a literal in a
+    /// default argument cannot be asserted, only re-typed.
+    public static let defaultEngageAbove = 0.75
+
+    /// Below this the crop costs more than the alignment is worth.
+    public static let defaultDisengageBelow = 0.65
+
     /// The eased, gated translation to apply to the right clip at `time`
     /// (seconds after the run start, common to both clips), or `nil` for
     /// identity — draw the clips unaligned.
@@ -35,21 +46,52 @@ public enum AlignmentGate {
     /// - Parameters:
     ///   - track: raw, ungated samples in ascending `time` order.
     ///   - time: seconds after the run start.
-    ///   - engageAbove: overlap that turns alignment **on**. Measured: the good
-    ///     windows sit at 0.68 and above.
-    ///   - disengageBelow: overlap that turns alignment **off**. Measured: the
-    ///     bad windows sit at 0.49 and below.
+    ///   - engageAbove: overlap that turns alignment **on** — "keep at least
+    ///     three quarters of the picture". See "what the thresholds cost"
+    ///     below for why this is 0.75 and not the measured 0.68.
+    ///   - disengageBelow: overlap that turns alignment **off** — below this
+    ///     the crop costs more than the alignment is worth. Measured: the bad
+    ///     windows sit at 0.49 and below, so there is still clear air under it.
     ///   - easeSeconds: how long the translation takes to shrink to identity
     ///     after a disengage.
     ///   - overlapWindow: how many samples the median filter spans before the
     ///     overlap is compared against the thresholds. 5 samples is 0.2 s at the
     ///     pass's 25 Hz. Pass 1 to gate on the raw overlap.
     ///
+    /// ## What the thresholds cost, now that the overlay crops
+    ///
+    /// `OverlayPlayerStack` masks both clips to the region they share. For a
+    /// pure translation that region is the frame inset by `|dx|` and `|dy|`,
+    /// so **overlap is exactly the fraction of picture that survives the
+    /// crop** — the same number, no longer an abstract quality score. Engaging
+    /// at the measured 0.68 therefore means visibly discarding nearly a third
+    /// of the frame, which is a decision the operator can now see rather than
+    /// one hidden in a registration statistic.
+    ///
+    /// So the defaults are tightened to 0.75 / 0.65: keep at least three
+    /// quarters of the picture, and give up below two thirds. The band is
+    /// narrower than 0.68 / 0.55 and deliberately still a band — see below.
+    ///
+    /// **Measured cost of the tightening**, on both 425-sample tracks at the
+    /// shipped 25 Hz / 320 px parameters, counting the sample times at which
+    /// this function returns a translation:
+    ///
+    /// | pair          | 0.68 / 0.55 | 0.75 / 0.65 | lost      |
+    /// |---------------|-------------|-------------|-----------|
+    /// | C0084 + C0094 | 0.675       | 0.619       | 5.6 pp    |
+    /// | C0094 + C0092 | 0.626       | 0.593       | 3.3 pp    |
+    ///
+    /// So the pair is drawn aligned for three to six percent less of the run.
+    /// What goes is the opening of the second good window — which the findings
+    /// already recorded as sitting at overlap 0.668 – 0.679, right on the old
+    /// threshold — and the brief re-engagements in the tail. Those are exactly
+    /// the samples that were keeping the least picture, which is the trade.
+    ///
     /// ## Why two thresholds and not one
     ///
     /// Do not "simplify" these into a single number. The measured good windows
-    /// are at overlap ≥ 0.68 and the bad ones at ≤ 0.49; everything in the
-    /// 0.55 – 0.68 band is a judgement the data does not settle. With one
+    /// are at overlap ≥ 0.68 and the bad ones at ≤ 0.49; everything between is
+    /// a judgement the data does not settle. With one
     /// threshold, a signal wandering across it toggles alignment on and off
     /// sample by sample, and the operator sees the frame jitter. With two, the
     /// band holds whatever state it is already in — the state only changes on
@@ -106,19 +148,22 @@ public enum AlignmentGate {
     /// returned is always the measured one — the decision is what is noisy here,
     /// not the geometry.
     ///
-    /// ## Known: the engage threshold sits right on the data's edge
+    /// ## Known: the second good window now starts later
     ///
-    /// The pass reports the second good window starting at 7.80, not the 8.00 of
-    /// the findings, because the t = 8.0 sample measures overlap 0.668 – 0.679 —
-    /// just under `engageAbove`. The edge of a good window is sitting exactly on
-    /// the threshold. That has deliberately **not** been fixed by moving the
-    /// threshold: it is one clip pair, and the second-pair sweep is what should
-    /// decide it.
+    /// The findings' second window opens at overlap 0.668 – 0.679, which was
+    /// already sitting on the old 0.68 engage threshold and is now clearly
+    /// under the new one. On C0094 + C0092 that window starts at 8.68 s
+    /// instead of 8.12 s. This is not a defect to tune away: those samples are
+    /// exactly the ones where a third of the frame would be cropped, and the
+    /// point of the change is to refuse them.
+    ///
+    /// Thresholds stay parameters. The track stores raw samples precisely so
+    /// one can be changed without recomputing anything.
     public static func translation(
         in track: AlignmentTrack,
         at time: TimeInterval,
-        engageAbove: Double = 0.68,
-        disengageBelow: Double = 0.55,
+        engageAbove: Double = AlignmentGate.defaultEngageAbove,
+        disengageBelow: Double = AlignmentGate.defaultDisengageBelow,
         easeSeconds: Double = 0.25,
         overlapWindow: Int = 5
     ) -> CGVector? {

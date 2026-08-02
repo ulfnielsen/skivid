@@ -363,6 +363,122 @@ final class OverlayAlignmentWiringTests: XCTestCase {
         )
     }
 
+    // MARK: - The region the two clips share
+
+    /// Unaligned, nothing is cropped. This is most of a run, and it is what the
+    /// overlay drew before alignment existed, so it must be exactly unchanged.
+    func testAnIdentityTranslationCropsNothing() {
+        let container = CGSize(width: 1000, height: 500)
+
+        XCTAssertEqual(
+            OverlayPlayerStack.sharedRect(
+                for: .zero, in: container, videoSize: CGSize(width: 1920, height: 1080)
+            ),
+            CGRect(origin: .zero, size: container)
+        )
+        // ...including before the item reports a presentation size.
+        XCTAssertEqual(
+            OverlayPlayerStack.sharedRect(for: .zero, in: container, videoSize: .zero),
+            CGRect(origin: .zero, size: container)
+        )
+    }
+
+    /// **The geometry the crop is, asserted as arithmetic rather than as
+    /// pixels.** `sharedRect` is a pure function of `(translation, container,
+    /// videoSize)` for exactly this reason: the y-axis sign bug reached the
+    /// operator because the only assertion about the offset was that a hosted
+    /// view's *frame* moved, and a frame moving is not a picture moving. Every
+    /// offscreen check this project has tried has been measured to lie in some
+    /// direction — a view-tree search finds no `NSControl` for a button that
+    /// plainly renders, `ImageRenderer` will not draw a `Menu`, `cacheDisplay`
+    /// renders one as empty, `fittingSize` reports a healthy size for a control
+    /// that paints nothing — so what is pinned here is the number the view
+    /// computes, not a rendering of it.
+    ///
+    /// `dx 0.08` and `dy -0.13` are deliberately unequal and oppositely signed:
+    /// a transposed axis, a mirrored edge, or a `dy` scaled by the rendered
+    /// *height* instead of the width all give a different answer, and the last
+    /// three assertions say so out loud.
+    func testAPositiveDXAndANegativeDYCropFromTheLeftAndTheBottom() {
+        let container = CGSize(width: 1000, height: 500)
+        let video = CGSize(width: 1920, height: 1080)
+        let renderedWidth = OverlayPlayerStack.renderedVideoWidth(container: container, videoSize: video)
+        let renderedHeight = OverlayPlayerStack.renderedVideoHeight(container: container, videoSize: video)
+        let full = OverlayPlayerStack.videoRect(container: container, videoSize: video)
+
+        let shared = OverlayPlayerStack.sharedRect(
+            for: CGVector(dx: 0.08, dy: -0.13), in: container, videoSize: video
+        )
+
+        // The top clip moves right, so what it moves away from is the left edge.
+        XCTAssertEqual(
+            shared.minX, full.minX + 0.08 * renderedWidth, accuracy: 1,
+            "the crop is not taken from the left edge the shift moves away from"
+        )
+        XCTAssertEqual(shared.maxX, full.maxX, accuracy: 1, "the right edge was cropped as well")
+        // ...and up — y grows downward here — so the bottom edge is the other one.
+        XCTAssertEqual(shared.minY, full.minY, accuracy: 1, "the top edge was cropped instead")
+        XCTAssertEqual(
+            shared.maxY, full.maxY - 0.13 * renderedWidth, accuracy: 1,
+            "the crop is not taken from the bottom edge"
+        )
+
+        XCTAssertEqual(shared.width, renderedWidth * (1 - 0.08), accuracy: 1)
+        XCTAssertEqual(shared.height, renderedHeight - 0.13 * renderedWidth, accuracy: 1)
+
+        XCTAssertNotEqual(
+            shared.width, renderedWidth * (1 - 0.13), accuracy: 1,
+            "the two axes are transposed: the width was inset by dy"
+        )
+        XCTAssertNotEqual(
+            shared.height, renderedHeight * (1 - 0.13), accuracy: 1,
+            "dy was scaled by the rendered height; both components scale by the width"
+        )
+        XCTAssertNotEqual(
+            shared.height, renderedHeight - 0.08 * renderedWidth, accuracy: 1,
+            "the two axes are transposed: the height was inset by dx"
+        )
+    }
+
+    /// Masking only the offset clip would leave the stationary one showing
+    /// through the strip where the other has no picture at all, which is the
+    /// artefact the crop exists to remove.
+    ///
+    /// **What this measures.** Probed before it was written: SwiftUI's `.mask`
+    /// on an `NSViewRepresentable` becomes a real clipping `NSView` wrapped
+    /// around each hosted player, and its frame in host coordinates is exactly
+    /// the rect `sharedRect` computes — (160, 0, 640, 320) here, against a
+    /// container of 800 × 400. With a mask removed from one player, that
+    /// player's nearest clipping ancestor is the stack's own `.clipped()`, at
+    /// the full container, and these two assertions disagree.
+    ///
+    /// **What it does not prove.** That the video pixels outside the rect are
+    /// actually not drawn. Neither renderer this project has measured draws an
+    /// `AVPlayerLayer` at all, so no offscreen image can answer that; the
+    /// operator judging the running app is what closes it. This says the two
+    /// clips are clipped, to the same rect, and to the computed one.
+    func testBothPlayersAreMaskedToTheSameSharedRegion() throws {
+        let model = try loadedModel()
+        defer { model.close() }
+        let container = CGSize(width: 800, height: 400)
+        let translation = CGVector(dx: 0.2, dy: -0.1)
+
+        let clips = try playerClipRects(
+            model: model, translation: translation, container: container
+        )
+
+        // The fixture's items never report a presentation size, so the video
+        // rect is the whole container — which is what makes the expected
+        // numbers plain: 800 × 400 inset by 0.2 × 800 and 0.1 × 800.
+        let expected = OverlayPlayerStack.sharedRect(
+            for: translation, in: container, videoSize: .zero
+        )
+        XCTAssertEqual(expected, CGRect(x: 160, y: 0, width: 640, height: 320))
+
+        assertRect(clips.left, equals: expected, "the bottom (left) clip is not masked to the shared region")
+        assertRect(clips.right, equals: expected, "the top (right) clip is not masked to the shared region")
+    }
+
     // MARK: - Saying so
 
     /// The chip has to be able to carry the note without silently dropping it,
@@ -559,6 +675,69 @@ final class OverlayAlignmentWiringTests: XCTestCase {
             "no hosted view is drawing the right clip"
         )
         return (leftView.convert(leftView.bounds, to: host), rightView.convert(rightView.bounds, to: host))
+    }
+
+    /// The rect each clip is clipped to, in the stack's own coordinates.
+    ///
+    /// The nearest clipping ancestor of each hosted player: SwiftUI's `.mask`
+    /// wraps the representable in one, and with the mask gone the nearest one
+    /// is the stack's `.clipped()` at the full container instead.
+    private func playerClipRects(
+        model: ComparisonModel,
+        translation: CGVector,
+        container: CGSize
+    ) throws -> (left: CGRect, right: CGRect) {
+        let host = NSHostingView(
+            rootView: OverlayPlayerStack(
+                bottomPlayer: model.leftPlayer,
+                topPlayer: model.rightPlayer,
+                topOpacity: model.topLayerOpacity,
+                blend: model.blend,
+                translation: translation
+            )
+            .frame(width: container.width, height: container.height)
+        )
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: container),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        var views: [PlayerLayerHostView] = []
+        func walk(_ view: NSView) {
+            if let player = view as? PlayerLayerHostView { views.append(player) }
+            view.subviews.forEach(walk)
+        }
+        walk(host)
+        XCTAssertEqual(views.count, 2, "the overlay must host exactly two player views")
+
+        func clipRect(of view: NSView) throws -> CGRect {
+            var ancestor = view.superview
+            while let current = ancestor {
+                if current.clipsToBounds { return current.convert(current.bounds, to: host) }
+                ancestor = current.superview
+            }
+            throw XCTSkip("no clipping ancestor at all — the probe this rests on has changed")
+        }
+
+        let leftView = try XCTUnwrap(views.first { $0.attachedPlayer === model.leftPlayer })
+        let rightView = try XCTUnwrap(views.first { $0.attachedPlayer === model.rightPlayer })
+        return (try clipRect(of: leftView), try clipRect(of: rightView))
+    }
+
+    private func assertRect(
+        _ rect: CGRect,
+        equals expected: CGRect,
+        _ message: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(rect.minX, expected.minX, accuracy: 0.5, "\(message) (x)", file: file, line: line)
+        XCTAssertEqual(rect.minY, expected.minY, accuracy: 0.5, "\(message) (y)", file: file, line: line)
+        XCTAssertEqual(rect.width, expected.width, accuracy: 0.5, "\(message) (width)", file: file, line: line)
+        XCTAssertEqual(rect.height, expected.height, accuracy: 0.5, "\(message) (height)", file: file, line: line)
     }
 
     /// The pill's laid-out size, measured the way `ComparisonStatusChipTests`
