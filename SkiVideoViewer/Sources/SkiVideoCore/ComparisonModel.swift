@@ -86,6 +86,18 @@ public enum SyncOrigin: Equatable, Sendable {
     case detected(left: TimeInterval, right: TimeInterval)
 }
 
+/// Where the locked pair is anchored, in each clip's own clock.
+///
+/// The public reading of `leftSyncPoint`/`rightSyncPoint`, which stay internal
+/// because they are half of an invariant nothing outside the model may set.
+/// Published as a pair, not two values, because a caller that read one before
+/// the other could see an offset that never existed — and it is the *offset*
+/// that carries the meaning.
+public struct SyncPoints: Equatable, Sendable {
+    public let left: TimeInterval
+    public let right: TimeInterval
+}
+
 /// Platform-agnostic state for the two-video comparison window. Like
 /// `ViewerModel`, everything platform-specific reaches it through the seams in
 /// `Seams.swift`, so an iPadOS target can present the same model.
@@ -179,8 +191,14 @@ public final class ComparisonModel: ObservableObject {
     /// here: the pair is an invariant (`L_cur - L_sync == R_cur - R_sync` while
     /// locked), and nothing outside these methods may set one without the
     /// other.
-    private(set) var leftSyncPoint = CMTime.zero
-    private(set) var rightSyncPoint = CMTime.zero
+    ///
+    /// `@Published` so a correction reaches the app layer: the operator's
+    /// nudge has to be written to the sidecar, and the only signal that one
+    /// happened is the sync point moving. Relying on `status` — which also
+    /// changes on a nudge — would have meant the persistence depended on the
+    /// wording of a sentence.
+    @Published private(set) var leftSyncPoint = CMTime.zero
+    @Published private(set) var rightSyncPoint = CMTime.zero
     private var leftTimeObserver: Any?
     private var rightTimeObserver: Any?
     private var leftDurationObserver: NSKeyValueObservation?
@@ -225,6 +243,26 @@ public final class ComparisonModel: ObservableObject {
 
     public var availableTargets: [ComparisonTarget] {
         isSynced ? [.both, .left, .right] : [.left, .right]
+    }
+
+    /// Where the pair is anchored right now, or `nil` while aligning — there is
+    /// no anchor then, and a zero would read as one at the first frame.
+    ///
+    /// This is what a correction *is*, expressed in the only terms the app
+    /// layer can persist: after `applySync` the sync points are the two run
+    /// starts, and every nudge carries the corrected clip's sync point with it,
+    /// so the sync point is the operator's answer to "where does this run
+    /// begin".
+    ///
+    /// Non-finite points read as `nil` rather than NaN: a player whose item has
+    /// not loaded reports an indefinite time, and writing that to a sidecar
+    /// would poison it.
+    public var syncPoints: SyncPoints? {
+        guard isSynced else { return nil }
+        let left = leftSyncPoint.seconds
+        let right = rightSyncPoint.seconds
+        guard left.isFinite, right.isFinite else { return nil }
+        return SyncPoints(left: left, right: right)
     }
 
     /// One transport action, routed to the synced pair or to a single side by
@@ -393,13 +431,79 @@ public final class ComparisonModel: ObservableObject {
             seek(side, by: seconds)
             return
         }
+        carrySyncPoint(side, from: currentSeconds(of: player(for: side)), by: seconds)
+        status = "\(side == .left ? "Left" : "Right") nudged \(seconds >= 0 ? "+" : "")\(Int(seconds)) seconds"
+    }
+
+    /// `nudge(_:by:)` aimed at an absolute time instead of a relative one —
+    /// what dragging the scrubber with one side targeted does.
+    ///
+    /// The 1s and 5s transport steps are the only correction there was, and a
+    /// run start needs frame-level adjustment: a ~1900pt bar over a 25s clip is
+    /// about 13ms per point, finer than a frame at any rate the cameras shoot.
+    /// This is the same correction, at the bar's resolution — it shares
+    /// `carrySyncPoint` rather than repeating the sync-point carry, so the
+    /// travelled-not-requested rule cannot come apart between the two.
+    ///
+    /// Internal: the scrubber reaches it through `scrub(_:to:)`, which is where
+    /// the paired-versus-corrective decision is made.
+    func nudge(_ side: ComparisonSide, to seconds: Double) {
+        noteTouched(side)
+        guard isSynced else {
+            seek(player(for: side), to: seconds)
+            return
+        }
+        let from = lockedPosition(of: side)
+        let landed = carrySyncPoint(side, from: from, by: seconds - from)
+        status = "\(side == .left ? "Left" : "Right") corrected to \(Timecode.string(landed))"
+    }
+
+    /// Where a clip *is*, read through the locked pair's own invariant
+    /// (`L_cur - L_sync == R_cur - R_sync`) rather than off its own playhead.
+    ///
+    /// **Measured, and the reason this exists.** `AVPlayer.currentTime()` lags
+    /// a seek that has not completed on decodable media, and a drag emits a
+    /// correction every few milliseconds — so each event computed its travel
+    /// from a playhead still standing at the *previous* position and shifted
+    /// the sync point again by a distance the clip had already been asked to
+    /// travel. One synthetic drag to 6.4s on a clip anchored at 8.0s left the
+    /// sync point at 4.8s: the same −1.6s applied twice, with the clip in the
+    /// right place and the anchor 1.6s wrong. A stored run start computed that
+    /// way is silently wrong, which is worse than not storing one.
+    ///
+    /// The other clip does not move during a correction, so *its* playhead is
+    /// settled and the phase read from it is exact. Falling back to this
+    /// clip's own playhead would reintroduce the accumulation, so it does not.
+    private func lockedPosition(of side: ComparisonSide) -> Double {
+        let other: ComparisonSide = side == .left ? .right : .left
+        let otherSync = other == .left ? leftSyncPoint.seconds : rightSyncPoint.seconds
+        let thisSync = side == .left ? leftSyncPoint.seconds : rightSyncPoint.seconds
+        let phase = currentSeconds(of: player(for: other)) - otherSync
+        guard phase.isFinite, thisSync.isFinite else { return currentSeconds(of: player(for: side)) }
+        return thisSync + phase
+    }
+
+    /// Moves one clip against the other and carries its sync point along.
+    /// Returns where the clip actually landed.
+    ///
+    /// The sync point shifts by the distance **actually travelled**, not the
+    /// distance asked for, so a correction clamped at 0 or at the end of the
+    /// clip cannot drift the sync point away from the frame it names. Both
+    /// entry points go through here for exactly that reason: the subtlety is
+    /// invisible at the call site and was reproduced as a real misalignment
+    /// before it was fixed once.
+    ///
+    /// `from` is passed in rather than read here because the two callers know
+    /// different things about where the clip is: an arrow press moves from the
+    /// playhead, while a drag has to move from `lockedPosition(of:)` — see it
+    /// for the measured accumulation that reading the playhead caused.
+    @discardableResult
+    private func carrySyncPoint(_ side: ComparisonSide, from: Double, by seconds: Double) -> Double {
         pauseBoth()
         let clip = player(for: side)
-        let currentSeconds = clip.currentTime().seconds
-        let from = currentSeconds.isFinite ? currentSeconds : 0
-        let travelled = clampedSeekTarget(for: clip, to: from + seconds) - from
+        let landed = clampedSeekTarget(for: clip, to: from + seconds)
         seek(clip, to: from + seconds)
-        let shift = CMTime(seconds: travelled, preferredTimescale: 600)
+        let shift = CMTime(seconds: landed - from, preferredTimescale: 600)
         switch side {
         case .left: leftSyncPoint = leftSyncPoint + shift
         case .right: rightSyncPoint = rightSyncPoint + shift
@@ -407,7 +511,7 @@ public final class ComparisonModel: ObservableObject {
         // The clip stayed inside its own bounds; the *sync point* need not
         // have. Slide the pair back into range before anything reads it.
         normalizeSyncPoints()
-        status = "\(side == .left ? "Left" : "Right") nudged \(seconds >= 0 ? "+" : "")\(Int(seconds)) seconds"
+        return landed
     }
 
     public func seek(_ side: ComparisonSide, by seconds: Double) {
@@ -430,10 +534,31 @@ public final class ComparisonModel: ObservableObject {
         seek(player(for: side), to: seconds)
     }
 
+    /// Dragging the timeline, routed by `target` exactly as the transport
+    /// arrows are.
+    ///
+    /// - `both` moves the locked pair, preserving the sync offset.
+    /// - a single side **corrects** that clip against the other, leaving the
+    ///   other where it is — the same relative move the arrows make through
+    ///   `nudge`, at the bar's resolution rather than in 1s and 5s steps.
+    ///
+    /// The target picker meant "which clip do I move relative to the other" for
+    /// the arrows and "whose clock am I reading" for the bar. One control, two
+    /// meanings; the arrows established the first, and this makes the bar agree.
+    ///
+    /// **The decision cannot be made from `side`.** `ComparisonScrubber` passes
+    /// `target.scrubbedSide`, which collapses `both` to `.left` so that the bar
+    /// and the time label above it read one clock — a Right-targeted bar
+    /// showing the left clip's time is the contradiction that mapping exists to
+    /// prevent, so it is `target` that is read here instead.
     public func scrub(_ side: ComparisonSide, to seconds: Double) {
         noteTouched(side)
         guard isSynced else {
             seek(player(for: side), to: seconds)
+            return
+        }
+        guard target == .both else {
+            nudge(side, to: seconds)
             return
         }
 
@@ -485,7 +610,14 @@ public final class ComparisonModel: ObservableObject {
     /// `L_cur - L_sync == R_cur - R_sync` invariant is set up the one existing
     /// way. `syncOrigin` is overwritten *after* that call, because
     /// `setSyncPoints` credits the operator.
-    public func applySync(left: TimeInterval, right: TimeInterval) {
+    /// - Parameter corrected: whether either of these times is the operator's
+    ///   correction rather than the detector's measurement. It changes one word
+    ///   of the status and nothing else: the model still does not learn where
+    ///   the numbers came from, only whether a human moved them. Without it a
+    ///   reopened pair would be credited to "detected starts" while sitting on
+    ///   times the detector never produced — a sentence that is wrong in
+    ///   exactly the case the correction exists for.
+    public func applySync(left: TimeInterval, right: TimeInterval, corrected: Bool = false) {
         seek(leftPlayer, to: left)
         seek(rightPlayer, to: right)
         setSyncPoints()
@@ -493,7 +625,8 @@ public final class ComparisonModel: ObservableObject {
         // not be attributed to a detection that never took effect.
         guard isSynced else { return }
         syncOrigin = .detected(left: left, right: right)
-        status = "Synced from detected starts · L \(Timecode.string(left)) · R \(Timecode.string(right))"
+        let source = corrected ? "corrected" : "detected"
+        status = "Synced from \(source) starts · L \(Timecode.string(left)) · R \(Timecode.string(right))"
     }
 
     public func removeSync() {
@@ -596,6 +729,14 @@ public final class ComparisonModel: ObservableObject {
 
     private func currentTime(for side: ComparisonSide) -> Double {
         side == .left ? leftTime : rightTime
+    }
+
+    /// A player's playhead as a usable number. An item that has not loaded, and
+    /// every undecodable fixture, reports an indefinite time that reads back as
+    /// NaN; treating that as 0 is what the corrections below have always done.
+    private func currentSeconds(of player: AVPlayer) -> Double {
+        let seconds = player.currentTime().seconds
+        return seconds.isFinite ? seconds : 0
     }
 
     /// Extracted so `nudge` can ask where a seek would land without performing

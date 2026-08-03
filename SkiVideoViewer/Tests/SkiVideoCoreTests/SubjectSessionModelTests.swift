@@ -88,6 +88,81 @@ final class SubjectSessionModelTests: XCTestCase {
         XCTAssertEqual(reloaded?.subject?.runStart.syncTime ?? 0, 4.42, accuracy: 1e-9)
     }
 
+    /// The write path for a corrected start: the correction lands in the
+    /// sidecar and the measurement it corrects is still there beside it.
+    ///
+    /// Both are asserted, with different values, for the same reason the
+    /// round-trip test asserts both — a `confirm` that let the correction
+    /// overwrite `runStart` would satisfy an assertion on either one alone.
+    func testCorrectingAStartKeepsTheMeasuredOneBesideIt() throws {
+        try ClipAnalysisStore.save(analysis(subject: nil), for: clip())
+        let session = SubjectSessionModel()
+        _ = session.loadStored(for: clip())
+        let measured = StoredRunStart.started(time: 4.42, baseline: 1.12, threshold: 2.02)
+        try session.confirm(segmentIDs: [2, 1], runStart: measured, for: clip())
+        XCTAssertNil(session.pickedSubject?.correctedRunStart, "precondition: a fresh pick has no correction")
+
+        try session.confirm(
+            segmentIDs: [2, 1], runStart: measured, correctedRunStart: 2.62, for: clip()
+        )
+
+        let reloaded = ClipAnalysisStore.load(for: clip())
+        XCTAssertEqual(reloaded?.subject?.correctedRunStart ?? .nan, 2.62, accuracy: 1e-9)
+        XCTAssertEqual(reloaded?.subject?.runStart.syncTime ?? .nan, 4.42, accuracy: 1e-9,
+                       "the detected start must survive the correction, or the detector's error becomes invisible")
+        XCTAssertEqual(reloaded?.subject?.syncTime ?? .nan, 2.62, accuracy: 1e-9,
+                       "the correction is what applies")
+        XCTAssertEqual(session.pickedSubject?.correctedRunStart ?? .nan, 2.62, accuracy: 1e-9,
+                       "and it must be in memory too, not only on disk")
+    }
+
+    /// A correction is made to a particular measurement, so confirming a *new*
+    /// pick — a second run of the sheet, with a freshly detected start — must
+    /// not carry the old correction onto it.
+    func testConfirmingAFreshPickDropsAnEarlierCorrection() throws {
+        try ClipAnalysisStore.save(analysis(subject: nil), for: clip())
+        let session = SubjectSessionModel()
+        _ = session.loadStored(for: clip())
+        try session.confirm(
+            segmentIDs: [1], runStart: .started(time: 4.42, baseline: 1.12, threshold: 2.02),
+            correctedRunStart: 2.62, for: clip()
+        )
+
+        try session.confirm(
+            segmentIDs: [2], runStart: .started(time: 11.9, baseline: 1.4, threshold: 2.5),
+            for: clip()
+        )
+
+        XCTAssertNil(ClipAnalysisStore.load(for: clip())?.subject?.correctedRunStart)
+        XCTAssertEqual(session.pickedSubject?.syncTime ?? .nan, 11.9, accuracy: 1e-9)
+    }
+
+    /// The rule that makes a failed write survivable applies to a correction
+    /// too: it is in memory before the disk is touched.
+    func testAnUnwritableFolderStillLeavesACorrectionUsableInMemory() throws {
+        try ClipAnalysisStore.save(analysis(subject: nil), for: clip())
+        let session = SubjectSessionModel()
+        _ = session.loadStored(for: clip())
+        let measured = StoredRunStart.started(time: 4.42, baseline: 1.12, threshold: 2.02)
+        try session.confirm(segmentIDs: [1], runStart: measured, for: clip())
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: directory.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: directory.path
+            )
+        }
+
+        XCTAssertThrowsError(
+            try session.confirm(
+                segmentIDs: [1], runStart: measured, correctedRunStart: 2.62, for: clip()
+            )
+        )
+        XCTAssertEqual(session.pickedSubject?.syncTime ?? .nan, 2.62, accuracy: 1e-9,
+                       "an unwritable folder must not cost the operator the adjustment they just made")
+    }
+
     func testAnUnwritableFolderStillLeavesThePickUsableInMemory() throws {
         try ClipAnalysisStore.save(analysis(subject: nil), for: clip())
         let session = SubjectSessionModel()

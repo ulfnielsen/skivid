@@ -43,6 +43,11 @@ struct SubjectPickSheet: View {
                     // lost". `SubjectPickModel` filters the ids against the
                     // segments it is given, so a stale one changes nothing.
                     selected: session.pickedSubject?.segmentIDs ?? [],
+                    // The whole stored pick, not just its ids: the ready state
+                    // is what the operator is looking at when they re-check a
+                    // pick, so it is where the detected start and their own
+                    // correction can be put side by side.
+                    stored: session.pickedSubject,
                     clip: clip,
                     isStale: session.isStale,
                     onConfirm: onConfirm
@@ -182,22 +187,24 @@ struct SubjectPickSheet: View {
 /// by re-seeding from the sidecar.
 private struct ReadySection: View {
     @StateObject private var pick: SubjectPickModel
+    private let stored: SubjectPick?
     private let clip: URL
     private let isStale: Bool
     private let onConfirm: ([Int]) -> Void
 
     init(
-        segments: [AnalysedSegment], selected: [Int], clip: URL, isStale: Bool,
-        onConfirm: @escaping ([Int]) -> Void
+        segments: [AnalysedSegment], selected: [Int], stored: SubjectPick?,
+        clip: URL, isStale: Bool, onConfirm: @escaping ([Int]) -> Void
     ) {
         _pick = StateObject(wrappedValue: SubjectPickModel(segments: segments, selected: selected))
+        self.stored = stored
         self.clip = clip
         self.isStale = isStale
         self.onConfirm = onConfirm
     }
 
     var body: some View {
-        SubjectPickList(pick: pick, clip: clip, isStale: isStale, onConfirm: onConfirm)
+        SubjectPickList(pick: pick, stored: stored, clip: clip, isStale: isStale, onConfirm: onConfirm)
     }
 }
 
@@ -208,6 +215,10 @@ private struct ReadySection: View {
 /// the sheet is split here.
 struct SubjectPickList: View {
     @ObservedObject var pick: SubjectPickModel
+    /// The pick already on disk for this clip, when there is one. Read only for
+    /// the caption below the grid; the selection is seeded separately, because
+    /// the operator's edits belong to `pick` from the first tap onward.
+    var stored: SubjectPick? = nil
     let clip: URL
     var isStale: Bool = false
     let onConfirm: ([Int]) -> Void
@@ -268,15 +279,20 @@ struct SubjectPickList: View {
     /// `ComparisonControlBar` documents: the button keeps its size at every
     /// width, and the summary moves above it when there is no room beside it.
     private var footer: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) {
-                summary
-                Spacer(minLength: 8)
-                confirmButton
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    summary
+                    Spacer(minLength: 8)
+                    confirmButton
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    summary
+                    confirmButton
+                }
             }
-            VStack(alignment: .leading, spacing: 10) {
-                summary
-                confirmButton
+            if let caption = Self.storedStartCaption(for: stored) {
+                storedStart(caption)
             }
         }
         .padding(16)
@@ -288,6 +304,73 @@ struct SubjectPickList: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A caption in the sheet, deliberately **not** in `ComparisonStatusChip`.
+    /// The chip already distinguishes "Synced from corrected starts" from
+    /// "Synced from detected starts", it is a constant 340pt clipped to two
+    /// lines, and `ComparisonLayoutMeasurementTests` pins its longest reachable
+    /// status at 83 characters. This adds the magnitude, which is the part that
+    /// says something about the detector, where the operator can act on it.
+    private func storedStart(_ caption: String) -> some View {
+        Text(caption)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("Stored run start")
+    }
+
+    /// The stored run start, and how far the operator moved it.
+    ///
+    /// Nil with no stored pick: there is nothing measured to report, and a
+    /// caption saying "0.0s" would be a claim about the detector rather than the
+    /// absence of one.
+    ///
+    /// **`.alreadyRunning` is not called a detection.** `StoredRunStart`'s own
+    /// note is explicit that "the subject was never demonstrably still" is not a
+    /// measured start and the UI must not present it as one — so it reads
+    /// "already running at", and the uncorrected form does not use the word
+    /// "detected" at all.
+    ///
+    /// One decimal throughout, matching the precision the operator corrects at:
+    /// the clip is analysed at 25fps, so a run start is only ever known to 40ms,
+    /// and printing three decimals would claim a precision the pass does not
+    /// have. The difference is signed, because "the detector was seventeen
+    /// seconds early" and "seventeen seconds late" are opposite facts about it
+    /// and this caption exists to accumulate exactly that evidence.
+    ///
+    /// The difference is taken between the **rounded** values, not rounded after
+    /// subtracting, so the three numbers on the line add up. Measured, not
+    /// supposed: C0094's own `18.29 - 0.64` is 17.649999999999999 as a `Double`,
+    /// which `%.1f` prints as 17.6 — a caption reading "18.3s … 0.6s … +17.6s"
+    /// on a line whose whole purpose is evidence about the detector.
+    static func storedStartCaption(for pick: SubjectPick?) -> String? {
+        guard let pick else { return nil }
+        let detected = tenths(pick.runStart.syncTime)
+        let measurement: String
+        switch pick.runStart {
+        case .started:
+            measurement = "detected \(seconds(detected))"
+        case .alreadyRunning:
+            measurement = "already running at \(seconds(detected))"
+        }
+        guard let correction = pick.correctedRunStart else {
+            switch pick.runStart {
+            case .started: return "Detected run start \(seconds(detected))"
+            case .alreadyRunning: return "Already running at \(seconds(detected))"
+            }
+        }
+        let corrected = tenths(correction)
+        let difference = String(format: "%+.1f", corrected - detected)
+        return "Run start \(seconds(corrected)) — \(measurement), corrected by \(difference)s"
+    }
+
+    private static func tenths(_ time: TimeInterval) -> Double {
+        (time * 10).rounded() / 10
+    }
+
+    private static func seconds(_ time: TimeInterval) -> String {
+        String(format: "%.1fs", time)
     }
 
     private var summaryText: String {

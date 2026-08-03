@@ -43,6 +43,17 @@ private struct PlayerLayerRepresentable: NSViewRepresentable {
 final class PlayerLayerHostView: NSView {
     private let playerLayer = AVPlayerLayer()
 
+    /// Which clip this view is drawing.
+    ///
+    /// Readable so a test can tell the overlay's two stacked player views apart
+    /// in the hosted AppKit tree. That is not incidental: "which clip moves" is
+    /// the whole of the alignment behaviour, the two views are otherwise
+    /// identical black rects, and neither renderer this project has measured
+    /// draws an `AVPlayerLayer`'s content — `ImageRenderer` fills the rect with
+    /// its unrenderable placeholder and `cacheDisplay` gives black — so pixels
+    /// cannot answer it.
+    var attachedPlayer: AVPlayer? { playerLayer.player }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         configure()
@@ -110,6 +121,10 @@ final class PlayerLayerHostView: UIView {
     private var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
     }
+
+    /// Which clip this view is drawing; see the macOS branch for why it is
+    /// readable.
+    var attachedPlayer: AVPlayer? { playerLayer.player }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
