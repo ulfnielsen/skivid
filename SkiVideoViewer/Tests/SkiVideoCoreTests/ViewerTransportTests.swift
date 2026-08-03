@@ -162,6 +162,116 @@ final class ViewerTransportTests: XCTestCase {
                        "scrubbing before the start must clamp at 0, not go negative")
     }
 
+    // MARK: - isPlaying
+
+    /// The plain toggle, through the public entry point rather than by poking
+    /// the player. Both directions, and both checked against the player's real
+    /// rate as well as against the expected boolean: `isPlaying` agreeing with
+    /// itself proves nothing.
+    func testIsPlayingFollowsTogglePlayback() throws {
+        let model = try makeLoadedModel(seconds: 9)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        XCTAssertFalse(model.isPlaying, "precondition: a freshly loaded clip is paused")
+
+        model.togglePlayback()
+        waitUntil("isPlaying must become true once playback starts") { model.isPlaying }
+        XCTAssertGreaterThan(model.player.rate, 0, "precondition: the player really is playing")
+
+        model.togglePlayback()
+        waitUntil("isPlaying must become false once playback stops") { !model.isPlaying }
+        XCTAssertEqual(model.player.rate, 0, "precondition: the player really is stopped")
+    }
+
+    /// The other public entry point. Worth its own test: `applyTransport` calls
+    /// `endArrow` before `togglePlayback`, a second place the rate can change.
+    func testIsPlayingFollowsThePlayPauseTransport() throws {
+        let model = try makeLoadedModel(seconds: 9)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        XCTAssertFalse(model.isPlaying, "precondition: a freshly loaded clip is paused")
+
+        model.applyTransport(.playPause)
+        waitUntil("isPlaying must become true after the play/pause transport") { model.isPlaying }
+        XCTAssertGreaterThan(model.player.rate, 0)
+
+        model.applyTransport(.playPause)
+        waitUntil("isPlaying must become false after the second press") { !model.isPlaying }
+        XCTAssertEqual(model.player.rate, 0)
+    }
+
+    /// The case a hand-written flag gets wrong. An arrow hold started from a
+    /// *paused* clip drives the rate to 0.35 without `togglePlayback` being
+    /// called at all — `startHold` → `resumeHeldPlayback` reaches the player
+    /// directly — and releasing it drives the rate back to 0 through
+    /// `endArrow`, again with no toggle involved. A flag set inside
+    /// `togglePlayback` stays false through both, so `isPlaying` would report
+    /// "paused" over half a second of visibly moving video, and the search
+    /// field would keep the focus exactly when the operator started watching.
+    ///
+    /// Asserts the rate at each step as well as the flag, so "the hold never
+    /// started" cannot masquerade as "the flag tracked a hold that did".
+    func testIsPlayingFollowsAHoldStartedFromAPausedClip() throws {
+        let model = try makeLoadedModel(seconds: 9)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        XCTAssertFalse(model.isPlaying, "precondition: paused, and no toggle will be called in this test")
+
+        model.beginArrow(.forward)
+        waitUntil("precondition: the hold must actually start and drive the rate") {
+            abs(model.player.rate - 0.35) < 0.01
+        }
+        waitUntil("isPlaying must follow a rate the hold set, not only one togglePlayback set") {
+            model.isPlaying
+        }
+
+        model.endArrow(performTap: false)
+        waitUntil("precondition: releasing a hold taken from pause must stop the player") {
+            model.player.rate == 0
+        }
+        waitUntil("isPlaying must follow the rate back down when the hold is released") {
+            !model.isPlaying
+        }
+    }
+
+    /// The complementary leg: a hold taken *during* playback restores the
+    /// previous rate on release, so `isPlaying` must be true on both sides of
+    /// it and never latch false on the way through. The rate genuinely changes
+    /// three times here (1 → 0.35 → 0 → 1), the middle stop being `endArrow`'s
+    /// `player.pause()` before it restores `rateBeforeHold`.
+    func testIsPlayingSurvivesAHoldTakenDuringPlayback() throws {
+        let model = try makeLoadedModel(seconds: 9)
+        waitUntil("the duration must be published") { model.duration > 0 }
+
+        model.togglePlayback()
+        waitUntil("precondition: playback must start") { model.player.rate == 1 }
+
+        model.beginArrow(.forward)
+        waitUntil("precondition: the hold must take over the rate") {
+            abs(model.player.rate - 0.35) < 0.01
+        }
+
+        model.endArrow(performTap: false)
+        waitUntil("precondition: releasing must restore the pre-hold rate") { model.player.rate == 1 }
+        waitUntil("isPlaying must still be true once the hold hands playback back") { model.isPlaying }
+
+        // And it still comes down afterwards: a flag stuck true is as wrong as
+        // one stuck false.
+        model.togglePlayback()
+        waitUntil("isPlaying must still be able to fall after a hold") { !model.isPlaying }
+        XCTAssertEqual(model.player.rate, 0)
+    }
+
+    /// The slow-motion transport is a third rate-changing path with no toggle
+    /// in it: `applyTransport(.slow)` calls `playImmediately(atRate: 0.25)`
+    /// directly. Quarter speed is still playing.
+    func testIsPlayingFollowsTheSlowMotionTransport() throws {
+        let model = try makeLoadedModel(seconds: 9)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        XCTAssertFalse(model.isPlaying, "precondition: paused")
+
+        model.applyTransport(.slow)
+        XCTAssertEqual(model.player.rate, 0.25, accuracy: 0.01, "precondition: quarter speed")
+        waitUntil("isPlaying must be true at quarter speed") { model.isPlaying }
+    }
+
     // MARK: - helpers
 
     private func makeLoadedModel(seconds: Double) throws -> ViewerModel {

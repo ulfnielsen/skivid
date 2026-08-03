@@ -44,6 +44,20 @@ struct ContentView: View {
         .onChange(of: model.athleteQuery) { _ in
             model.selectFirstMatchingAthlete()
         }
+        // The search field auto-selects as you type, so the operator never has
+        // to press Return and focus would otherwise sit in the field forever —
+        // swallowing Space, the play/pause key, as a literal space. Starting
+        // playback is the operator saying they have moved on to watching, so
+        // the field gives the focus up then.
+        //
+        // On `true` only. Becoming false must leave focus alone: pausing in
+        // order to type is exactly when the operator wants the field, and
+        // reacting to every change would fight them for it.
+        .onChange(of: model.isPlaying) { isPlaying in
+            if isPlaying {
+                athleteSearchIsFocused = false
+            }
+        }
         .sheet(isPresented: $isShowingGoogleDriveSheet) {
             GoogleDriveSheet(model: model, isPresented: $isShowingGoogleDriveSheet)
         }
@@ -135,6 +149,11 @@ struct ContentView: View {
                     .focused($athleteSearchIsFocused)
                     .onSubmit {
                         model.selectFirstMatchingAthlete()
+                        // Return is optional here — the `athleteQuery` change
+                        // above already selects as you type — but an operator
+                        // who presses it means "I am done searching", and
+                        // honouring that costs nothing.
+                        athleteSearchIsFocused = false
                     }
                 if !model.athleteQuery.isEmpty {
                     Button {

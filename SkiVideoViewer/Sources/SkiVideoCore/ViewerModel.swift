@@ -29,6 +29,16 @@ public final class ViewerModel: ObservableObject {
     /// told.
     @Published public private(set) var currentTime = 0.0
     @Published public private(set) var duration = 0.0
+    /// Whether the player is actually moving. Derived from the player by KVO —
+    /// see `startObservingRate` — not written by hand at each call site, because
+    /// there are six of those (`togglePlayback`, `applyTransport`'s `.slow`,
+    /// `startHold`/`resumeHeldPlayback`, `pauseHeldPlayback`, `endArrow` and
+    /// `loadCurrentVideo`) and a seventh is one refactor away.
+    ///
+    /// `ContentView` uses it to give up the athlete-search field's focus once
+    /// the operator starts watching, so Space reaches the transport instead of
+    /// being typed into the field.
+    @Published public private(set) var isPlaying = false
 
     public let player = AVPlayer()
 
@@ -46,6 +56,7 @@ public final class ViewerModel: ObservableObject {
     private var driveMediaByURL: [URL: DriveMedia] = [:]
     private var timeObserver: Any?
     private var durationObserver: NSKeyValueObservation?
+    private var rateObserver: NSKeyValueObservation?
 
     private let input: PlaybackInputSource
     private let folderPicker: FolderPicker
@@ -74,6 +85,7 @@ public final class ViewerModel: ObservableObject {
             self?.handle(intent)
         }
         startObservingTime()
+        startObservingRate()
     }
 
     /// `ViewerModel` has no `close()` the way `ComparisonModel` does — it is
@@ -405,6 +417,31 @@ public final class ViewerModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.currentTime = time.seconds.isFinite ? time.seconds : 0
+            }
+        }
+    }
+
+    /// `rate`, not `timeControlStatus`. Both are KVO-observable, and
+    /// `timeControlStatus` is the more informative of the two — which is exactly
+    /// the problem here. It reports `.waitingToPlayAtSpecifiedRate` while the
+    /// rate is still 0, so a stalled Google Drive stream would publish
+    /// `isPlaying == true` with the picture frozen, and the operator's focus
+    /// would be taken away for playback that never started. `rate != 0` is also
+    /// the same predicate the model already branches on in `togglePlayback` and
+    /// `startHold`, so the published flag cannot disagree with the decisions
+    /// made from it. Reverse playback (`atRate: -0.35`) counts as playing, as it
+    /// should; the reverse *fallback*, which pauses the player and steps it with
+    /// a timer, does not — the player really is stopped there.
+    ///
+    /// The current rate is read inside the hop rather than taken from the change
+    /// dictionary: `Task { @MainActor }` gives no ordering guarantee between two
+    /// notifications, so a captured value could settle stale, whereas re-reading
+    /// makes every hop converge on the player's present state. `observeDuration`
+    /// re-reads for the same reason.
+    private func startObservingRate() {
+        rateObserver = player.observe(\.rate, options: [.initial, .new]) { player, _ in
+            Task { @MainActor [weak self] in
+                self?.isPlaying = player.rate != 0
             }
         }
     }
