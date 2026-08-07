@@ -71,6 +71,39 @@ final class AVFoundationMediaPipelineTests: XCTestCase {
                              "a 90-degree-rotated source must stay portrait; got \(size)")
     }
 
+    /// The scale must come from the *display* size, not the encoded size. A
+    /// 3840×2160 buffer with a 90-degree transform is a 2160×3840 clip: it has
+    /// to shrink until its 3840 side fits 1080, not until its 3840 side fits
+    /// 1920. Nothing with an identity transform can tell the two apart, and
+    /// neither can a rotated clip that already fits — only a rotated oversize
+    /// one does.
+    func testResizeFitsARotatedOversizeSourceIntoTheBox() async throws {
+        let source = try makeRotatedVideoFile(
+            in: root, name: "tall.mov", seconds: 1, degrees: 90, fps: 30, width: 3840, height: 2160
+        )
+        let destination = root.appendingPathComponent("out/tall.mov")
+        try await AVFoundationMediaPipeline().resize(source: source, destination: destination, athlete: "Idun")
+
+        let size = try await displaySize(of: destination)
+        XCTAssertLessThanOrEqual(size.width, 1920, "got \(size)")
+        XCTAssertLessThanOrEqual(size.height, 1080, "got \(size)")
+        XCTAssertGreaterThan(size.height, size.width, "must stay portrait; got \(size)")
+    }
+
+    /// `even` cannot be pinned through the written file: handed an odd height,
+    /// VideoToolbox rounds it down itself, so the output is 1074 whether we
+    /// asked for 1074 or 1075. Verified — with the rounding removed,
+    /// `outputSize` returns 1075 and the written track is still 1074. The rule
+    /// is real (what we hand the encoder is ours to get right, and other
+    /// codecs are less forgiving), so it is pinned at the function instead.
+    func testOutputSizeRoundsBothDimensionsToEvenNumbers() {
+        let (width, height) = AVFoundationMediaPipeline.outputSize(
+            natural: CGSize(width: 1999, height: 1119), transform: .identity
+        )
+        XCTAssertEqual(width % 2, 0, "width \(width) must be even")
+        XCTAssertEqual(height % 2, 0, "height \(height) must be even")
+    }
+
     func testResizePreservesTheFrameRate() async throws {
         let source = try makeRealVideoFile(in: root, name: "fast.mov", seconds: 2, fps: 50, width: 1280, height: 720)
         let destination = root.appendingPathComponent("out/fast.mov")

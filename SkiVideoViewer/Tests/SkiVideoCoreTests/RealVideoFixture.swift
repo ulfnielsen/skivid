@@ -36,20 +36,29 @@ extension XCTestCase {
     /// media otherwise cannot exercise: every clip written by
     /// `makeRealVideoFile` has an identity transform, so a pipeline that drops
     /// `preferredTransform` passes every other test in the suite.
+    ///
+    /// `width`/`height` are the *encoded* size; the transform is what turns a
+    /// landscape buffer into a portrait clip. They default to the same 160×90
+    /// as `makeRealVideoFile`, so the signature the plan specifies still works
+    /// unchanged — the parameters exist so a rotated *oversize* fixture can be
+    /// made, which is the only shape that catches scaling computed from the
+    /// natural size instead of the display size.
     func makeRotatedVideoFile(
         in directory: URL,
         name: String,
         seconds: Double,
         degrees: Double,
-        fps: Int32 = 30
+        fps: Int32 = 30,
+        width: Int = 160,
+        height: Int = 90
     ) throws -> URL {
         try writeVideoFixture(
             in: directory,
             name: name,
             seconds: seconds,
             fps: fps,
-            width: 160,
-            height: 90,
+            width: width,
+            height: height,
             transform: CGAffineTransform(rotationAngle: degrees * .pi / 180)
         )
     }
