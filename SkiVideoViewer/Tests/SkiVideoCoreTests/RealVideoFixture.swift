@@ -17,7 +17,51 @@ extension XCTestCase {
         in directory: URL,
         name: String,
         seconds: Double,
+        fps: Int32 = 30,
+        width: Int = 160,
+        height: Int = 90
+    ) throws -> URL {
+        try writeVideoFixture(
+            in: directory,
+            name: name,
+            seconds: seconds,
+            fps: fps,
+            width: width,
+            height: height,
+            transform: .identity
+        )
+    }
+
+    /// A fixture with a rotation transform, for the one property that generated
+    /// media otherwise cannot exercise: every clip written by
+    /// `makeRealVideoFile` has an identity transform, so a pipeline that drops
+    /// `preferredTransform` passes every other test in the suite.
+    func makeRotatedVideoFile(
+        in directory: URL,
+        name: String,
+        seconds: Double,
+        degrees: Double,
         fps: Int32 = 30
+    ) throws -> URL {
+        try writeVideoFixture(
+            in: directory,
+            name: name,
+            seconds: seconds,
+            fps: fps,
+            width: 160,
+            height: 90,
+            transform: CGAffineTransform(rotationAngle: degrees * .pi / 180)
+        )
+    }
+
+    private func writeVideoFixture(
+        in directory: URL,
+        name: String,
+        seconds: Double,
+        fps: Int32,
+        width: Int,
+        height: Int,
+        transform: CGAffineTransform
     ) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
@@ -25,17 +69,18 @@ extension XCTestCase {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 160,
-            AVVideoHeightKey: 90,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
         ])
         input.expectsMediaDataInRealTime = false
+        input.transform = transform
         writer.add(input)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
             sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-                kCVPixelBufferWidthKey as String: 160,
-                kCVPixelBufferHeightKey as String: 90,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
             ]
         )
         XCTAssertTrue(writer.startWriting(), "could not start writing the fixture: \(String(describing: writer.error))")
