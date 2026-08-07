@@ -1,4 +1,5 @@
 import AppKit
+import SkiVideoCore
 import SwiftUI
 
 final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegate {
@@ -39,7 +40,7 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         let rootView = SortingSheet(
             isPresented: presented,
             openResizedLibrary: openResizedLibrary,
-            mediaPipeline: FFmpegMediaPipeline(),
+            mediaPipeline: AVFoundationMediaPipeline(),
             input: input,
             folderPicker: AppKitFolderPicker(),
             // The macOS convention the model used to hardcode. The core cannot

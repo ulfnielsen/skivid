@@ -13,11 +13,7 @@ import Foundation
 /// of the resize step is bitrate reduction — measured on real footage, the
 /// sampled source was already 1080p and the step halved the bitrate from 7.41 to
 /// 3.70 Mbps — and an export preset would decide that number for us.
-// Deliberately does NOT declare `: MediaPipeline` yet — the protocol also
-// requires `writeMetadata(athlete:to:)`, which Task 2 adds. Declaring
-// conformance here would not compile. Task 2 adds both the method and the
-// conformance in one step.
-public struct AVFoundationMediaPipeline {
+public struct AVFoundationMediaPipeline: MediaPipeline {
     public init() {}
 
     /// Bits per second per output pixel. 1920 × 1080 × 1.784 ≈ 3.70 Mbps, which
@@ -150,6 +146,34 @@ public struct AVFoundationMediaPipeline {
         guard writer.status == .completed else {
             throw MediaPipelineError.exportFailed(writer.error?.localizedDescription ?? "the resize did not complete")
         }
+    }
+
+    /// A remux, not an encode — the equivalent of the `-c copy` this replaces —
+    /// so there is no encode setting to control and a passthrough export is
+    /// right. Passthrough also carries only the tracks AVFoundation recognises,
+    /// which reproduces the effect of the old `-map 0:v:0 -map 0:a?`: proprietary
+    /// camera telemetry tracks are dropped rather than failing the remux.
+    public func writeMetadata(athlete: String, to url: URL) async throws {
+        let asset = AVURLAsset(url: url)
+        guard try await asset.load(.isPlayable) else {
+            throw MediaPipelineError.unreadableSource(url.lastPathComponent)
+        }
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw MediaPipelineError.exportFailed("could not tag \(url.lastPathComponent)")
+        }
+
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".metadata-\(UUID().uuidString).\(url.pathExtension)")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        session.outputURL = temporary
+        session.outputFileType = .mov
+        session.metadata = Self.metadata(athlete: athlete)
+        await session.export()
+        guard session.status == .completed else {
+            throw MediaPipelineError.exportFailed(session.error?.localizedDescription ?? "could not tag \(url.lastPathComponent)")
+        }
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
     }
 
     /// Never upscale: `s = min(1920/displayW, 1080/displayH, 1)`, applied to the

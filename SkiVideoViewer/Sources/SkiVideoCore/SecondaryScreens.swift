@@ -6,9 +6,10 @@ import Foundation
 /// dead control.
 ///
 /// One flag per screen, not one for both: iPad can present Compare but not
-/// Sort, because Sort drives `FFmpegMediaPipeline`, which uses `Process` and so
-/// does not exist on iOS. A single flag would force the two to be revealed
-/// together.
+/// Sort. The media pipeline is no longer the obstacle — it runs in-process on
+/// AVFoundation and compiles for iOS — but no iPad sorting UI has been built,
+/// so there is still nothing to present. A single flag would force the two to
+/// be revealed together.
 ///
 /// Both flags must be answered by a constant. `ContentView` reads them while
 /// building `body` and does not observe the presenter, so a value computed from

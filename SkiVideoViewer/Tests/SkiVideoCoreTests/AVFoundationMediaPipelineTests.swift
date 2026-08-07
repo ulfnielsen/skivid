@@ -224,6 +224,98 @@ final class AVFoundationMediaPipelineTests: XCTestCase {
         }
     }
 
+    // MARK: - writeMetadata
+
+    func testWriteMetadataReplacesTheFileInPlace() async throws {
+        let source = try makeRealVideoFile(in: root, name: "tag.mov", seconds: 1, fps: 30, width: 1280, height: 720)
+        let before = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? Int
+
+        try await AVFoundationMediaPipeline().writeMetadata(athlete: "Nora", to: source)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        let items = try await AVURLAsset(url: source).load(.metadata)
+        XCTAssertTrue(items.compactMap { $0.stringValue }.contains("Nora"))
+        XCTAssertNotNil(before)
+    }
+
+    /// A remux, not a re-encode: the video track must be carried through
+    /// untouched, so the dimensions cannot change.
+    func testWriteMetadataDoesNotReEncode() async throws {
+        let source = try makeRealVideoFile(in: root, name: "keep.mov", seconds: 1, fps: 30, width: 1280, height: 720)
+        try await AVFoundationMediaPipeline().writeMetadata(athlete: "Nora", to: source)
+
+        // `XCTUnwrap` takes a non-async autoclosure, so the load has to happen
+        // first — `try await XCTUnwrap(… loadTracks …)` does not compile.
+        let tracks = try await AVURLAsset(url: source).loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(tracks.first)
+        let size = try await track.load(.naturalSize)
+        XCTAssertEqual(size.width, 1280, accuracy: 1)
+        XCTAssertEqual(size.height, 720, accuracy: 1)
+    }
+
+    func testWriteMetadataPreservesRotation() async throws {
+        let source = try makeRotatedVideoFile(in: root, name: "rot.mov", seconds: 1, degrees: 90)
+        try await AVFoundationMediaPipeline().writeMetadata(athlete: "Nora", to: source)
+
+        let size = try await displaySize(of: source)
+        XCTAssertGreaterThan(size.height, size.width)
+    }
+
+    func testWriteMetadataLeavesNoTemporaryFiles() async throws {
+        let source = try makeRealVideoFile(in: root, name: "clean.mov", seconds: 1, fps: 30, width: 1280, height: 720)
+        try await AVFoundationMediaPipeline().writeMetadata(athlete: "Nora", to: source)
+
+        let contents = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertEqual(contents, ["clean.mov"], "temp files leaked: \(contents)")
+    }
+
+    /// Every other `writeMetadata` fixture here is video-only — the same blind
+    /// spot that let a resize which deadlocked on any clip with audio ship
+    /// green. Real footage always has an audio track, so the tagging step meets
+    /// one on the first clip: it has to survive the remux, and the file has to
+    /// still be a two-track clip of the original length afterwards.
+    func testWriteMetadataOfAnAudioBearingSourceKeepsBothTracks() async throws {
+        let source = try makeRealVideoFile(
+            in: root, name: "loudtag.mov", seconds: 4, fps: 30, width: 1280, height: 720,
+            audio: FixtureAudio(sampleRate: 44_100, channels: 1)
+        )
+        // The fixture is only worth anything if it really carries audio.
+        let sourceAudio = try await AVURLAsset(url: source).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(sourceAudio.count, 1, "the fixture must have an audio track for this test to mean anything")
+
+        try await AVFoundationMediaPipeline().writeMetadata(athlete: "Nora", to: source)
+
+        // `XCTAssertEqual` takes a non-async autoclosure, so every load has to
+        // happen first — `XCTAssertEqual(try await …, 1)` does not compile.
+        let tagged = AVURLAsset(url: source)
+        let audio = try await tagged.loadTracks(withMediaType: .audio)
+        let video = try await tagged.loadTracks(withMediaType: .video)
+        let duration = try await tagged.load(.duration).seconds
+        XCTAssertEqual(audio.count, 1, "the audio track must survive tagging")
+        XCTAssertEqual(video.count, 1, "the video track must survive tagging")
+        XCTAssertEqual(duration, 4, accuracy: 0.2)
+        let items = try await tagged.load(.metadata)
+        XCTAssertTrue(items.compactMap { $0.stringValue }.contains("Nora"))
+    }
+
+    /// The tagging step runs over whatever the sorting flow was pointed at, so
+    /// a stray non-video file has to come back as a named error rather than as
+    /// a hang or a silent success.
+    func testWriteMetadataOfAnUnreadableSourceReportsTheFilename() async throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("broken.mkv")
+        try Data("not a video".utf8).write(to: source)
+
+        do {
+            try await AVFoundationMediaPipeline().writeMetadata(athlete: "Nora", to: source)
+            XCTFail("an unreadable source must throw")
+        } catch let error as MediaPipelineError {
+            XCTAssertEqual(error, .unreadableSource("broken.mkv"))
+        }
+        let contents = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertEqual(contents, ["broken.mkv"], "a failed tag must not leave anything behind: \(contents)")
+    }
+
     // MARK: - helpers
 
     /// The size the viewer sees: natural size with the preferred transform

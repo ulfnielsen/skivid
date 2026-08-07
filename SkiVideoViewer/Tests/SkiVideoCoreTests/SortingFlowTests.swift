@@ -9,8 +9,8 @@ import XCTest
 /// `NSEvent` monitor.
 ///
 /// Everything here runs against a throwaway temp directory. The media pipeline
-/// is faked, so the clips never have to be real video — the real ffmpeg
-/// pipeline is covered by `FFmpegMediaPipelineTests` in the app test target.
+/// is faked, so the clips never have to be real video — the real pipeline is
+/// covered against generated media by `AVFoundationMediaPipelineTests`.
 @MainActor
 final class SortingFlowTests: XCTestCase {
     private var root: URL!

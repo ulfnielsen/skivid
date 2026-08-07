@@ -4,11 +4,12 @@ import SkiVideoCore
 /// iPad has no separate windows, so Compare is a full-screen cover: this object
 /// publishes the request and `SkiVideoViewerApp_iOS` renders it.
 ///
-/// Sort stays unavailable. It drives `FFmpegMediaPipeline`, which shells out via
-/// `Process` — a type that does not exist on iOS — so until phase 2 replaces
-/// that pipeline with AVFoundation there is nothing to present. Reporting
-/// `canPresentSorting == false` keeps its button off the toolbar instead of
-/// offering a dead control.
+/// Sort stays unavailable, but no longer for the reason it once was: the
+/// pipeline it drives is `AVFoundationMediaPipeline`, which runs in-process and
+/// compiles for iOS. What is missing is the sorting UI itself — the screen is
+/// built around a Mac window and a folder picker that have no iPad counterpart
+/// yet — so there is nothing to present. Reporting `canPresentSorting == false`
+/// keeps its button off the toolbar instead of offering a dead control.
 ///
 /// Both flags are constants on purpose: `ContentView` reads them while building
 /// `body` and does not observe this object, so a value that changed at runtime
