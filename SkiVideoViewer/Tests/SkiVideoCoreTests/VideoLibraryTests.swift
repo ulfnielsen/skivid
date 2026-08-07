@@ -78,6 +78,26 @@ final class VideoLibraryTests: XCTestCase {
         )
     }
 
+    /// `.mkv` is not merely unsupported by the pipeline — `AVPlayer` cannot open
+    /// it either. Listing it put files in the sidebar that fail on selection.
+    /// Verified against a real Matroska file: `AVURLAsset.load(.isPlayable)`
+    /// fails with "Cannot Open", where the same probe on an `.mp4` succeeds.
+    func testTheLibraryDoesNotListFormatsAVFoundationCannotOpen() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let athlete = root.appendingPathComponent("Idun", isDirectory: true)
+        try FileManager.default.createDirectory(at: athlete, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for name in ["run.mp4", "run.mov", "run.m4v", "run.mkv", "run.webm", "run.avi"] {
+            try Data("x".utf8).write(to: athlete.appendingPathComponent(name))
+        }
+
+        let groups = try VideoLibrary.scan(root)
+        let listed = Set((groups.first?.videos ?? []).map { $0.lastPathComponent })
+        XCTAssertEqual(listed, ["run.mp4", "run.mov", "run.m4v"])
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

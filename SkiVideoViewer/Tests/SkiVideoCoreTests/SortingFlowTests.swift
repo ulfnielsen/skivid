@@ -37,12 +37,13 @@ final class SortingFlowTests: XCTestCase {
     }
 
     private func makeModel(
+        pipeline: FakeMediaPipeline? = nil,
         input: FakeInputSource? = nil,
         folderPicker: FakeFolderPicker? = nil,
         defaultNamesURL: URL? = nil
     ) -> SortingModel {
         SortingModel(
-            mediaPipeline: FakeMediaPipeline(),
+            mediaPipeline: pipeline ?? FakeMediaPipeline(),
             input: input ?? FakeInputSource(),
             folderPicker: folderPicker ?? FakeFolderPicker(),
             defaultNamesURL: defaultNamesURL ?? namesFile
@@ -198,5 +199,43 @@ final class SortingFlowTests: XCTestCase {
 
         model.stopPlayback()
         XCTAssertFalse(input.isEnabled)
+    }
+
+    /// The pipeline throws `MediaPipelineError.unreadableSource` for Matroska
+    /// and friends. This pins that the message actually reaches the user
+    /// rather than vanishing into the resize queue.
+    ///
+    /// The resize runs on the background `resizeQueue` (see
+    /// `SortingModel.enqueueResize`), so `tagCurrentVideo()` returns before
+    /// the failure is recorded — this polls `completedResizes` the same way
+    /// `SortingModelResizeQueueTests.waitForResizes` does, rather than
+    /// asserting immediately, which would be racy.
+    func testAResizeFailureSurfacesItsMessageToTheUser() async throws {
+        try writeNames(["Idun"])
+        let pipeline = FakeMediaPipeline()
+        pipeline.resizeError = MediaPipelineError.unreadableSource("run.mkv")
+        let model = makeModel(pipeline: pipeline)
+        model.sourcePath = root.path
+        model.eventTitle = "Test"
+        model.beginSorting()
+        model.athleteQuery = "Idun"
+
+        model.tagCurrentVideo()
+
+        let deadline = Date().addingTimeInterval(20)
+        while model.completedResizes < 1 {
+            if Date() > deadline {
+                XCTFail("timed out waiting for the resize failure to be recorded")
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(
+            model.errorMessage,
+            "run.mkv is not in a format this app can read. Convert it to MP4 or MOV first.",
+            "a resize failure must reach the user, not vanish into the queue"
+        )
+        model.stopPlayback()
     }
 }

@@ -335,6 +335,13 @@ public final class SortingModel: ObservableObject {
                 self.completedResizes += 1
                 if case let .failure(error) = result {
                     self.failedResizes.append("\(source.lastPathComponent): \(error.localizedDescription)")
+                    // `failedResizes` accumulates silently until the whole run
+                    // finishes; an unreadable-format failure (or any other
+                    // resize error) also needs to interrupt the operator with
+                    // an alert, or it can go unnoticed for the rest of the
+                    // tagging session. `errorDescription` (not a generic
+                    // wrapper) is what reaches here — see MediaPipelineError.
+                    self.errorMessage = error.localizedDescription
                 }
                 self.completeIfPossible()
             }

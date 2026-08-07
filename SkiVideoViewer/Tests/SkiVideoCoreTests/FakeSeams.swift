@@ -90,6 +90,10 @@ final class FakeMediaPipeline: MediaPipeline, @unchecked Sendable {
     private(set) var resizeCalls: [(source: URL, destination: URL, athlete: String)] = []
     private(set) var metadataCalls: [(athlete: String, url: URL)] = []
     var errorToThrow: Error?
+    /// Set to make the next `resize` throw. The real pipeline throws
+    /// `MediaPipelineError.unreadableSource` for Matroska and friends, and
+    /// nothing pinned that the message reaches the user.
+    var resizeError: Error?
 
     func writeMetadata(athlete: String, to url: URL) async throws {
         if let errorToThrow { throw errorToThrow }
@@ -97,6 +101,7 @@ final class FakeMediaPipeline: MediaPipeline, @unchecked Sendable {
     }
 
     func resize(source: URL, destination: URL, athlete: String) async throws {
+        if let resizeError { throw resizeError }
         if let errorToThrow { throw errorToThrow }
         resizeCalls.append((source, destination, athlete))
     }
