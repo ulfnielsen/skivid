@@ -93,7 +93,23 @@ public struct AVFoundationMediaPipeline {
             )
             input.expectsMediaDataInRealTime = false
             writer.add(input)
-            let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+            // Decode to LPCM. With `outputSettings: nil` the reader hands back
+            // the source's *compressed* samples, and appending compressed AAC
+            // to an AAC-encoding input raises NSInvalidArgumentException
+            // ("Input buffer must be in an uncompressed format"). Raised inside
+            // the old callback-based pump it never reached the caller — the
+            // continuation simply never resumed and the resize hung forever.
+            // The writer input above is what re-encodes.
+            let output = AVAssetReaderTrackOutput(
+                track: audioTrack,
+                outputSettings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsFloatKey: false,
+                    AVLinearPCMIsBigEndianKey: false,
+                    AVLinearPCMIsNonInterleaved: false,
+                ]
+            )
             reader.add(output)
             audioInput = input
             audioOutput = output
@@ -107,9 +123,27 @@ public struct AVFoundationMediaPipeline {
         }
         writer.startSession(atSourceTime: .zero)
 
-        await Self.pump(input: videoInput, from: videoOutput)
-        if let audioInput, let audioOutput {
-            await Self.pump(input: audioInput, from: audioOutput)
+        // Concurrently, not one after the other. A multi-track writer applies
+        // backpressure to whichever input has run ahead, so draining video to
+        // completion and only then starting audio can deadlock: video waits for
+        // a readiness the writer will not grant until audio catches up, and
+        // audio is not being pumped yet. Pumping both is also simply what the
+        // API is designed for.
+        let pumped = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await Self.pump(input: videoInput, from: videoOutput) }
+            if let audioInput, let audioOutput {
+                group.addTask { await Self.pump(input: audioInput, from: audioOutput) }
+            }
+            var allFinished = true
+            for await finished in group where !finished { allFinished = false }
+            return allFinished
+        }
+        guard pumped else {
+            reader.cancelReading()
+            writer.cancelWriting()
+            throw MediaPipelineError.exportFailed(
+                "\(source.lastPathComponent) stopped making progress and was abandoned."
+            )
         }
 
         await writer.finishWriting()
@@ -148,35 +182,43 @@ public struct AVFoundationMediaPipeline {
         }
     }
 
+    /// How long one input may go without accepting a single sample before the
+    /// resize is treated as stalled. Generous: it is a deadlock backstop, not a
+    /// performance budget. A 4K clip on a busy machine can legitimately leave an
+    /// input unready for seconds at a time, but never for half a minute.
+    private static let stallTimeout: TimeInterval = 30
+
     /// Drive one reader output into one writer input until the reader runs dry.
+    /// Returns `false` if the input stopped accepting samples altogether.
     ///
-    /// `requestMediaDataWhenReady` re-invokes its block whenever the input
-    /// drains, and AVFoundation does not guarantee it stops the instant
-    /// `markAsFinished()` returns — so the `finished` flag makes a second
-    /// invocation a no-op. Resuming a `CheckedContinuation` twice traps.
-    /// The block is serialised on `queue`, so the flag needs no other lock.
-    private static func pump(input: AVAssetWriterInput, from output: AVAssetReaderTrackOutput) async {
-        let queue = DispatchQueue(label: "media-pipeline.\(input.mediaType.rawValue)")
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            nonisolated(unsafe) var finished = false
-            input.requestMediaDataWhenReady(on: queue) {
-                guard !finished else { return }
-                while input.isReadyForMoreMediaData {
-                    guard let buffer = output.copyNextSampleBuffer() else {
-                        finished = true
-                        input.markAsFinished()
-                        continuation.resume()
-                        return
-                    }
-                    if !input.append(buffer) {
-                        // The writer failed mid-stream; `writer.status` carries
-                        // the reason and `resize` turns it into an error.
-                        finished = true
-                        input.markAsFinished()
-                        continuation.resume()
-                        return
-                    }
+    /// Polls rather than using `requestMediaDataWhenReady`, which is the
+    /// idiomatic call but hands control to a callback that can only be escaped
+    /// through a `CheckedContinuation` — and a continuation cannot be abandoned
+    /// on a timeout without leaking it. It also swallows anything AVFoundation
+    /// raises inside the block: that is how a compressed-buffer append turned
+    /// into an indefinite hang instead of a crash. Polling makes the stall bound
+    /// expressible, surfaces failures on the calling task, and lets two pumps
+    /// interleave in a task group since each suspends when its input is unready.
+    /// The inner loop still pushes as fast as the encoder accepts, so the sleep
+    /// only runs when saturated.
+    private static func pump(input: AVAssetWriterInput, from output: AVAssetReaderTrackOutput) async -> Bool {
+        var lastProgress = Date()
+        while true {
+            if input.isReadyForMoreMediaData {
+                guard let buffer = output.copyNextSampleBuffer() else {
+                    input.markAsFinished()
+                    return true
                 }
+                guard input.append(buffer) else {
+                    // The writer failed mid-stream; `writer.status` carries the
+                    // reason and `resize` turns it into an error.
+                    input.markAsFinished()
+                    return true
+                }
+                lastProgress = Date()
+            } else {
+                guard Date().timeIntervalSince(lastProgress) < stallTimeout else { return false }
+                try? await Task.sleep(nanoseconds: 2_000_000)
             }
         }
     }

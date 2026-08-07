@@ -157,6 +157,53 @@ final class AVFoundationMediaPipelineTests: XCTestCase {
         XCTAssertTrue(audio.isEmpty)
     }
 
+    /// Every other fixture in this suite is video-only, which hid a deadlock:
+    /// the writer withholds readiness on whichever input has run ahead, so
+    /// pumping video to completion and only then pumping audio can never
+    /// finish. Real footage always has audio, so this hung on the first clip.
+    ///
+    /// The source is 44.1kHz mono and the output must be 48kHz stereo —
+    /// deliberately different, so the assertion proves the encode settings were
+    /// applied rather than that a track was copied through.
+    func testResizeOfAnAudioBearingSourceKeepsTheAudio() async throws {
+        let source = try makeRealVideoFile(
+            in: root, name: "loud.mov", seconds: 1, fps: 30, width: 1280, height: 720,
+            audio: FixtureAudio(sampleRate: 44_100, channels: 1)
+        )
+        // The fixture is only worth anything if it really carries audio.
+        let sourceAudio = try await AVURLAsset(url: source).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(sourceAudio.count, 1, "the fixture must have an audio track for this test to mean anything")
+
+        let destination = root.appendingPathComponent("out/loud.mov")
+        try await AVFoundationMediaPipeline().resize(source: source, destination: destination, athlete: "Idun")
+
+        let tracks = try await AVURLAsset(url: destination).loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 1, "an audio-bearing source must keep its audio")
+        let descriptions = try await XCTUnwrap(tracks.first).load(.formatDescriptions)
+        let stream = try XCTUnwrap(
+            CMAudioFormatDescriptionGetStreamBasicDescription(try XCTUnwrap(descriptions.first))?.pointee
+        )
+        XCTAssertEqual(stream.mSampleRate, 48_000, "the output settings ask for 48kHz")
+        XCTAssertEqual(stream.mChannelsPerFrame, 2, "the output settings ask for stereo")
+    }
+
+    /// Audio must not cost the video its length. A pump that escaped the
+    /// deadlock by finishing the video input early would truncate the clip.
+    func testResizeOfAnAudioBearingSourcePreservesTheDuration() async throws {
+        let source = try makeRealVideoFile(
+            in: root, name: "loudlen.mov", seconds: 2, fps: 30, width: 1280, height: 720,
+            audio: FixtureAudio(sampleRate: 44_100, channels: 1)
+        )
+        let destination = root.appendingPathComponent("out/loudlen.mov")
+        try await AVFoundationMediaPipeline().resize(source: source, destination: destination, athlete: "Idun")
+
+        let duration = try await AVURLAsset(url: destination).load(.duration).seconds
+        XCTAssertEqual(duration, 2, accuracy: 0.2)
+        let video = try await AVURLAsset(url: destination).loadTracks(withMediaType: .video)
+        let range = try await XCTUnwrap(video.first).load(.timeRange)
+        XCTAssertEqual(range.duration.seconds, 2, accuracy: 0.2, "the video must not be truncated to escape the audio")
+    }
+
     func testResizeOfAnUnreadableSourceReportsTheFilename() async throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let source = root.appendingPathComponent("broken.mkv")
