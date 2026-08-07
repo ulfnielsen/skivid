@@ -189,19 +189,25 @@ final class AVFoundationMediaPipelineTests: XCTestCase {
 
     /// Audio must not cost the video its length. A pump that escaped the
     /// deadlock by finishing the video input early would truncate the clip.
+    ///
+    /// Four seconds at 720p, not one, and the size is load-bearing: the writer
+    /// only applies backpressure once its buffer fills, so a pump that drains
+    /// video before starting audio completes fine on a 1–2s clip and deadlocks
+    /// from about 3s. Measured — 2s passes with a sequential pump, 3s and above
+    /// stall. A shorter fixture here would not notice the bug coming back.
     func testResizeOfAnAudioBearingSourcePreservesTheDuration() async throws {
         let source = try makeRealVideoFile(
-            in: root, name: "loudlen.mov", seconds: 2, fps: 30, width: 1280, height: 720,
+            in: root, name: "loudlen.mov", seconds: 4, fps: 30, width: 1280, height: 720,
             audio: FixtureAudio(sampleRate: 44_100, channels: 1)
         )
         let destination = root.appendingPathComponent("out/loudlen.mov")
         try await AVFoundationMediaPipeline().resize(source: source, destination: destination, athlete: "Idun")
 
         let duration = try await AVURLAsset(url: destination).load(.duration).seconds
-        XCTAssertEqual(duration, 2, accuracy: 0.2)
+        XCTAssertEqual(duration, 4, accuracy: 0.2)
         let video = try await AVURLAsset(url: destination).loadTracks(withMediaType: .video)
         let range = try await XCTUnwrap(video.first).load(.timeRange)
-        XCTAssertEqual(range.duration.seconds, 2, accuracy: 0.2, "the video must not be truncated to escape the audio")
+        XCTAssertEqual(range.duration.seconds, 4, accuracy: 0.2, "the video must not be truncated to escape the audio")
     }
 
     func testResizeOfAnUnreadableSourceReportsTheFilename() async throws {
