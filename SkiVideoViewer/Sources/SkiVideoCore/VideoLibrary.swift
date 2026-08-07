@@ -13,8 +13,15 @@ public struct AthleteGroup: Identifiable, Equatable {
 }
 
 public enum VideoLibrary {
+    /// Only what AVFoundation can actually open.
+    ///
+    /// `mkv`, `webm` and `avi` were listed until 2026-08-07, which put files in
+    /// the sidebar that `AVPlayer` then refused to play — measured against a
+    /// real Matroska file from the library, `AVURLAsset.load(.isPlayable)`
+    /// fails with "Cannot Open" where the same probe on an `.mp4` returns true.
+    /// Removing them fixes that rather than dropping a capability.
     public static let supportedExtensions: Set<String> = [
-        "mp4", "mov", "m4v", "avi", "mkv", "webm",
+        "mp4", "mov", "m4v",
     ]
 
     public static func scan(_ root: URL) throws -> [AthleteGroup] {

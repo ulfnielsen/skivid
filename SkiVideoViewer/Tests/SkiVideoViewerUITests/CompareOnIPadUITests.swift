@@ -266,10 +266,11 @@ final class CompareOnIPadUITests: XCTestCase {
         }
     }
 
-    /// Sort & Resize drives `FFmpegMediaPipeline`, which needs `Process` and so
-    /// cannot exist on iOS. Its button must be absent, not merely disabled — a
-    /// visible control that does nothing is the regression this guards, and it
-    /// is why the seam carries one flag per screen.
+    /// Sort & Resize has no iPad UI — the pipeline behind it is portable now,
+    /// but the screen itself is built around a Mac window and folder picker.
+    /// Its button must be absent, not merely disabled — a visible control that
+    /// does nothing is the regression this guards, and it is why the seam
+    /// carries one flag per screen.
     func testSortIsNotOfferedOnIPad() {
         let app = launchPastTheFolderPicker()
 

@@ -56,7 +56,7 @@ struct SortingSheet: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Sort & Resize Videos")
                 .font(.title.bold())
-            Text("Choose a flat folder of raw clips. The event date is taken from the first video file. Each tagged clip moves into organized/<event>/<athlete>, gets its athlete metadata written, then is resized into the matching organized_resize folder. Only one ffmpeg job runs at once.")
+            Text("Choose a flat folder of raw clips. The event date is taken from the first video file. Each tagged clip moves into organized/<event>/<athlete>, gets its athlete metadata written, then is resized into the matching organized_resize folder. Only one resize runs at a time.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

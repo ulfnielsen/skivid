@@ -13,7 +13,7 @@
 - **Every `swift`, `xcodebuild` and `xcrun` command requires `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.** Without it: `no such module 'XCTest'`, and no `simctl`.
 - **No file in `Sources/SkiVideoCore/` may import AppKit, UIKit, SwiftUI or Process.** `AVFoundation` is already imported there by `ViewerModel` and `ComparisonModel`, so it is fine.
 - **No file in `Sources/SkiVideoViewer/Shared/` may import AppKit or UIKit.** `SinglePlayerView.swift` is the sole exception.
-- Baseline to preserve: **148 macOS tests, 0 failures**, 14 iPad UI tests on each of `iPad Pro 11-inch (M5)` and `iPad mini (A17 Pro)`. `cd SkiVideoViewer && swift test` runs the macOS suite.
+- Baseline to preserve: **386 macOS tests, 2 skipped, 0 failures — EXCLUDING `CorrectedStartEndToEndTests`, which is flaky on `main` and belongs to parallel work (see below)**, 14 iPad UI tests on each of `iPad Pro 11-inch (M5)` and `iPad mini (A17 Pro)`. `cd SkiVideoViewer && swift test` runs the macOS suite.
 - Both app targets must build: `SkiVideoViewer-macOS` (`platform=macOS`) and `SkiVideoViewer-iPad` (`platform=iOS Simulator`).
 - **The `.xcodeproj` is generated and gitignored.** Run `xcodegen generate` in `SkiVideoViewer/` after creating or deleting any source file, and never commit it. A green `swift test` does not mean the app builds — SwiftPM globs sources, Xcode carries a fixed file list.
 - **Output bitrate is `round(width × height × 1.784)` bits/s**, computed from the **output** dimensions, not the source. That is 3,699,302 at 1920×1080, matching the 3.70 Mbps the current pipeline produces, and 1,644,134 at 1280×720.
@@ -504,7 +504,7 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd SkiVideoViewer && xcodegen generate && swift test
 ```
 
-Expected: 148 + 10 = 158 tests, 0 failures.
+Expected: 10 new tests passing; the suite total is 386 + 10 = 396.
 
 - [ ] **Step 7: Mutation-test the battery**
 

@@ -3,7 +3,7 @@ import XCTest
 @testable import SkiVideoCore
 
 /// Records how many pipeline jobs are in flight simultaneously. The resize
-/// queue promises "Only one ffmpeg job runs at once" in the UI copy, and the
+/// queue promises "Only one resize runs at a time" in the UI copy, and the
 /// `async` pipeline seam is bridged back onto the serial `OperationQueue` with
 /// a semaphore. If that bridge ever regresses to fire-and-forget, every queued
 /// job overlaps and `maxConcurrent` climbs above 1.
@@ -129,7 +129,7 @@ final class SortingModelResizeQueueTests: XCTestCase {
 
         try await waitForResizes(model, count: athletes.count)
 
-        XCTAssertEqual(pipeline.maxConcurrent, 1, "ffmpeg jobs overlapped; the queue no longer serializes")
+        XCTAssertEqual(pipeline.maxConcurrent, 1, "resize jobs overlapped; the queue no longer serializes")
         XCTAssertEqual(pipeline.metadataCount, athletes.count)
         XCTAssertEqual(pipeline.resizeCount, athletes.count)
         XCTAssertEqual(model.completedResizes, athletes.count)
@@ -138,8 +138,8 @@ final class SortingModelResizeQueueTests: XCTestCase {
     }
 
     /// The pipeline receives each tagged clip's organized path, its resized
-    /// destination, and the athlete name — the arguments the ffmpeg runner used
-    /// to build for itself.
+    /// destination, and the athlete name — the three things the pipeline needs
+    /// and only the model knows.
     func testPipelineReceivesOrganizedAndResizedPathsPerClip() async throws {
         let pipeline = RecordingPipeline()
         let model = makeModel(pipeline)
@@ -173,7 +173,7 @@ final class SortingModelResizeQueueTests: XCTestCase {
         let failure = NSError(
             domain: "Test",
             code: 7,
-            userInfo: [NSLocalizedDescriptionKey: "ffmpeg exploded"]
+            userInfo: [NSLocalizedDescriptionKey: "the export exploded"]
         )
         let pipeline = SerializationProbePipeline(jobDurationMilliseconds: 5, errorToThrow: failure)
         let model = makeModel(pipeline)
@@ -183,7 +183,7 @@ final class SortingModelResizeQueueTests: XCTestCase {
         try await waitForResizes(model, count: athletes.count)
 
         XCTAssertEqual(model.failedResizes.count, athletes.count)
-        XCTAssertTrue(model.failedResizes.allSatisfy { $0.contains("ffmpeg exploded") })
+        XCTAssertTrue(model.failedResizes.allSatisfy { $0.contains("the export exploded") })
         XCTAssertTrue(model.failedResizes[0].hasPrefix("clip1.mp4: "))
         XCTAssertEqual(model.completedOutputDirectory, nil, "a failed run has no ready library")
         XCTAssertEqual(model.status, "Finished with \(athletes.count) resize error(s).")

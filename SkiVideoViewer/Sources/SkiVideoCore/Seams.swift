@@ -73,7 +73,7 @@ public protocol OAuthPresenter: AnyObject {
 
 // MARK: - Media
 
-/// Transcoding operations. Backed by ffmpeg today, by AVFoundation in phase 2.
+/// Transcoding operations, backed by AVFoundation in `AVFoundationMediaPipeline`.
 public protocol MediaPipeline: Sendable {
     func writeMetadata(athlete: String, to url: URL) async throws
     func resize(source: URL, destination: URL, athlete: String) async throws
