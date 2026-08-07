@@ -153,6 +153,16 @@ public struct AVFoundationMediaPipeline: MediaPipeline {
     /// right. Passthrough also carries only the tracks AVFoundation recognises,
     /// which reproduces the effect of the old `-map 0:v:0 -map 0:a?`: proprietary
     /// camera telemetry tracks are dropped rather than failing the remux.
+    ///
+    /// No stall bound, unlike `resize`. `export()` resumes on failure and on
+    /// cancellation — measured — but nothing bounds an export that simply never
+    /// progresses, and `SortingModel` runs this inside a `Task.detached` that a
+    /// serial `OperationQueue` thread waits on with a semaphore, so one wedged
+    /// export would stop the whole sort with the UI still responsive. The
+    /// bound is deliberately not added: `cancelExport()` makes one expressible,
+    /// but a passthrough remux of a large clip off a slow volume can sit at one
+    /// progress value for a long stretch, and a false positive would turn a
+    /// working tag into an error. No hang has been observed here.
     public func writeMetadata(athlete: String, to url: URL) async throws {
         let asset = AVURLAsset(url: url)
         guard try await asset.load(.isPlayable) else {
@@ -164,6 +174,13 @@ public struct AVFoundationMediaPipeline: MediaPipeline {
 
         let temporary = url.deletingLastPathComponent()
             .appendingPathComponent(".metadata-\(UUID().uuidString).\(url.pathExtension)")
+        // Keep this even though no test can currently fail without it, and do
+        // not read that as dead code. Measured: on success `replaceItemAt`
+        // consumes the temporary, and on a failed export AVFoundation deletes
+        // its own half-written output — but a *cancelled* export leaves the
+        // partial file behind, and so does a `replaceItemAt` that throws after
+        // the export succeeded. Either would strew hidden `.metadata-*` files
+        // through the athlete's folder, one per clip of a sort run.
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         session.outputURL = temporary
