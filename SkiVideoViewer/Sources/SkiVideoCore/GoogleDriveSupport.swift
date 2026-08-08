@@ -56,7 +56,6 @@ public enum DriveError: LocalizedError {
 
 struct GoogleDriveClient {
     private static let folderMimeType = "application/vnd.google-apps.folder"
-    private static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "avi", "mkv", "webm"]
 
     private let accessToken: String
 
@@ -80,8 +79,14 @@ struct GoogleDriveClient {
                     try await scan(folderID: file.id, parentName: file.name)
                     continue
                 }
+                // The same list the local library uses, deliberately not a copy.
+                // Drive kept its own set until 2026-08-08, still naming avi, mkv
+                // and webm after the local one dropped them — so Drive offered
+                // files that `AVPlayer` cannot open and the sidebar would not
+                // have listed. One source of truth cannot drift like that.
                 guard file.canDownload,
-                      Self.videoExtensions.contains(URL(fileURLWithPath: file.name).pathExtension.lowercased())
+                      VideoLibrary.supportedExtensions
+                          .contains(URL(fileURLWithPath: file.name).pathExtension.lowercased())
                 else {
                     continue
                 }
