@@ -15,7 +15,11 @@
 - Slow-motion rate: `0.35` forward, `-0.35` reverse. Reverse fallback step: `0.08` s.
 - Double-tap window: `0.38` s. Double-tap seek: `5.0` s. Single seek: `1.0` s.
 - Status strings are asserted on by tests; keep the existing wording exactly — `"Forward 1 seconds"`, `"Forward 5 seconds"`, `"Slow forward"`, `"Slow backward"`, `"Playing"`, `"Paused"`.
-- Every task ends green: run `swift build && swift test` before each commit.
+- **Test command.** A bare `swift test` fails on this machine with `no such module 'XCTest'` — `xcode-select -p` points at `/Library/Developer/CommandLineTools`, which ships no XCTest. Always run:
+  ```bash
+  swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+  ```
+  Filtered runs need the same prefix: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter <Suite>`. A full run is ~145 s and the baseline is **406 tests, 0 failures, 2 skipped**. Every task ends green before its commit.
 - Commit messages: imperative mood, no `feat:`/`fix:` prefixes — match the existing log (`Let Drive import share the library's format list`). End each with:
   ```
   Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
@@ -235,7 +239,7 @@ final class SlowMotionHoldTests: XCTestCase {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --filter SlowMotionHoldTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter SlowMotionHoldTests`
 Expected: FAIL to compile — `cannot find 'SlowMotionHold' in scope`.
 
 - [ ] **Step 3: Write the implementation**
@@ -353,13 +357,13 @@ final class SlowMotionHold {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --filter SlowMotionHoldTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter SlowMotionHoldTests`
 Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Run the whole suite and commit**
 
 ```bash
-swift build && swift test
+swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 git add Sources/SkiVideoCore/SlowMotionHold.swift Tests/SkiVideoCoreTests/SlowMotionHoldTests.swift
 git commit -m "Extract held slow playback into a unit both screens can drive
 
@@ -378,7 +382,16 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `Sources/SkiVideoCore/ComparisonModel.swift:325-336`
 - Modify: `Sources/SkiVideoCore/SortingModel.swift:150-156`
 - Modify: `Sources/SkiVideoViewer/macOS/AppKitInputSource.swift`
-- Test: `Tests/SkiVideoCoreTests/CorePurityTests.swift:43-51`, `Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift`, `Tests/SkiVideoViewerTests/AppKitInputSourceTests.swift`
+- Modify: `Sources/SkiVideoViewer/macOS/SortingWindowController.swift:39`
+- Test: `Tests/SkiVideoCoreTests/CorePurityTests.swift:43-51`, `Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift`, `Tests/SkiVideoViewerTests/AppKitInputSourceTests.swift`, `Tests/SkiVideoCoreTests/ComparisonModelTests.swift`, `Tests/SkiVideoViewerTests/AppKitInputToModelTests.swift`
+
+**Every existing use of the removed API, found by grep — the compiler will point at all of these:**
+
+| File | What |
+| --- | --- |
+| `Tests/SkiVideoCoreTests/ComparisonModelTests.swift` | 8 `.scrubBegan`/`.scrubEnded` emissions at lines 187, 200, 203, 212, 215, 246, 247, 265 |
+| `Tests/SkiVideoViewerTests/AppKitInputToModelTests.swift:62` | `holdThreshold: 60` |
+| `Tests/SkiVideoCoreTests/ViewerTransportTests.swift` | 4 direct `model.beginArrow`/`model.endArrow` calls — **left alone in this task**, because `beginArrow`/`endArrow` still exist until Task 3. Task 3 owns them. |
 
 **Interfaces:**
 - Consumes: nothing from Task 1.
@@ -641,18 +654,32 @@ Update `cancelHold()` to emit `.slowMotionEnded` instead of `.scrubEnded`.
     }
 ```
 
-- [ ] **Step 5: Check `AppKitInputToModelTests` still compiles**
+- [ ] **Step 5: Update `ComparisonModelTests` to the new vocabulary**
 
-Run: `swift build --build-tests 2>&1 | grep -i "error" | head -20`
+Five call sites in `Tests/SkiVideoCoreTests/ComparisonModelTests.swift`. `.seek` carries the same meaning `.scrubBegan` did for this model, so these are renames plus one deletion:
 
-Fix any reference to `.scrubBegan`/`.scrubEnded`/`arrowsRepeat`/`holdThreshold` the compiler reports in `Tests/SkiVideoViewerTests/AppKitInputToModelTests.swift`, translating each to the new vocabulary. Delete `testReleasingASecondArrowMidHoldDoesNotEndTheScrub` — Task 4 replaces it with the ⌘ equivalent.
+| Test | Change |
+| --- | --- |
+| `testScrubKeysFollowTheTargetWhileAligning` (line 187) | `.scrubBegan(.forward)` → `.seek(.forward)`; rename the test to `testSeekKeysFollowTheTargetWhileAligning` |
+| `testScrubBeganIntentsSeekBothPlayersOneSecondInTheEmittedDirection` (lines 200, 203) | both `.scrubBegan(x)` → `.seek(x)`; rename to `testSeekIntentsMoveBothPlayersOneSecondInTheEmittedDirection` |
+| `testScrubEndedIsIgnoredBecauseTheWindowNeverHadHoldToScrub` (lines 212, 215) | **Delete.** It asserts that a release does not seek a second time; `.scrubEnded` no longer exists and `.seek` has no release. Task 4 gives `.slowMotionEnded` its own coverage. |
+| `testScrubIntentsDoNotTrapWithNoVideosLoaded` (lines 246, 247) | both → `.seek(x)`; rename to `testSeekIntentsDoNotTrapWithNoVideosLoaded` |
+| `testClosingDetachesTheInputSource` (line 265) | `.scrubBegan(.forward)` → `.seek(.forward)` |
 
-- [ ] **Step 6: Run the suite**
+- [ ] **Step 6: Update `AppKitInputToModelTests` and check nothing else references the old API**
 
-Run: `swift build && swift test`
+Run: `swift build --build-tests 2>&1 | grep -i "error" | head -30`
+
+In `Tests/SkiVideoViewerTests/AppKitInputToModelTests.swift`: drop `holdThreshold: 60` from the `ViewerModel(...)` at line 62, and delete `testReleasingASecondArrowMidHoldDoesNotEndTheScrub` — Task 4 replaces it with the ⌘ equivalent. Translate any other reported reference to the new vocabulary.
+
+`Tests/SkiVideoCoreTests/ViewerTransportTests.swift` still calls `model.beginArrow`/`model.endArrow` in three tests. Those methods still exist in this task, so **leave that file alone** — Task 3 owns it. If the compiler reports it, something in Step 2 went further than it should have.
+
+- [ ] **Step 7: Run the suite**
+
+Run: `swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add -A Sources Tests
@@ -673,6 +700,7 @@ A pure refactor: the hold behaviour is already reachable from `.slowMotionBegan`
 **Files:**
 - Modify: `Sources/SkiVideoCore/ViewerModel.swift`
 - Test: `Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift`
+- Test: `Tests/SkiVideoCoreTests/ViewerTransportTests.swift` — three tests call `model.beginArrow`/`model.endArrow` directly and stop compiling when Step 3 deletes them. Step 3b converts them.
 
 **Interfaces:**
 - Consumes: `SlowMotionHold.begin(_:players:)`, `.end()`, `.isActive` from Task 1; `PlaybackIntent.slowMotionBegan/.slowMotionEnded` from Task 2.
@@ -714,7 +742,7 @@ Add to `Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift`:
 
 - [ ] **Step 2: Run to see which of the two fails**
 
-Run: `swift test --filter ViewerModelIntentTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerModelIntentTests`
 
 Expected: `testSpaceDuringAHoldIsAnOrdinaryPlayPause` FAILs with status `"Slow forward paused"` — that is `togglePlayback`'s hold branch, which Step 3 deletes.
 
@@ -779,15 +807,47 @@ In `togglePlayback`, delete the leading hold branch so the body starts at the pl
 
 Update `applyTransport`'s comment about `endArrow` to name `endSlowMotion`, and update the `isPlaying` doc comment at `ViewerModel.swift:32-36`, which lists `startHold`/`resumeHeldPlayback`/`pauseHeldPlayback`/`endArrow` by name.
 
+- [ ] **Step 3b: Convert `ViewerTransportTests` to the intents**
+
+Deleting `beginArrow`/`endArrow` breaks three tests in `Tests/SkiVideoCoreTests/ViewerTransportTests.swift`. They test real behaviour worth keeping, so convert rather than delete: `model.beginArrow(d)` → `model.handle(.slowMotionBegan(d))`, and `model.endArrow(performTap: false)` → `model.handle(.slowMotionEnded)`. `handle` is internal and the file already uses `@testable import`.
+
+- `testIsPlayingFollowsAHoldStartedFromAPausedClip` (lines ~217, ~225) — substitution only; every assertion still holds.
+- `testIsPlayingSurvivesAHoldTakenDuringPlayback` (lines ~246, ~251) — substitution only. Its doc comment names `endArrow`'s `player.pause()` before restoring `rateBeforeHold`; reword to name `SlowMotionHold.end()`, which does the same two things.
+- `testATransportPressCancelsAnArrowHold` (lines ~97, ~117) — substitution, **plus** a rewrite of its middle section. The test currently waits 0.3 s to prove an uncancelled hold would have *started on its own* after `holdThreshold`. There is no threshold any more: the hold starts on the intent, so an uncancelled hold is already running at 0.35 when `applyTransport` is called. Replace that block and its comment with:
+
+```swift
+        model.handle(.slowMotionBegan(.forward))
+        waitUntil("precondition: the hold must be running before the transport press") {
+            abs(model.player.rate - 0.35) < 0.01
+        }
+        model.applyTransport(.forward5)
+        settle(model)
+
+        // The hold must be cancelled outright, not left running. Without
+        // `endSlowMotion` in `applyTransport` the player keeps creeping
+        // forward at 0.35 after the press, and the hold's state also strands
+        // `SlowMotionHold.isActive`, so `begin` refuses every later hold.
+        XCTAssertEqual(model.player.rate, 0, accuracy: 0.01,
+                       "a transport press must cancel the hold, not leave it running")
+
+        // Assert on an effect the *second* hold produces, not on
+        // `lastSeekOffset`: `applyTransport(.forward5)` already sets that, so an
+        // assertion on it would pass whether or not the hold was cancelled.
+        model.handle(.slowMotionBegan(.forward))
+        waitUntil("a hold after a transport press must be accepted and start") {
+            abs(model.player.rate - 0.35) < 0.01
+        }
+```
+
 - [ ] **Step 4: Run the tests**
 
-Run: `swift test --filter ViewerModelIntentTests && swift test --filter ViewerTransportTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerModelIntentTests && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerTransportTests`
 Expected: PASS.
 
 - [ ] **Step 5: Run the suite and commit**
 
 ```bash
-swift build && swift test
+swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 git add -A Sources Tests
 git commit -m "Give the viewer's hold to SlowMotionHold
 
@@ -970,7 +1030,7 @@ Also update `testModifiedKeysAreIgnored`, which asserts `key(124, modifiers: .co
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --filter AppKitInputSourceTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter AppKitInputSourceTests`
 Expected: FAIL — ⌘ events are still refused by the modifier gate, so every new test sees no intents.
 
 - [ ] **Step 3: Implement the ⌘ bindings**
@@ -1077,7 +1137,7 @@ Update `bypassesTextFieldFocus`'s documentation: it now exempts the sorting wind
 
 - [ ] **Step 4: Run the input-source tests**
 
-Run: `swift test --filter AppKitInputSourceTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter AppKitInputSourceTests`
 Expected: PASS.
 
 - [ ] **Step 5: Write the failing comparison tests**
@@ -1148,7 +1208,7 @@ Add to `Tests/SkiVideoCoreTests/ComparisonModelTests.swift`:
 
 - [ ] **Step 6: Run to verify they fail**
 
-Run: `swift test --filter ComparisonModelTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ComparisonModelTests`
 Expected: FAIL — `handle`'s `default: break` swallows both intents, so every rate stays 0.
 
 - [ ] **Step 7: Implement the comparison side**
@@ -1202,13 +1262,13 @@ In `pauseBoth()` and `close()`, add `hold.end()` as the first statement.
 
 - [ ] **Step 8: Run the tests**
 
-Run: `swift test --filter ComparisonModelTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ComparisonModelTests`
 Expected: PASS.
 
 - [ ] **Step 9: Run the suite and commit**
 
 ```bash
-swift build && swift test
+swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 git add -A Sources Tests
 git commit -m "Bind Cmd+Arrow to slow motion on both screens
 
@@ -1404,7 +1464,7 @@ Also update `testGroupsNestedVideosByAthleteFolder` to assert the event it now c
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --filter LibraryGroupingTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter LibraryGroupingTests`
 Expected: FAIL to compile — `cannot find 'LibraryGrouping' in scope`.
 
 - [ ] **Step 3: Implement `LibraryGrouping`**
@@ -1558,13 +1618,13 @@ Delete the now-unused `videos.sort`, `names`, `grouped` block — `LibraryGroupi
 
 - [ ] **Step 5: Run the tests**
 
-Run: `swift test --filter LibraryGroupingTests && swift test --filter VideoLibraryTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter LibraryGroupingTests && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter VideoLibraryTests`
 Expected: PASS.
 
 - [ ] **Step 6: Run the suite and commit**
 
 ```bash
-swift build && swift test
+swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 git add -A Sources Tests
 git commit -m "Group the library by event as well as athlete
 
@@ -1697,7 +1757,7 @@ Then the tests:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --filter ViewerModelIntentTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerModelIntentTests`
 Expected: FAIL to compile — `value of type 'ViewerModel' has no member 'events'`.
 
 - [ ] **Step 3: Implement `events` and the search**
@@ -1767,7 +1827,7 @@ In `Sources/SkiVideoCore/ViewerModel.swift`, extend the filter to match events a
 
 - [ ] **Step 4: Run the tests**
 
-Run: `swift test --filter ViewerModelIntentTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerModelIntentTests`
 Expected: PASS.
 
 - [ ] **Step 5: Draw the sections**
@@ -1803,7 +1863,7 @@ In `Sources/SkiVideoViewer/Shared/ContentView.swift`, replace the `List` at line
 - [ ] **Step 6: Build and commit**
 
 ```bash
-swift build && swift test
+swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 git add -A Sources Tests
 git commit -m "Section the sidebar by event
 
@@ -1861,7 +1921,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --filter ViewerModelIntentTests`
+Run: `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerModelIntentTests`
 Expected: FAIL — `clipDescription` returns `"Clip 1 of 1 · a.mp4"` and the picker names are both `"Alice"`.
 
 - [ ] **Step 3: Implement**
@@ -1902,8 +1962,8 @@ In `Sources/SkiVideoCore/ViewerModel.swift`:
 - [ ] **Step 4: Run and commit**
 
 ```bash
-swift test --filter ViewerModelIntentTests
-swift build && swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter ViewerModelIntentTests
+swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 git add -A Sources Tests
 git commit -m "Name the event where no section header carries it
 
@@ -1991,7 +2051,7 @@ In `Sources/SkiVideoCore/GoogleDriveSupport.swift`, replace the body of `scanSha
 
 - [ ] **Step 2: Build and run the suite**
 
-Run: `swift build && swift test`
+Run: `swift build && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
 Expected: PASS — nothing in the suite drives this path, so this proves only that it compiles and that nothing else regressed.
 
 - [ ] **Step 3: Commit**
