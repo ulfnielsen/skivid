@@ -47,8 +47,7 @@ final class ViewerModelIntentTests: XCTestCase {
             input: input,
             folderPicker: FakeFolderPicker(),
             oauthPresenter: FakeOAuthPresenter(),
-            now: clock.now,
-            holdThreshold: 0.02
+            now: clock.now
         )
         model.openDirectory(try makeLibrary(athletes: athletes))
         return (model, input, clock)
@@ -57,8 +56,7 @@ final class ViewerModelIntentTests: XCTestCase {
     func testSingleTapSeeksOneSecond() throws {
         let (model, input, _) = try makeModel()
 
-        input.emit(.scrubBegan(.forward))
-        input.emit(.scrubEnded(.forward, performTap: true))
+        input.emit(.seek(.forward))
 
         XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
         XCTAssertEqual(model.status, "Forward 1 seconds")
@@ -67,13 +65,9 @@ final class ViewerModelIntentTests: XCTestCase {
     func testDoubleTapWithinWindowSeeksFiveSeconds() throws {
         let (model, input, clock) = try makeModel()
 
-        input.emit(.scrubBegan(.forward))
-        input.emit(.scrubEnded(.forward, performTap: true))
-
+        input.emit(.seek(.forward))
         clock.advance(by: 0.2)   // inside the 0.38s window
-
-        input.emit(.scrubBegan(.forward))
-        input.emit(.scrubEnded(.forward, performTap: true))
+        input.emit(.seek(.forward))
 
         XCTAssertEqual(model.lastSeekOffset ?? .nan, 5.0, accuracy: 0.0001)
         XCTAssertEqual(model.status, "Forward 5 seconds")
@@ -82,34 +76,29 @@ final class ViewerModelIntentTests: XCTestCase {
     func testTapsOutsideWindowAreNotTreatedAsDoubleTap() throws {
         let (model, input, clock) = try makeModel()
 
-        input.emit(.scrubBegan(.forward))
-        input.emit(.scrubEnded(.forward, performTap: true))
-
+        input.emit(.seek(.forward))
         clock.advance(by: 0.5)   // outside the 0.38s window
-
-        input.emit(.scrubBegan(.forward))
-        input.emit(.scrubEnded(.forward, performTap: true))
+        input.emit(.seek(.forward))
 
         XCTAssertEqual(model.lastSeekOffset ?? .nan, 1.0, accuracy: 0.0001)
         XCTAssertEqual(model.status, "Forward 1 seconds")
     }
 
-    func testHoldEntersSlowScrub() async throws {
+    func testSlowMotionBeganEntersSlowPlaybackImmediately() throws {
         let (model, input, _) = try makeModel()
 
-        input.emit(.scrubBegan(.forward))
-        try await Task.sleep(nanoseconds: 60_000_000)   // past the 0.02s threshold
+        input.emit(.slowMotionBegan(.forward))
 
         XCTAssertEqual(model.status, "Slow forward")
     }
 
-    func testCancelledScrubDoesNotSeek() throws {
+    func testSlowMotionEndedDoesNotSeek() throws {
         let (model, input, _) = try makeModel()
 
-        input.emit(.scrubBegan(.backward))
-        input.emit(.scrubEnded(.backward, performTap: false))
+        input.emit(.slowMotionBegan(.backward))
+        input.emit(.slowMotionEnded)
 
-        XCTAssertNil(model.lastSeekOffset)
+        XCTAssertNil(model.lastSeekOffset, "releasing a hold must not seek")
     }
 
     /// Both directions matter. `changeVideo(by:)` wraps with
@@ -178,8 +167,7 @@ final class ViewerModelIntentTests: XCTestCase {
             input: input,
             folderPicker: picker,
             oauthPresenter: FakeOAuthPresenter(),
-            now: Date.init,
-            holdThreshold: 0.02
+            now: Date.init
         )
 
         await model.chooseDirectory()
@@ -201,8 +189,7 @@ final class ViewerModelIntentTests: XCTestCase {
             input: input,
             folderPicker: picker,
             oauthPresenter: FakeOAuthPresenter(),
-            now: Date.init,
-            holdThreshold: 0.02
+            now: Date.init
         )
 
         await model.chooseDirectory()

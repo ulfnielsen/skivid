@@ -26,35 +26,19 @@ final class AppKitInputSource: PlaybackInputSource {
     /// cannot be typed.
     var arrowsBypassTextFieldFocus = false
 
-    /// Lets Left/Right *auto-repeat* fire a fresh `.scrubBegan` while held.
-    ///
-    /// Off by default, and it must stay off for the viewer: its hold-to-slow-scrub
-    /// state machine (`ViewerModel.beginArrow`/`endArrow`) is armed by
-    /// `.scrubBegan` and disarmed by the paired `.scrubEnded`, so a repeated
-    /// begin would re-enter the hold and break the pairing.
-    ///
-    /// The sorting window is again the opposite case. The monitor this seam
-    /// replaced bound Left/Right with *no* `isARepeat` guard, so holding an arrow
-    /// repeat-fired `seek(±5)` at the system key-repeat rate — that is how the
-    /// window fast-scans a clip. `SortingModel.handle` acts on `.scrubBegan`
-    /// only and ignores `.scrubEnded`, so one repeated begin is exactly one
-    /// `seek(±5)` and nothing else: the old behaviour, reproduced.
-    ///
-    /// Arrow-only on purpose, matching the two keys that monitor bound. Space,
-    /// the clip arrows and the page keys keep their repeat suppression.
-    var arrowsRepeat = false
-
-    /// Which arrow key is physically down. Deliberately *not* the same fact as
-    /// `ViewerModel.heldDirection`, which is scrub state: the model clears its
-    /// copy from `endArrow(performTap:false)` whenever the library changes
-    /// (`openDirectory`, `selectAthlete`, `changeVideo`, `connectGoogleDrive`)
-    /// while the key is still held, and this copy must survive that so the
-    /// eventual key-up is still consumed rather than leaking to the app.
+    /// Which arrow key is physically held for slow motion. Deliberately *not*
+    /// the same fact as `ViewerModel.heldDirection`, which is hold state: the
+    /// model clears its copy from `endArrow(performTap:false)` whenever the
+    /// library changes (`openDirectory`, `selectAthlete`, `changeVideo`,
+    /// `connectGoogleDrive`) while the key is still held, and this copy must
+    /// survive that so the eventual key-up is still consumed rather than
+    /// leaking to the app.
     ///
     /// Collapsing the two would mean this source querying the model, reversing
-    /// the seam's dependency direction. `AppKitInputToModelTests
-    /// .testReleasingASecondArrowMidHoldDoesNotEndTheScrub` is what pins the
-    /// two copies together; neither file's own tests can see them drift.
+    /// the seam's dependency direction.
+    ///
+    /// Nothing sets it yet: the bare arrows now seek on key-down and never
+    /// arm a hold. The ⌘ bindings that do arm one land in the next commit.
     private var heldDirection: ScrubDirection?
 
     init() {
@@ -88,9 +72,9 @@ final class AppKitInputSource: PlaybackInputSource {
     }
 
     private func cancelHold() {
-        guard let direction = heldDirection else { return }
+        guard heldDirection != nil else { return }
         heldDirection = nil
-        onIntent?(.scrubEnded(direction, performTap: false))
+        onIntent?(.slowMotionEnded)
     }
 
     private func emit(_ intent: PlaybackIntent) {
@@ -108,13 +92,10 @@ final class AppKitInputSource: PlaybackInputSource {
 
         if event.type == .keyUp {
             switch event.keyCode {
-            case 123 where heldDirection == .backward:
+            case 123 where heldDirection == .backward,
+                 124 where heldDirection == .forward:
                 heldDirection = nil
-                emit(.scrubEnded(.backward, performTap: true))
-                return true
-            case 124 where heldDirection == .forward:
-                heldDirection = nil
-                emit(.scrubEnded(.forward, performTap: true))
+                emit(.slowMotionEnded)
                 return true
             default:
                 return false
@@ -132,28 +113,14 @@ final class AppKitInputSource: PlaybackInputSource {
             if !event.isARepeat { emit(.athlete(.previous)) }
         case 121: // Page Down
             if !event.isARepeat { emit(.athlete(.next)) }
-        // The `heldDirection == nil` guard mirrors the one `ViewerModel.beginArrow`
-        // has always had. Without it a second arrow pressed mid-hold would steal
-        // `heldDirection`, and its release would then end a scrub it never began.
-        //
-        // A repeat under `arrowsRepeat` deliberately leaves `heldDirection`
-        // alone: the key is already down and its press/release pairing is already
-        // recorded, so re-entering the hold-begin path would corrupt it. Repeats
-        // stay consumed either way — that was already true before the flag.
+        // No `isARepeat` guard on purpose. A bare arrow seeks on key-down, so
+        // holding one repeat-fires seeks at the system key-repeat rate — which
+        // is how the sorting window fast-scans a clip. That used to need an
+        // opt-in flag because the arrows armed a hold instead.
         case 123: // Left Arrow
-            if event.isARepeat {
-                if arrowsRepeat { emit(.scrubBegan(.backward)) }
-            } else if heldDirection == nil {
-                heldDirection = .backward
-                emit(.scrubBegan(.backward))
-            }
+            emit(.seek(.backward))
         case 124: // Right Arrow
-            if event.isARepeat {
-                if arrowsRepeat { emit(.scrubBegan(.forward)) }
-            } else if heldDirection == nil {
-                heldDirection = .forward
-                emit(.scrubBegan(.forward))
-            }
+            emit(.seek(.forward))
         default:
             return false
         }
@@ -169,7 +136,7 @@ final class AppKitInputSource: PlaybackInputSource {
     /// This is `setEnabled(false)` plus the two removals, not instead of them.
     /// It cannot literally call `setEnabled`: `deinit` is nonisolated and that
     /// method is main-actor isolated, so its effects are inlined. The
-    /// `.scrubEnded` that `cancelHold` would emit is deliberately not sent — the
+    /// `.slowMotionEnded` that `cancelHold` would emit is deliberately not sent — the
     /// consumer owns this source, so it is already gone or going by the time
     /// this runs, and `onIntent` is a main-actor closure that `deinit` has no
     /// guarantee of being on the main thread to call.

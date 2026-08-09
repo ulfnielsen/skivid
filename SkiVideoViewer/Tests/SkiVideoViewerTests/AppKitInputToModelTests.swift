@@ -11,9 +11,10 @@ import XCTest
 /// so the tap/double-tap/clip-index coverage that used to be duplicated here
 /// was removed in favour of the platform-agnostic copies.
 ///
-/// What survives is the pair: `AppKitInputSource` and `ViewerModel` each keep
-/// their own `heldDirection`, and these two tests are the structural guard
-/// against those two copies drifting apart again.
+/// What survives is what needs both halves at once. The mid-hold guard that
+/// used to live here — `AppKitInputSource` and `ViewerModel` each keeping their
+/// own `heldDirection` — went with the bare-arrow hold; it comes back against
+/// the ⌘ keys in the next commit.
 ///
 /// `makeStack()` passes a real `AppKitFolderPicker` only to satisfy the
 /// initializer; nothing here calls `chooseDirectory()`, so `runModal()` is
@@ -47,9 +48,6 @@ final class AppKitInputToModelTests: XCTestCase {
         return root
     }
 
-    /// A long hold threshold keeps every arrow press in this file a *tap*: the
-    /// hold work item is scheduled on the main queue and these tests never
-    /// yield, but being explicit keeps them immune to that detail.
     private func makeStack() throws -> (ViewerModel, AppKitInputSource) {
         let source = AppKitInputSource()
         let model = ViewerModel(
@@ -58,8 +56,7 @@ final class AppKitInputToModelTests: XCTestCase {
             oauthPresenter: StubOAuthPresenter(),
             // Frozen: no test here spans the 0.38s double-tap window, and a
             // fixed date keeps that true however slowly the host runs.
-            now: { Date(timeIntervalSince1970: 1_000) },
-            holdThreshold: 60
+            now: { Date(timeIntervalSince1970: 1_000) }
         )
         model.openDirectory(try makeLibrary())
         return (model, source)
@@ -86,29 +83,6 @@ final class AppKitInputToModelTests: XCTestCase {
     private func tapRightArrow(_ source: AppKitInputSource) {
         _ = source.handle(key(124))
         _ = source.handle(key(124, type: .keyUp))
-    }
-
-    /// End-to-end form of the mid-hold regression: with Left held, pressing and
-    /// releasing Right must change nothing, and releasing Left must still seek
-    /// backward one second. Before the fix the Right *release* ended the scrub
-    /// early and the Left release did nothing at all.
-    ///
-    /// This is the one assertion that pins `AppKitInputSource.heldDirection`
-    /// and `ViewerModel.heldDirection` to each other. Neither file's own tests
-    /// can catch them drifting.
-    func testReleasingASecondArrowMidHoldDoesNotEndTheScrub() throws {
-        let (model, source) = try makeStack()
-
-        _ = source.handle(key(123))                  // press and hold Left
-        _ = source.handle(key(124))                  // press Right mid-hold
-        _ = source.handle(key(124, type: .keyUp))    // release Right
-
-        XCTAssertNil(model.lastSeekOffset, "nothing about Right may seek")
-
-        _ = source.handle(key(123, type: .keyUp))    // release Left
-
-        XCTAssertEqual(model.lastSeekOffset ?? .nan, -1.0, accuracy: 0.0001)
-        XCTAssertEqual(model.status, "Back 1 seconds")
     }
 
     /// `ViewerModelIntentTests` proves the model forwards the flag to whatever

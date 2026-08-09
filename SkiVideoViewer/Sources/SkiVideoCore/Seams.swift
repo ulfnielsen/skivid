@@ -26,10 +26,18 @@ public enum PlaybackIntent: Sendable {
     case togglePlayback
     case clip(Step)
     case athlete(Step)
-    case scrubBegan(ScrubDirection)
-    /// `performTap` is false when the scrub is being cancelled rather than
-    /// released — for example when the app resigns active.
-    case scrubEnded(ScrubDirection, performTap: Bool)
+    /// A discrete jump, emitted on key-down. The models decide how far — the
+    /// viewer's `performArrowTap` reads ±1s or ±5s out of its double-tap
+    /// window, the sorting window always seeks ±5s.
+    case seek(ScrubDirection)
+    /// Slow playback for as long as the keys are held.
+    ///
+    /// No direction on the end and no `performTap`: releasing a hold is one
+    /// action with one meaning. `.scrubEnded` carried `performTap` only to tell
+    /// a release (which should seek) from a cancellation (which should not),
+    /// and seeks are now their own intent.
+    case slowMotionBegan(ScrubDirection)
+    case slowMotionEnded
     case focusAthleteSearch
     case openFolder
 }

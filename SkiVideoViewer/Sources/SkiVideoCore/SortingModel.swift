@@ -144,15 +144,15 @@ public final class SortingModel: ObservableObject {
     /// outside the module drives it directly.
     ///
     /// The sorting window's `NSEvent` monitor bound exactly two keys — Left and
-    /// Right — and acted on key-down only. Acting on `.scrubBegan` and ignoring
-    /// `.scrubEnded` reproduces that: it never had hold-to-scrub. The `isSorting`
+    /// Right — and acted on key-down only. Acting on `.seek` and ignoring the
+    /// slow-motion pair reproduces that: it never had hold-to-scrub. The `isSorting`
     /// guard is the one the old monitor's closure carried.
     func handle(_ intent: PlaybackIntent) {
         guard isSorting else { return }
         switch intent {
-        case .scrubBegan(.backward):
+        case .seek(.backward):
             seek(seconds: -5)
-        case .scrubBegan(.forward):
+        case .seek(.forward):
             seek(seconds: 5)
         default:
             break

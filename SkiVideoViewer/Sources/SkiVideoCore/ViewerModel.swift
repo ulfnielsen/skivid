@@ -45,7 +45,6 @@ public final class ViewerModel: ObservableObject {
     private var activeAthleteID: String?
     private var hasStarted = false
     private var heldDirection: ScrubDirection?
-    private var holdWorkItem: DispatchWorkItem?
     private var reverseTimer: Timer?
     private var holdStarted = false
     private var holdPausedManually = false
@@ -62,7 +61,6 @@ public final class ViewerModel: ObservableObject {
     private let folderPicker: FolderPicker
     private let oauthPresenter: OAuthPresenter
     private let now: () -> Date
-    private let holdThreshold: TimeInterval
 
     /// Exposed so tests can assert on seeks without a playable asset.
     private(set) var lastSeekOffset: Double?
@@ -71,14 +69,12 @@ public final class ViewerModel: ObservableObject {
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
         oauthPresenter: OAuthPresenter,
-        now: @escaping () -> Date = Date.init,
-        holdThreshold: TimeInterval = 0.22
+        now: @escaping () -> Date = Date.init
     ) {
         self.input = input
         self.folderPicker = folderPicker
         self.oauthPresenter = oauthPresenter
         self.now = now
-        self.holdThreshold = holdThreshold
         driveFolderID = UserDefaults.standard.string(forKey: "driveFolderID") ?? ""
         clientSecretsPath = UserDefaults.standard.string(forKey: "driveClientSecretsPath") ?? ""
         self.input.onIntent = { [weak self] intent in
@@ -108,10 +104,13 @@ public final class ViewerModel: ObservableObject {
             changeVideo(by: step.offset)
         case let .athlete(step):
             changeAthlete(by: step.offset)
-        case let .scrubBegan(direction):
+        case let .seek(direction):
+            endArrow(performTap: false)
+            performArrowTap(direction)
+        case let .slowMotionBegan(direction):
             beginArrow(direction)
-        case let .scrubEnded(_, performTap):
-            endArrow(performTap: performTap)
+        case .slowMotionEnded:
+            endArrow(performTap: false)
         case .focusAthleteSearch, .openFolder:
             // Handled by the view layer, which owns focus and the picker.
             break
@@ -375,18 +374,11 @@ public final class ViewerModel: ObservableObject {
         guard currentVideo != nil, heldDirection == nil else { return }
         heldDirection = direction
         holdStarted = false
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.startHold()
-        }
-        holdWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + holdThreshold, execute: workItem)
+        startHold()
     }
 
     func endArrow(performTap: Bool = true) {
         guard let direction = heldDirection else { return }
-        holdWorkItem?.cancel()
-        holdWorkItem = nil
         reverseTimer?.invalidate()
         reverseTimer = nil
         heldDirection = nil

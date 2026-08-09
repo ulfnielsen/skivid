@@ -42,12 +42,13 @@ final class CorePurityTests: XCTestCase {
             .togglePlayback,
             .clip(.next),
             .athlete(.previous),
-            .scrubBegan(.forward),
-            .scrubEnded(.forward, performTap: true),
+            .seek(.forward),
+            .slowMotionBegan(.forward),
+            .slowMotionEnded,
             .focusAthleteSearch,
             .openFolder,
         ]
-        XCTAssertEqual(intents.count, 7)
+        XCTAssertEqual(intents.count, 8)
         XCTAssertEqual(ScrubDirection.backward.rawValue, -1)
         XCTAssertEqual(ScrubDirection.forward.rawValue, 1)
     }

@@ -314,7 +314,7 @@ public final class ComparisonModel: ObservableObject {
     ///
     /// The comparison window's `NSEvent` monitor bound exactly three keys —
     /// Space, Left and Right — and acted on key-down only. Acting on
-    /// `.scrubBegan` and ignoring `.scrubEnded` reproduces that: it never had
+    /// `.seek` and ignoring the slow-motion pair reproduces that: it never had
     /// hold-to-scrub. The remaining intents were passed through to the app by
     /// the old monitor and stay unhandled here.
     ///
@@ -326,9 +326,9 @@ public final class ComparisonModel: ObservableObject {
         switch intent {
         case .togglePlayback:
             applyTransport(.playPause)
-        case .scrubBegan(.backward):
+        case .seek(.backward):
             applyTransport(.back1)
-        case .scrubBegan(.forward):
+        case .seek(.forward):
             applyTransport(.forward1)
         default:
             break

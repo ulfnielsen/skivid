@@ -178,13 +178,13 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(model.leftPlayer.rate, 0)
     }
 
-    func testScrubKeysFollowTheTargetWhileAligning() throws {
+    func testSeekKeysFollowTheTargetWhileAligning() throws {
         let input = FakeInputSource()
         let model = try makeAlignedModel(input: input)
         defer { model.close() }
 
         model.target = .right
-        input.emit(.scrubBegan(.forward))
+        input.emit(.seek(.forward))
 
         XCTAssertEqual(model.rightPlayer.currentTime().seconds, 1, accuracy: 0.01,
                        "the targeted clip must move")
@@ -192,32 +192,16 @@ final class ComparisonModelTests: XCTestCase {
                        "the untargeted clip must not")
     }
 
-    func testScrubBeganIntentsSeekBothPlayersOneSecondInTheEmittedDirection() throws {
+    func testSeekIntentsMoveBothPlayersOneSecondInTheEmittedDirection() throws {
         let input = FakeInputSource()
         let model = try makeSyncedModel(input: input)
         defer { model.close() }
 
-        input.emit(.scrubBegan(.backward))
+        input.emit(.seek(.backward))
         XCTAssertEqual(model.status, "Both moved -1 seconds")
 
-        input.emit(.scrubBegan(.forward))
+        input.emit(.seek(.forward))
         XCTAssertEqual(model.status, "Both moved +1 seconds")
-    }
-
-    func testScrubEndedIsIgnoredBecauseTheWindowNeverHadHoldToScrub() throws {
-        let input = FakeInputSource()
-        let model = try makeSyncedModel(input: input)
-        defer { model.close() }
-
-        input.emit(.scrubBegan(.forward))
-        let statusAfterBegan = model.status
-
-        input.emit(.scrubEnded(.forward, performTap: true))
-        XCTAssertEqual(
-            model.status,
-            statusAfterBegan,
-            "a release must not seek a second time"
-        )
     }
 
     func testClipAndAthleteIntentsAreIgnored() throws {
@@ -238,13 +222,13 @@ final class ComparisonModelTests: XCTestCase {
         )
     }
 
-    func testScrubIntentsDoNotTrapWithNoVideosLoaded() {
+    func testSeekIntentsDoNotTrapWithNoVideosLoaded() {
         let input = FakeInputSource()
         let model = ComparisonModel(input: input)
         defer { model.close() }
 
-        input.emit(.scrubBegan(.backward))
-        input.emit(.scrubBegan(.forward))
+        input.emit(.seek(.backward))
+        input.emit(.seek(.forward))
         input.emit(.togglePlayback)
 
         XCTAssertEqual(model.leftTime, 0, accuracy: 0.0001)
@@ -262,7 +246,7 @@ final class ComparisonModelTests: XCTestCase {
         // the window must stop both receiving and swallowing key events.
         XCTAssertFalse(input.isEnabled)
         let statusAfterClose = model.status
-        input.emit(.scrubBegan(.forward))
+        input.emit(.seek(.forward))
         XCTAssertEqual(model.status, statusAfterClose)
     }
 
