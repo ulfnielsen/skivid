@@ -174,6 +174,34 @@ final class AppKitInputSourceTests: XCTestCase {
         XCTAssertEqual(second, .forward)
     }
 
+    /// The bypass predicate still matches arrow key-*ups*, so what happens to
+    /// one is decided entirely by the key-up switch's default — and a bare
+    /// arrow never sets `heldDirection`, so it lands there. The release is
+    /// therefore neither consumed nor announced, and it leaks to the field
+    /// editor. That is deliberate and harmless: `NSTextView` acts on arrow
+    /// key-downs and ignores arrow key-ups, so there is nothing for it to do
+    /// with one.
+    ///
+    /// Pinned separately because the press/release pairing this seam used to
+    /// guarantee is retired, and a reader of `bypassesTextFieldFocus` could
+    /// otherwise still take it for a live invariant.
+    func testBypassedArrowKeyUpIsNeitherConsumedNorEmitted() {
+        let window = makeWindowWithFocusedTextView()
+        let source = AppKitInputSource()
+        source.arrowsBypassTextFieldFocus = true
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        XCTAssertTrue(source.handle(key(124, windowNumber: window.windowNumber)))
+        XCTAssertEqual(captured.count, 1, "the press seeks")
+
+        XCTAssertFalse(
+            source.handle(key(124, type: .keyUp, windowNumber: window.windowNumber)),
+            "a bypassed arrow release is not ours to consume"
+        )
+        XCTAssertEqual(captured.count, 1, "and it emits nothing: \(captured)")
+    }
+
     /// The opt-in is arrow-specific on purpose. Space above all must still reach
     /// the field, or an athlete named "Anna Marie" cannot be typed.
     func testOptedInSourceStillLetsEveryOtherKeyReachAFocusedTextField() {
@@ -203,32 +231,85 @@ final class AppKitInputSourceTests: XCTestCase {
 
     // MARK: - Arrow auto-repeat
 
-    /// The sorting window fast-scans a clip by holding an arrow. That used to
-    /// need an `arrowsRepeat` opt-in because the arrows armed a hold; now that
-    /// a bare arrow seeks on key-down, a repeat is just another key-down and
-    /// the behaviour falls out. This pins that it really does.
-    func testHeldArrowRepeatsSeek() {
-        let source = AppKitInputSource()
-        var captured: [PlaybackIntent] = []
-        source.onIntent = { captured.append($0) }
+    /// Regression guard for the runaway held arrow. `ViewerModel
+    /// .performArrowTap` is stateful: it reads ±1s or ±5s out of a 0.38s
+    /// double-tap window and cannot tell an auto-repeat from a deliberate
+    /// second press. macOS delivers repeats ~90ms apart, so every repeat lands
+    /// inside that window and the seek alternates 1s, 5s, 1s, 5s — about 31s of
+    /// media per 1.3s of holding, with the status line strobing between two
+    /// messages. The viewer opts into nothing, so its repeats must stay silent.
+    ///
+    /// Consumed but silent, not ignored: the app must never see the repeat
+    /// either, or the arrow reaches whatever else binds it.
+    ///
+    /// No text-view fixture on purpose: the viewer sets no bypass, so a focused
+    /// field would swallow these events before the repeat guard is reached and
+    /// the test would prove nothing.
+    func testDefaultSourceDropsArrowRepeatsSoAHeldArrowCannotRunAway() {
+        for code in [UInt16(123), 124] {
+            let source = AppKitInputSource()
+            var captured: [PlaybackIntent] = []
+            source.onIntent = { captured.append($0) }
 
-        XCTAssertTrue(source.handle(key(124)))
-        XCTAssertTrue(source.handle(key(124, isARepeat: true)))
-        XCTAssertTrue(source.handle(key(124, isARepeat: true)))
+            XCTAssertTrue(source.handle(key(code)))
+            XCTAssertEqual(captured.count, 1, "keyCode \(code): the press itself seeks once")
 
-        XCTAssertEqual(captured.count, 3, "each repeat is another seek: \(captured)")
+            XCTAssertTrue(
+                source.handle(key(code, isARepeat: true)),
+                "keyCode \(code): a repeat must stay consumed, just silent"
+            )
+            XCTAssertTrue(source.handle(key(code, isARepeat: true)))
+            XCTAssertEqual(
+                captured.count, 1,
+                "keyCode \(code): repeats must not reach the double-tap detector: \(captured)"
+            )
+        }
     }
 
-    /// Repeats stay suppressed for every key that is *not* an arrow. Space, the
-    /// clip arrows and the page keys are all one-shot actions; repeating them
-    /// would page through the library at the key-repeat rate.
+    /// The other direction, and the reason the opt-in exists. The sorting
+    /// window fast-scans a clip by holding an arrow, as its original `NSEvent`
+    /// monitor did with no `isARepeat` guard at all. That is safe there and
+    /// only there because `SortingModel` answers every `.seek` with the same
+    /// stateless ±5s jump — there is no window for a repeat to fall inside.
+    func testOptedInSourceEmitsASeekForEveryArrowRepeat() {
+        for code in [UInt16(123), 124] {
+            let expected: ScrubDirection = code == 123 ? .backward : .forward
+            let source = AppKitInputSource()
+            source.arrowsRepeat = true
+            var captured: [PlaybackIntent] = []
+            source.onIntent = { captured.append($0) }
+
+            // Press, then hold through two repeats.
+            XCTAssertTrue(source.handle(key(code)))
+            XCTAssertTrue(source.handle(key(code, isARepeat: true)))
+            XCTAssertTrue(source.handle(key(code, isARepeat: true)))
+
+            XCTAssertEqual(
+                captured.count, 3,
+                "keyCode \(code): each repeat is another seek: \(captured)"
+            )
+            guard captured.count == 3 else { return }
+            for (index, intent) in captured.enumerated() {
+                guard case let .seek(direction) = intent else {
+                    return XCTFail("keyCode \(code): intent \(index) is not a seek: \(captured)")
+                }
+                XCTAssertEqual(direction, expected)
+            }
+        }
+    }
+
+    /// `arrowsRepeat` is arrow-only, matching the two keys the sorting window's
+    /// monitor bound. Space, the clip arrows and the page keys are all one-shot
+    /// actions; repeating them would page through the library at the key-repeat
+    /// rate.
     ///
-    /// No text-view fixture on purpose: none of these keys is bypassed, so a
-    /// focused field would swallow them for the wrong reason.
+    /// Again no text-view fixture: none of these keys is bypassed, so a focused
+    /// field would swallow them for the wrong reason.
     func testArrowRepeatOptInDoesNotUnlockRepeatsForAnyOtherKey() {
         for code in [UInt16(49), 126, 125, 116, 121] {
             let source = AppKitInputSource()
             source.arrowsBypassTextFieldFocus = true
+            source.arrowsRepeat = true
             var captured: [PlaybackIntent] = []
             source.onIntent = { captured.append($0) }
 
@@ -238,7 +319,7 @@ final class AppKitInputSourceTests: XCTestCase {
             XCTAssertTrue(source.handle(key(code, isARepeat: true)))
             XCTAssertEqual(
                 captured.count, 1,
-                "keyCode \(code) must stay one-shot: \(captured)"
+                "keyCode \(code) must stay one-shot under arrowsRepeat: \(captured)"
             )
         }
     }

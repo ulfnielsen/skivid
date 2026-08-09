@@ -33,6 +33,12 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         // the viewer's own input source keeps the exemption.
         let input = AppKitInputSource()
         input.arrowsBypassTextFieldFocus = true
+        // Also scoped to this instance: holding ←/→ here fast-scans the clip at
+        // the key-repeat rate, as the sorting window's own monitor did. Safe
+        // because `SortingModel`'s ±5s seek is stateless. The viewer must keep
+        // suppressing repeats or its double-tap detector runs away — see
+        // `arrowsRepeat`.
+        input.arrowsRepeat = true
         let rootView = SortingSheet(
             isPresented: presented,
             openResizedLibrary: openResizedLibrary,

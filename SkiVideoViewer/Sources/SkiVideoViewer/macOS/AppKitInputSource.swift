@@ -26,6 +26,33 @@ final class AppKitInputSource: PlaybackInputSource {
     /// cannot be typed.
     var arrowsBypassTextFieldFocus = false
 
+    /// Lets Left/Right *auto-repeat* fire a fresh `.seek` while held.
+    ///
+    /// Off by default, and it must stay off for the viewer, because
+    /// `ViewerModel.performArrowTap` is stateful: it reads ±1s or ±5s out of a
+    /// 0.38s double-tap window and cannot tell an auto-repeat from a deliberate
+    /// second press. macOS delivers repeats roughly 90ms apart, so every repeat
+    /// lands inside that window and the detector alternates — 1s, 5s, 1s, 5s —
+    /// for as long as the key is down. Measured: about 31s of media moved per
+    /// 1.3s of holding, with the status line strobing between two messages.
+    /// One press, one seek is what the viewer wants, so the repeat is dropped.
+    ///
+    /// The sorting window is the opposite case, and the reason this is a flag
+    /// rather than a blanket rule. `SortingModel.handle` answers `.seek` with a
+    /// stateless `seek(±5)` — every intent is the same fixed jump, with no
+    /// window to confuse — so repeats compose into the fast-scan the window
+    /// advertises as "←/→ seek 5s", exactly as its original `NSEvent` monitor
+    /// did with no `isARepeat` guard at all. `SortingWindowController.show` is
+    /// the only opted-in instance; the viewer and the comparison window (whose
+    /// `.seek` is a stateless ±1s) both keep the default.
+    ///
+    /// Arrow-only on purpose, matching the two keys that monitor bound. Space,
+    /// the clip arrows and the page keys are one-shot actions and keep their
+    /// repeat suppression unconditionally. A repeated arrow stays *consumed*
+    /// whether or not the flag is set — that was already true — it is merely
+    /// silent when it is off.
+    var arrowsRepeat = false
+
     /// Which arrow key is physically held for slow motion. Deliberately *not*
     /// the same fact as `ViewerModel.heldDirection`, which is hold state: the
     /// model clears its copy from `endArrow(performTap:false)` whenever the
@@ -65,8 +92,16 @@ final class AppKitInputSource: PlaybackInputSource {
     }
 
     /// Only the two arrows the sorting window's monitor used to bind, and only
-    /// on an instance that asked for it. Both key-down and key-up bypass, so a
-    /// consumed press is always matched by a consumed release.
+    /// on an instance that asked for it.
+    ///
+    /// Both event types bypass, but only the key-down produces anything now
+    /// that a bare arrow seeks instead of arming a hold: nothing sets
+    /// `heldDirection` for it, so its key-up falls through the key-up switch's
+    /// default and is *not* consumed. That release leaks to the field editor,
+    /// which is harmless — `NSTextView` acts on arrow key-downs and ignores
+    /// arrow key-ups, so there is nothing for it to do with one. Do not read
+    /// the old press/release pairing into this predicate; it was retired with
+    /// the bare-arrow hold.
     private func bypassesTextFieldFocus(_ event: NSEvent) -> Bool {
         arrowsBypassTextFieldFocus && (event.keyCode == 123 || event.keyCode == 124)
     }
@@ -113,14 +148,14 @@ final class AppKitInputSource: PlaybackInputSource {
             if !event.isARepeat { emit(.athlete(.previous)) }
         case 121: // Page Down
             if !event.isARepeat { emit(.athlete(.next)) }
-        // No `isARepeat` guard on purpose. A bare arrow seeks on key-down, so
-        // holding one repeat-fires seeks at the system key-repeat rate — which
-        // is how the sorting window fast-scans a clip. That used to need an
-        // opt-in flag because the arrows armed a hold instead.
+        // The arrows are the one pair whose repeat can mean something, and only
+        // where the receiving model is stateless enough to survive it — see
+        // `arrowsRepeat`. The repeat stays consumed either way; the flag only
+        // decides whether it also emits.
         case 123: // Left Arrow
-            emit(.seek(.backward))
+            if !event.isARepeat || arrowsRepeat { emit(.seek(.backward)) }
         case 124: // Right Arrow
-            emit(.seek(.forward))
+            if !event.isARepeat || arrowsRepeat { emit(.seek(.forward)) }
         default:
             return false
         }
