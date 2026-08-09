@@ -494,7 +494,13 @@ In `Sources/SkiVideoViewer/macOS/AppKitInputSource.swift`, keep the existing key
             emit(.seek(.forward))
 ```
 
-Delete the `isARepeat`/`heldDirection` branches from those two cases — with the seek on key-down, `arrowsRepeat`'s effect is now automatic, because a repeat *is* another key-down. Delete the `arrowsRepeat` property and its documentation, and delete the line that sets it in `Sources/SkiVideoViewer/macOS/SortingWindowController.swift:39`.
+Delete the `heldDirection` branches from those two cases, but **keep `arrowsRepeat`** — see the correction below.
+
+> **Corrected 2026-08-09, after Task 2's review.** This plan originally said to delete `arrowsRepeat` on the reasoning that "a repeat is just another key-down, so its effect is now automatic". That holds for the sorting window, whose `SortingModel.seek(±5)` is stateless. It is wrong for the viewer, whose `performArrowTap` is stateful: its 0.38 s double-tap detector cannot tell an auto-repeat from a deliberate second press, and consecutive repeats arrive ~90 ms apart — so a held arrow alternates +1 s / +5 s indefinitely, moving ~31 s of media per 1.3 s held with the status line strobing. Measured by simulating `performArrowTap` at the system repeat rate (0.375 s initial delay, 0.090 s thereafter).
+>
+> `arrowsRepeat` therefore stays, defaulting to false, still gating auto-repeat on keyCodes 123/124 only. `SortingWindowController` keeps `input.arrowsRepeat = true`; the viewer and the comparison window stay at the default, so a held arrow seeks once and goes quiet. Its doc comment must be rewritten rather than restored — the old text justified the flag by the hold state machine that `.scrubBegan` armed, which no longer exists. The reason now is `performArrowTap`'s statefulness, with the numbers above.
+>
+> Coverage: one test proving a default source stays silent on arrow repeats (the runaway's regression guard), one proving an opted-in source emits a `.seek` per repeat (the sorting window's fast-scan).
 
 Update `cancelHold()` to emit `.slowMotionEnded` instead of `.scrubEnded`.
 
@@ -2119,4 +2125,4 @@ Write up what happened, especially Step 2's open question. Nothing is committed 
 - The spec made the ⌘ key-up spike a blocking first step. This plan implements both end paths instead — which the spec already specified — so the question degrades to a measurement in Task 9 rather than gating the work.
 - The spec asked for "Drive scan coverage mirroring the local grouping rule". `scanSharedDrive` is unmockable without a network fake, so the coverage lives in `LibraryGroupingTests` against the shared unit and Task 8 is wiring only. Task 8 says so explicitly rather than implying Drive is tested.
 
-**One removal the spec did not name:** `AppKitInputSource.arrowsRepeat` and its `SortingWindowController` call site are deleted in Task 2. With a bare arrow seeking on key-down, a key repeat is another key-down, so the flag's only remaining effect would be to suppress the behaviour it was added to enable. `testHeldArrowRepeatsSeek` pins that the sorting window's fast-scan survives.
+**One removal the spec did not name — later withdrawn.** Task 2 originally deleted `AppKitInputSource.arrowsRepeat` and its `SortingWindowController` call site, reasoning that with a bare arrow seeking on key-down a repeat is just another key-down. Task 2's review measured that this makes a held arrow in the viewer alternate +1 s / +5 s forever, because `performArrowTap`'s double-tap detector counts repeats as taps. The flag is kept; see the correction note in Task 2, Step 3.
