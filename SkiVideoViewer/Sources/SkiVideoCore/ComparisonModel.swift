@@ -209,6 +209,16 @@ public final class ComparisonModel: ObservableObject {
     /// same way rather than keeping two subtly different copies of it.
     private let hold = SlowMotionHold()
 
+    /// What the status line said before the hold started.
+    ///
+    /// A hold is transient in both directions: `SlowMotionHold.end()` puts the
+    /// players back at the rate they were running at, so the sentence that
+    /// described them then is true again. Restoring it is why the end of a hold
+    /// does not have to invent wording for a state the screen has already
+    /// described — and it is what stops a stopped pair sitting under a status
+    /// line still reading "Slow forward".
+    private var statusBeforeHold: String?
+
     /// Optional because a unit-test model needs neither. A comparison window
     /// without an input source simply has no keyboard control, and one without
     /// a folder picker cannot open the "Choose File…" panel.
@@ -273,6 +283,16 @@ public final class ComparisonModel: ObservableObject {
     /// `target`. The per-side methods already fall through to their synced
     /// equivalents when `isSynced`, so this only has to pick the entry point.
     public func applyTransport(_ action: TransportAction) {
+        // Any in-flight hold ends first, exactly as `ViewerModel.applyTransport`
+        // does. Two things go wrong without it, and neither is recoverable by
+        // pressing the key again: `SlowMotionHold.isActive` stays true, so every
+        // later hold is refused; and on the reverse fallback — which leaves both
+        // rates at 0 — this method reads those zeros as "stopped", calls
+        // `playSynced`, and the eventual key-up then restores the pre-hold rate
+        // of 0 and stops the pair dead a moment after the operator asked it to
+        // play. `pauseBoth` cannot cover this: `toggleIndividual` and the
+        // aligning branches of `nudge`/`seek` never reach it.
+        endSlowMotion()
         switch target {
         case .both:
             switch action {
@@ -337,7 +357,7 @@ public final class ComparisonModel: ObservableObject {
         case let .slowMotionBegan(direction):
             beginSlowMotion(direction)
         case .slowMotionEnded:
-            hold.end()
+            endSlowMotion()
         default:
             break
         }
@@ -359,6 +379,15 @@ public final class ComparisonModel: ObservableObject {
     /// refusal. `ViewerModel.handle` guards its own case the same way.
     private func beginSlowMotion(_ direction: ScrubDirection) {
         guard !hold.isActive else { return }
+        // A hold *is* a playback start, so it takes the generation with it.
+        // `playSynced` arms a recovery closure 0.35s out, guarded on this
+        // counter and on "either side is stopped": press Space and then ⌘←
+        // inside that window and the reverse fallback leaves both rates at 0,
+        // which is precisely what that closure is looking for — it would then
+        // play both at 1× over the running hold and rewrite the status to
+        // "Playing together". Every other playback-starting path in this file
+        // bumps the counter for the same reason.
+        playbackGeneration += 1
         let players: [AVPlayer]
         switch target {
         case .both:
@@ -368,8 +397,34 @@ public final class ComparisonModel: ObservableObject {
             noteTouched(side)
             players = isSynced ? [leftPlayer, rightPlayer] : [player(for: side)]
         }
+        statusBeforeHold = status
         hold.begin(direction, players: players)
         status = direction == .forward ? "Slow forward" : "Slow backward"
+    }
+
+    /// Whether a ⌘+Arrow hold is running.
+    ///
+    /// Internal, and it exists because the teardown is otherwise unobservable:
+    /// `close()` and `pauseBoth()` pause the players themselves, so the rates
+    /// they leave behind are identical whether the hold was *ended* or merely
+    /// abandoned — a test written against rates alone passes with the teardown
+    /// deleted outright. What an abandoned hold costs is invisible from
+    /// outside: a reverse fallback keeps a timer stepping a player nobody can
+    /// see, and `SlowMotionHold.begin` refuses every later hold for the life of
+    /// the window.
+    var isHoldingSlowMotion: Bool { hold.isActive }
+
+    /// The single hold teardown, mirroring `ViewerModel.endSlowMotion()`.
+    /// Everything that ends a hold goes through here — the key-up, both
+    /// transport entry points, `pauseBoth`, `close` — so the status rule lives
+    /// in one place rather than at each of them.
+    private func endSlowMotion() {
+        guard hold.isActive else { return }
+        hold.end()
+        if let statusBeforeHold {
+            status = statusBeforeHold
+        }
+        statusBeforeHold = nil
     }
 
     public func chooseVideo(side: ComparisonSide) async {
@@ -589,6 +644,12 @@ public final class ComparisonModel: ObservableObject {
     /// showing the left clip's time is the contradiction that mapping exists to
     /// prevent, so it is `target` that is read here instead.
     public func scrub(_ side: ComparisonSide, to seconds: Double) {
+        // The bar is the other half of the transport, and the app layer reaches
+        // this model through exactly two entry points — `applyTransport` from
+        // the control bar and the keys, and this from `ComparisonScrubber`. A
+        // hold must not survive either. (`ViewerModel` ends its hold in the same
+        // two places, for the same reason.)
+        endSlowMotion()
         noteTouched(side)
         guard isSynced else {
             seek(player(for: side), to: seconds)
@@ -709,7 +770,7 @@ public final class ComparisonModel: ObservableObject {
         // were running at before the hold, so a pause that ran first would be
         // undone by it. Every seek, sync and alignment change funnels through
         // here, and each of them is a reason a hold must not still be running.
-        hold.end()
+        endSlowMotion()
         playbackGeneration += 1
         leftPlayer.pause()
         rightPlayer.pause()
@@ -750,7 +811,7 @@ public final class ComparisonModel: ObservableObject {
         // then arrive at a detached input source, or not at all — so the hold
         // is torn down here rather than waited for. First, for the same reason
         // as in `pauseBoth`: `end()` restores the pre-hold rate.
-        hold.end()
+        endSlowMotion()
         leftPlayer.pause()
         rightPlayer.pause()
         if let leftTimeObserver {

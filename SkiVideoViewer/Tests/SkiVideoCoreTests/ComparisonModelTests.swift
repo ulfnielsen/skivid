@@ -324,31 +324,118 @@ final class ComparisonModelTests: XCTestCase {
                        "a refused begin must not word the status after a hold it did not start")
     }
 
+    /// The clip is **playing** before the hold on purpose, and the whole test
+    /// turns on it. `close()` pauses the players itself, so from a standing
+    /// start this assertion passes with `endSlowMotion()` deleted outright — it
+    /// would pin nothing. With a pre-hold rate of 1× the two orderings separate:
+    /// ending first restores 1× and the pause that follows wins, leaving 0;
+    /// pausing first lets the restore run last and leaves the clip playing at 1×
+    /// in a window that has just been closed. Mutation-verified in both
+    /// directions.
     func testClosingEndsAnActiveHold() throws {
         let input = FakeInputSource()
         let model = try makeAlignedModel(input: input)
         model.target = .left
+        model.leftPlayer.playImmediately(atRate: 1)
+        XCTAssertEqual(model.leftPlayer.rate, 1, "premise: the clip must be playing before the hold")
 
         input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001, "premise: the hold must be running")
         model.close()
 
-        XCTAssertEqual(model.leftPlayer.rate, 0)
+        XCTAssertEqual(model.leftPlayer.rate, 0, "a closed window must not be left playing")
+        XCTAssertFalse(model.isHoldingSlowMotion, "the hold must be ended, not abandoned")
     }
 
-    /// The other teardown path. `pauseBoth` is what every seek, sync and
-    /// alignment change goes through, and a hold left running under it would
-    /// restart the clip the moment the fallback timer or the restore fired.
+    /// The other teardown path, with the same pre-hold rate for the same
+    /// reason. `pauseBoth` is what every seek, sync and alignment change goes
+    /// through, and a hold left running under it would restart the pair the
+    /// moment the restore fired.
     func testPausingBothEndsAnActiveHold() throws {
         let input = FakeInputSource()
         let model = try makeSyncedModel(input: input)
         defer { model.close() }
         model.target = .both
+        model.leftPlayer.playImmediately(atRate: 1)
+        model.rightPlayer.playImmediately(atRate: 1)
 
         input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001, "premise: the hold must be running")
         model.pauseBoth()
 
         XCTAssertEqual(model.leftPlayer.rate, 0)
         XCTAssertEqual(model.rightPlayer.rate, 0)
+        XCTAssertFalse(model.isHoldingSlowMotion, "the hold must be ended, not abandoned")
+    }
+
+    /// A transport action taken *during* a hold must end it, or
+    /// `SlowMotionHold.isActive` stays true and refuses every later hold — the
+    /// operator's ⌘→ silently stops working for the rest of the session.
+    /// `pauseBoth` cannot cover this: while aligning, `toggleIndividual` never
+    /// reaches it.
+    func testATransportActionEndsTheHoldSoALaterOneCanStart() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+
+        input.emit(.slowMotionBegan(.forward))
+        model.applyTransport(.playPause)
+        // Space exits the hold rather than steering it, and the clip it hands
+        // back was stopped before the hold — so the toggle starts it, exactly
+        // as `ViewerModel.togglePlayback` does out of a hold.
+        XCTAssertEqual(model.leftPlayer.rate, 1, "Space plays the clip the hold handed back")
+
+        input.emit(.slowMotionBegan(.forward))
+
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001,
+                       "a hold left active refuses every later one")
+    }
+
+    /// The reverse fallback's shape, which is the worst of the two: it pauses
+    /// the clips and steps them on a timer, so both rates read 0 and the
+    /// transport reads that as "stopped" and plays. Without the teardown the
+    /// hold is still live, and the key-up that arrives a moment later restores
+    /// its captured pre-hold rate of 0 — stopping the pair dead right after the
+    /// operator asked it to play.
+    func testPlayingOutOfAHoldSurvivesTheKeyRelease() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+        XCTAssertNotEqual(model.leftPlayer.currentItem?.canPlayReverse, true,
+                          "premise: this fixture takes the timer fallback")
+
+        input.emit(.slowMotionBegan(.backward))
+        XCTAssertEqual(model.leftPlayer.rate, 0, "premise: the fallback leaves the clip paused")
+
+        model.applyTransport(.playPause)
+        XCTAssertEqual(model.leftPlayer.rate, 1, "the operator asked for playback")
+
+        input.emit(.slowMotionEnded)
+
+        XCTAssertEqual(model.leftPlayer.rate, 1,
+                       "the release must not stop what the operator just started")
+    }
+
+    /// Releasing the key must not leave the screen describing a hold that is
+    /// over. The hold is transient in both directions — `end()` puts the
+    /// players back at the rate they were running at — so the sentence that
+    /// described them before it is true again.
+    func testEndingAHoldRestoresTheStatusItReplaced() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+        let before = model.status
+
+        input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.status, "Slow forward")
+
+        input.emit(.slowMotionEnded)
+
+        XCTAssertEqual(model.status, before,
+                       "the stopped clips must not sit under \"Slow forward\"")
     }
 
     // MARK: - File selection
@@ -1176,7 +1263,12 @@ final class ComparisonModelTests: XCTestCase {
     }
 }
 
-/// The bounds tests, on **real decodable media**.
+/// The bounds and paired-playback tests, on **real decodable media**.
+///
+/// The slow-motion tests at the end are here for the same fixture reason as the
+/// bounds ones, plus one of their own: a paired start reaches
+/// `AVPlayer.setRate(_:time:atHostTime:)`, which raises unless the item is
+/// `.readyToPlay`, so a zero-byte fixture cannot reach that path at all.
 ///
 /// These live apart from `ComparisonModelTests` because they need a different
 /// kind of fixture, and that difference is the whole point: the zero-byte files
@@ -1441,17 +1533,104 @@ final class ComparisonBoundsTests: XCTestCase {
         XCTAssertEqual(model.rightPlayer.currentTime().seconds, model.rightSyncPoint.seconds, accuracy: 0.05)
     }
 
+    // MARK: - Slow motion on real media
+
+    /// A locked pair, played, held and released, with the distance between the
+    /// two playheads measured before and after. `SlowMotionHold` starts and
+    /// restores a set of players on a common clock precisely so this distance
+    /// does not move; `playSynced` is the precedent it borrows from.
+    ///
+    /// **The tolerance comes from measurement.** Across five runs on this
+    /// machine the delta moved by at most 0.4ms over a full cycle (the run
+    /// recorded here: 0.00011s introduced by the start, 0.00001s by the
+    /// restore). 10ms is ~25x the worst observation and under a third of a
+    /// frame at 30fps — tight enough to fail on drift an operator could see,
+    /// loose enough not to flake on sampling.
+    ///
+    /// **What it does not do.** It pins the invariant, not the mechanism: the
+    /// same measurement against two independent `playImmediately` calls — what
+    /// the hold did before — also came in under 0.1ms on these fixtures
+    /// (160x90 H.264, decoders that start instantly), so deleting the paired
+    /// start does not fail this test. The skew it prevents belongs to real
+    /// cameras and real decoders, which no generated fixture reproduces. Read
+    /// it as a floor, not as a regression guard.
+    func testAHeldPairComesBackFromSlowMotionStillAligned() throws {
+        let input = FakeInputSource()
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 12, input: input)
+        defer { model.close() }
+        try align(model, left: 2, right: 3)
+        model.setSyncPoints()
+        waitUntilReadyToPlay(model)
+
+        model.applyTransport(.playPause)
+        pump(0.8)
+        let before = model.leftPlayer.currentTime().seconds - model.rightPlayer.currentTime().seconds
+        XCTAssertNotEqual(model.leftPlayer.rate, 0, "premise: the pair must actually be playing")
+
+        input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001)
+        XCTAssertEqual(model.rightPlayer.rate, 0.35, accuracy: 0.001)
+        pump(0.8)
+
+        input.emit(.slowMotionEnded)
+        XCTAssertEqual(model.leftPlayer.rate, 1, accuracy: 0.001, "the pre-hold rate must come back")
+        pump(0.8)
+        let after = model.leftPlayer.currentTime().seconds - model.rightPlayer.currentTime().seconds
+        model.pauseBoth()
+
+        XCTAssertEqual(
+            after, before, accuracy: 0.01,
+            "the hold moved the pair \(after - before)s out of alignment"
+        )
+    }
+
+    /// `playSynced` arms a recovery 0.35s out, guarded on `playbackGeneration`
+    /// and on "either side is stopped". A hold begun inside that window is a
+    /// playback start like any other, and must take the generation with it —
+    /// otherwise the recovery fires *through* the hold, plays both clips at 1×
+    /// and rewrites the status to "Playing together".
+    ///
+    /// The players are stopped by hand, and that stands in for something the
+    /// fixtures cannot produce: on media where `canPlayReverse` is false the
+    /// hold's timer fallback pauses both clips, which is exactly the state the
+    /// recovery is looking for. Every clip this suite can generate is
+    /// reversible, so the hold here runs natively in reverse and the pause
+    /// reproduces the state directly.
+    func testAHoldCancelsAPendingPlaybackRecovery() throws {
+        let input = FakeInputSource()
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 12, input: input)
+        defer { model.close() }
+        try align(model, left: 2, right: 2)
+        model.setSyncPoints()
+        waitUntilReadyToPlay(model)
+
+        model.applyTransport(.playPause)
+        input.emit(.slowMotionBegan(.backward))
+        model.leftPlayer.pause()
+        model.rightPlayer.pause()
+        pump(0.7)
+
+        XCTAssertEqual(model.status, "Slow backward",
+                       "a recovery from before the hold must not rewrite the status over it")
+        XCTAssertNotEqual(model.leftPlayer.rate, 1, "nor play the pair forward under a reverse hold")
+        XCTAssertNotEqual(model.rightPlayer.rate, 1)
+    }
+
     // MARK: - Fixtures
 
     /// Two loaded clips whose durations the model has actually observed. The
     /// wait matters: `AVPlayerItem.duration` is NaN until the item loads, and a
     /// bounds test run before that would measure the same absent bounds the
     /// zero-byte fixtures give.
-    private func makeRealMediaModel(leftSeconds: Double, rightSeconds: Double) throws -> ComparisonModel {
+    private func makeRealMediaModel(
+        leftSeconds: Double,
+        rightSeconds: Double,
+        input: FakeInputSource? = nil
+    ) throws -> ComparisonModel {
         let root = temporaryDirectory ?? FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         temporaryDirectory = root
-        let model = ComparisonModel()
+        let model = ComparisonModel(input: input)
         model.load(try makeRealVideoFile(in: root, name: "left.mov", seconds: leftSeconds), side: .left)
         model.load(try makeRealVideoFile(in: root, name: "right.mov", seconds: rightSeconds), side: .right)
         waitUntil("the clips' durations must be known before any bound can be tested") {
@@ -1495,6 +1674,23 @@ final class ComparisonBoundsTests: XCTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         }
         XCTAssertTrue(condition(), message)
+    }
+
+    /// Lets real playback actually run. `settle` waits for the playheads to
+    /// *stop*, which is the opposite of what a drift measurement needs.
+    private func pump(_ seconds: TimeInterval) {
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    /// Both items ready, which every paired start requires: `playSynced` and
+    /// `SlowMotionHold`'s paired start both reach
+    /// `AVPlayer.setRate(_:time:atHostTime:)`, which raises unless the item is
+    /// `.readyToPlay`.
+    private func waitUntilReadyToPlay(_ model: ComparisonModel) {
+        waitUntil("both items must reach .readyToPlay before a paired start") {
+            model.leftPlayer.currentItem?.status == .readyToPlay
+                && model.rightPlayer.currentItem?.status == .readyToPlay
+        }
     }
 
 }

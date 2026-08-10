@@ -97,7 +97,14 @@ final class AppKitInputSource: PlaybackInputSource {
     /// on an instance that asked for it.
     ///
     /// The name is still exact: what it exempts is the sorting window's ±5s
-    /// seeks, and those are what a bare arrow now produces.
+    /// seeks, and those are what a bare *unmodified* arrow now produces.
+    ///
+    /// Unmodified is load-bearing. Matching on the keyCode alone would let a ⌘
+    /// chord clear the field-editor guard, reach the switch and be consumed —
+    /// so ⌘← in the sorting window's athlete field, which the operator pressed
+    /// to jump to the start of the line, would do nothing at all. The sorting
+    /// window binds no chord and `SortingModel` drops the slow-motion intents,
+    /// so there is nothing to be gained by admitting them either.
     ///
     /// Both event types bypass, but only the key-down produces anything now
     /// that a bare arrow seeks instead of arming a hold: nothing sets
@@ -108,7 +115,9 @@ final class AppKitInputSource: PlaybackInputSource {
     /// the old press/release pairing into this predicate; it was retired with
     /// the bare-arrow hold.
     private func bypassesTextFieldFocus(_ event: NSEvent) -> Bool {
-        arrowsBypassTextFieldFocus && (event.keyCode == 123 || event.keyCode == 124)
+        arrowsBypassTextFieldFocus
+            && (event.keyCode == 123 || event.keyCode == 124)
+            && event.modifierFlags.intersection([.command, .control, .option]).isEmpty
     }
 
     private func cancelHold() {
@@ -140,6 +149,13 @@ final class AppKitInputSource: PlaybackInputSource {
         // app-wide; swallowing it would leave menus and every other responder
         // believing Command is still down. This reads the event and lets it
         // through.
+        //
+        // Above the focus check on purpose. A flags change carries no keyCode
+        // this source binds, so `bypassesTextFieldFocus` can never admit one:
+        // put this below, and a hold begun before focus moved into a text field
+        // would have no way left to end — neither the arrow's key-up nor the
+        // dropped modifier would reach it. Ending a hold is not a keystroke the
+        // field can have a claim on.
         if event.type == .flagsChanged {
             if heldDirection != nil, !event.modifierFlags.contains(.command) {
                 cancelHold()

@@ -481,6 +481,29 @@ final class AppKitInputSourceTests: XCTestCase {
         }
     }
 
+    /// Regression: the bypass matched on the keyCode alone, so a ⌘ chord
+    /// cleared the field-editor guard, reached the switch and was consumed —
+    /// and ⌘← in the sorting window's athlete field, which every macOS user
+    /// presses to jump to the start of a line, did nothing at all. Before the ⌘
+    /// bindings the blanket modifier gate refused the event and the field editor
+    /// got it; this restores that.
+    func testCommandArrowsReachAFocusedTextFieldEvenOnAnOptedInSource() {
+        let window = makeWindowWithFocusedTextView()
+        let source = AppKitInputSource()
+        source.arrowsBypassTextFieldFocus = true
+        source.arrowsRepeat = true
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        for code in [UInt16(123), 124] {
+            XCTAssertFalse(
+                source.handle(key(code, modifiers: .command, windowNumber: window.windowNumber)),
+                "⌘ + keyCode \(code) belongs to the field editor, not to slow motion"
+            )
+        }
+        XCTAssertTrue(captured.isEmpty, "no hold may start inside a text field: \(captured)")
+    }
+
     func testControlAndOptionAreStillRefusedOnTheArrows() {
         XCTAssertTrue(capture([key(124, modifiers: .control)]).isEmpty)
         XCTAssertTrue(capture([key(124, modifiers: .option)]).isEmpty)
