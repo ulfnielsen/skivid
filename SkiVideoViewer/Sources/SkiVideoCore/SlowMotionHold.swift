@@ -55,9 +55,25 @@ final class SlowMotionHold {
     /// A second `begin` while a hold is active is ignored. Auto-repeat delivers
     /// several key-downs for one physical press, and overwriting
     /// `ratesBeforeHold` with the slow rate would make `end()` restore 0.35×
-    /// instead of the rate the operator was watching at.
-    func begin(_ direction: ScrubDirection, players: [AVPlayer]) {
-        guard !isActive, !players.isEmpty else { return }
+    /// instead of the rate the operator was watching at. An empty set is
+    /// refused for the plainer reason that there is nothing to drive.
+    ///
+    /// - Returns: whether a hold actually started. Both models write a status
+    ///   line for the hold, and a status written after a refusal describes a
+    ///   hold that is not running — the cross-direction press (⌘→ held, then ⌘←)
+    ///   announcing "Slow backward" over clips still running forward. They used
+    ///   to re-derive the refusal themselves, from a *different* pair of
+    ///   conditions each, and the copies drifted: the comparison window tested
+    ///   only `isActive` and so announced a hold over an empty window. The rule
+    ///   now lives here, where the refusal happens, and reaches the callers as
+    ///   this value.
+    ///
+    /// Deliberately **not** `@discardableResult`. Ignoring this is exactly the
+    /// mistake that produced the drift, so a caller that forgets to check must
+    /// get a compiler warning; `_ =` at the call sites that genuinely do not
+    /// care (the unit tests) is the cost, and it is the cheaper half.
+    func begin(_ direction: ScrubDirection, players: [AVPlayer]) -> Bool {
+        guard !isActive, !players.isEmpty else { return false }
         self.players = players
         ratesBeforeHold = players.map(\.rate)
 
@@ -90,6 +106,7 @@ final class SlowMotionHold {
                 RunLoop.main.add(timer, forMode: .common)
             }
         }
+        return true
     }
 
     /// Idempotent: the key-up is not the only caller. App-resign, window close

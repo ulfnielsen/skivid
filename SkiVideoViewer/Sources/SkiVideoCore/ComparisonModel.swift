@@ -368,17 +368,47 @@ public final class ComparisonModel: ObservableObject {
     /// pair, where a per-side hold drives both, matching `playIndividual`.
     /// Running one clip alone would desync exactly what was just aligned.
     ///
-    /// `!hold.isActive` is the caller's half of a refusal `hold.begin` makes
-    /// silently, and it has to be tested here because the status line is
-    /// written here: a refused `begin` must not word the status after a hold it
-    /// did not start. It matters for the cross-direction press — ⌘→ held, then
-    /// ⌘← without releasing — where the clips keep running forward and an
-    /// unguarded write would announce "Slow backward" over them. Guarding
-    /// before `noteTouched` too: a refused hold expresses no preference for a
-    /// side. `players` is never empty here, so this is `begin`'s only reachable
-    /// refusal. `ViewerModel.handle` guards its own case the same way.
+    /// `hold.begin`'s answer is the refusal rule, read rather than re-derived.
+    /// It has to be tested here because the status line is written here: a
+    /// refused `begin` must not word the status after a hold it did not start.
+    /// It matters for the cross-direction press — ⌘→ held, then ⌘← without
+    /// releasing — where the clips keep running forward and an unguarded write
+    /// would announce "Slow backward" over them. Nothing else is touched
+    /// either: a refused hold starts no playback, so it takes no generation,
+    /// and it expresses no preference for a side, so it calls no `noteTouched`.
+    /// `ViewerModel.handle` reads the same answer. Its extra `currentVideo !=
+    /// nil` is that screen's way of saying what the item filter below says
+    /// here — nothing loaded, nothing to hold — and stays local to it because
+    /// "which clip is selected" is not a fact this model has.
+    ///
+    /// This used to be a local `!hold.isActive`, which was `begin`'s rule
+    /// written out a second time and *missing its other half* — an empty
+    /// comparison window answered ⌘→ with "Slow forward", a hold marked active
+    /// over item-less players, and on the reverse fallback an 80ms timer seeking
+    /// nothing. Probe-confirmed before the change; the identical press in the
+    /// viewer was refused silently by its `currentVideo != nil`.
+    ///
+    /// The item filter is what makes `begin`'s `players.isEmpty` half reachable
+    /// at all: `leftPlayer`/`rightPlayer` are `let` properties that always
+    /// exist, so an unfiltered set is never empty however empty the window is.
+    /// Filtering rather than testing `hasTwoVideos` is deliberate — a window
+    /// with one clip loaded is a legitimate place to hold, which is most of what
+    /// aligning *is*, and `hasTwoVideos` would refuse it. What is never
+    /// legitimate is driving a player with nothing in it.
     private func beginSlowMotion(_ direction: ScrubDirection) {
-        guard !hold.isActive else { return }
+        let touchedSide: ComparisonSide?
+        let players: [AVPlayer]
+        switch target {
+        case .both:
+            touchedSide = nil
+            players = [leftPlayer, rightPlayer]
+        case .left, .right:
+            let side: ComparisonSide = target == .left ? .left : .right
+            touchedSide = side
+            players = isSynced ? [leftPlayer, rightPlayer] : [player(for: side)]
+        }
+        guard hold.begin(direction, players: players.filter { $0.currentItem != nil })
+        else { return }
         // A hold *is* a playback start, so it takes the generation with it.
         // `playSynced` arms a recovery closure 0.35s out, guarded on this
         // counter and on "either side is stopped": press Space and then ⌘←
@@ -386,19 +416,13 @@ public final class ComparisonModel: ObservableObject {
         // which is precisely what that closure is looking for — it would then
         // play both at 1× over the running hold and rewrite the status to
         // "Playing together". Every other playback-starting path in this file
-        // bumps the counter for the same reason.
+        // bumps the counter for the same reason. Safe to bump *after* `begin`:
+        // that closure is dispatched, so it cannot run between these two lines.
         playbackGeneration += 1
-        let players: [AVPlayer]
-        switch target {
-        case .both:
-            players = [leftPlayer, rightPlayer]
-        case .left, .right:
-            let side: ComparisonSide = target == .left ? .left : .right
-            noteTouched(side)
-            players = isSynced ? [leftPlayer, rightPlayer] : [player(for: side)]
+        if let touchedSide {
+            noteTouched(touchedSide)
         }
         statusBeforeHold = status
-        hold.begin(direction, players: players)
         status = direction == .forward ? "Slow forward" : "Slow backward"
     }
 
@@ -416,8 +440,9 @@ public final class ComparisonModel: ObservableObject {
 
     /// The single hold teardown, mirroring `ViewerModel.endSlowMotion()`.
     /// Everything that ends a hold goes through here — the key-up, both
-    /// transport entry points, `pauseBoth`, `close` — so the status rule lives
-    /// in one place rather than at each of them.
+    /// transport entry points, `pauseBoth`, `close`, and every clip change
+    /// (`load`, `chooseVideo`) — so the status rule lives in one place rather
+    /// than at each of them.
     private func endSlowMotion() {
         guard hold.isActive else { return }
         hold.end()
@@ -428,6 +453,15 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func chooseVideo(side: ComparisonSide) async {
+        // Before the panel, not just in `load`. The open panel takes the key
+        // window, so the arrow's key-up is delivered to it and never reaches
+        // `AppKitInputSource` — a hold running when "Choose File…" is picked
+        // would otherwise sit live behind the panel, slow-playing a clip
+        // nobody can see. And on Cancel the `guard` below returns without ever
+        // reaching `load`, so `load`'s teardown could not cover this: the hold
+        // would stay active for the life of the window and refuse every later
+        // ⌘+Arrow.
+        endSlowMotion()
         guard let folderPicker else { return }
         let title = side == .left
             ? "Choose left comparison video"
@@ -437,6 +471,19 @@ public final class ComparisonModel: ObservableObject {
     }
 
     func load(_ url: URL, side: ComparisonSide) {
+        // A hold is bound to the clip it started on, so a new clip ends it —
+        // the same rule every library change follows in `ViewerModel`. Without
+        // this the hold survives the load and the eventual key-up restores the
+        // *pre-hold rate onto the new item*: pick a new left clip while holding
+        // ⌘→ over a clip playing at 1×, release, and the freshly loaded clip
+        // starts playing at 1× under a status line reading "Align both videos,
+        // then set the sync points." Probe-confirmed — `isHolding=true` across
+        // the load, `rate=1.0` after the key-up.
+        //
+        // `clearSync` below is not a substitute. It only pauses when the pair
+        // was synced, so the aligning case — which is where a clip gets swapped
+        // — reaches nothing that ends a hold.
+        endSlowMotion()
         let player = player(for: side)
         // Not `noteTouched`: dropping a clip into a pane names that side
         // whatever the target is, and it must be recorded before `clearSync`

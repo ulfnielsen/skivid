@@ -438,6 +438,58 @@ final class ComparisonModelTests: XCTestCase {
                        "the stopped clips must not sit under \"Slow forward\"")
     }
 
+    /// Swapping a clip mid-hold. The clip is **playing** at 1× before the hold
+    /// for the same reason `testClosingEndsAnActiveHold` plays: `load` pauses
+    /// the player itself, so from a standing start every ordering leaves 0 and
+    /// the assertion would pin nothing. With a pre-hold rate of 1× the two
+    /// separate — a hold carried across the load restores that 1× onto the clip
+    /// that has just arrived, so the operator picks a new clip and it starts
+    /// playing by itself under "Align both videos, then set the sync points."
+    ///
+    /// Aligning, not synced, on purpose: `clearSync` only pauses when the pair
+    /// was locked, so the synced path escapes this by accident and proves
+    /// nothing about `load`.
+    func testLoadingANewClipEndsAnActiveHold() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+        model.leftPlayer.playImmediately(atRate: 1)
+        XCTAssertEqual(model.leftPlayer.rate, 1, "premise: the clip must be playing before the hold")
+
+        input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001, "premise: the hold must be running")
+        model.load(try makeVideoFile("another-left.mp4"), side: .left)
+        XCTAssertFalse(model.isHoldingSlowMotion, "the hold must not survive the clip it was started on")
+
+        input.emit(.slowMotionEnded)
+
+        XCTAssertEqual(model.leftPlayer.rate, 0,
+                       "the release must not start the clip that just replaced the held one")
+    }
+
+    /// An empty window. `SlowMotionHold.begin` is the only copy of the refusal
+    /// rule now, and this is the half the comparison window used to be missing:
+    /// ⌘→ with nothing loaded wrote "Slow forward", marked a hold active over
+    /// item-less players and, on the reverse fallback, spun an 80ms timer
+    /// seeking nothing.
+    ///
+    /// The status is the discriminating assertion. `leftPlayer.rate` is 0 either
+    /// way — a player with no item cannot play whatever it is asked — so a test
+    /// written against rates alone passes with the refusal deleted.
+    func testAHoldRefusedForLackOfPlayersWritesNoStatus() {
+        let input = FakeInputSource()
+        let model = ComparisonModel(input: input)
+        defer { model.close() }
+        let before = model.status
+
+        input.emit(.slowMotionBegan(.forward))
+
+        XCTAssertEqual(model.status, before, "an empty window must not announce a hold")
+        XCTAssertFalse(model.isHoldingSlowMotion,
+                       "a hold over players with no items is not a hold")
+    }
+
     // MARK: - File selection
 
     func testChooseVideoLoadsWhatThePickerReturnsIntoTheRequestedSide() async throws {

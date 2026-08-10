@@ -64,7 +64,7 @@ final class SlowMotionHoldTests: XCTestCase {
         let player = try makeRealPlayer()
         let hold = SlowMotionHold()
 
-        hold.begin(.forward, players: [player])
+        _ = hold.begin(.forward, players: [player])
 
         XCTAssertTrue(hold.isActive)
         XCTAssertEqual(player.rate, 0.35, accuracy: 0.001)
@@ -75,7 +75,7 @@ final class SlowMotionHoldTests: XCTestCase {
         let right = try makeRealPlayer()
         let hold = SlowMotionHold()
 
-        hold.begin(.forward, players: [left, right])
+        _ = hold.begin(.forward, players: [left, right])
 
         XCTAssertEqual(left.rate, 0.35, accuracy: 0.001)
         XCTAssertEqual(right.rate, 0.35, accuracy: 0.001)
@@ -88,7 +88,7 @@ final class SlowMotionHoldTests: XCTestCase {
         }
         let hold = SlowMotionHold()
 
-        hold.begin(.backward, players: [player])
+        _ = hold.begin(.backward, players: [player])
 
         XCTAssertEqual(player.rate, -0.35, accuracy: 0.001)
     }
@@ -102,7 +102,7 @@ final class SlowMotionHoldTests: XCTestCase {
                           "premise: this item must not be reversible")
         let hold = SlowMotionHold()
 
-        hold.begin(.backward, players: [player])
+        _ = hold.begin(.backward, players: [player])
 
         XCTAssertEqual(player.rate, 0, "the fallback must leave the player paused")
         XCTAssertTrue(hold.isActive)
@@ -116,7 +116,7 @@ final class SlowMotionHoldTests: XCTestCase {
         player.playImmediately(atRate: 1)
         let hold = SlowMotionHold()
 
-        hold.begin(.forward, players: [player])
+        _ = hold.begin(.forward, players: [player])
         XCTAssertEqual(player.rate, 0.35, accuracy: 0.001)
         hold.end()
 
@@ -128,7 +128,7 @@ final class SlowMotionHoldTests: XCTestCase {
         let player = try makeRealPlayer()
         let hold = SlowMotionHold()
 
-        hold.begin(.forward, players: [player])
+        _ = hold.begin(.forward, players: [player])
         hold.end()
 
         XCTAssertEqual(player.rate, 0, "a player that was paused must not start playing")
@@ -142,7 +142,7 @@ final class SlowMotionHoldTests: XCTestCase {
         let hold = SlowMotionHold()
 
         hold.end()
-        hold.begin(.forward, players: [player])
+        _ = hold.begin(.forward, players: [player])
         hold.end()
         hold.end()
 
@@ -164,7 +164,7 @@ final class SlowMotionHoldTests: XCTestCase {
         var timer: Timer?
         autoreleasepool {
             let hold = SlowMotionHold()
-            hold.begin(.backward, players: [player])
+            _ = hold.begin(.backward, players: [player])
             timer = hold.reverseTimer
             XCTAssertEqual(timer?.isValid, true, "premise: the fallback timer must be scheduled")
         }
@@ -175,18 +175,35 @@ final class SlowMotionHoldTests: XCTestCase {
     /// Auto-repeat delivers more than one begin for one physical press. A
     /// second begin must not overwrite the captured rate, or `end()` would
     /// restore 0.35 instead of the rate the operator was watching at.
+    ///
+    /// The returned `false` is the same refusal, said out loud: both models
+    /// word a status line for the hold and must not word one after a begin that
+    /// did nothing.
     func testASecondBeginIsIgnoredWhileAHoldIsActive() throws {
         let player = try makeRealPlayer()
         player.playImmediately(atRate: 1)
         let hold = SlowMotionHold()
 
-        hold.begin(.forward, players: [player])
-        hold.begin(.backward, players: [player])
+        XCTAssertTrue(hold.begin(.forward, players: [player]))
+        XCTAssertFalse(hold.begin(.backward, players: [player]),
+                       "a refused begin must say so")
         XCTAssertEqual(player.rate, 0.35, accuracy: 0.001,
                        "the second begin must not change direction")
         hold.end()
 
         XCTAssertEqual(player.rate, 1, accuracy: 0.001,
                        "the captured rate must survive the second begin")
+    }
+
+    /// The other refusal, and the one the comparison window relies on: a screen
+    /// with nothing loaded hands over no players, and a hold over no players is
+    /// not a hold. It must report that rather than mark itself active.
+    func testBeginRefusesAnEmptySetOfPlayers() {
+        let hold = SlowMotionHold()
+
+        XCTAssertFalse(hold.begin(.forward, players: []))
+
+        XCTAssertFalse(hold.isActive, "an empty begin must not leave a hold running")
+        XCTAssertNil(hold.reverseTimer)
     }
 }

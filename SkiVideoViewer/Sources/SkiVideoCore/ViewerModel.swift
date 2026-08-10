@@ -103,18 +103,26 @@ public final class ViewerModel: ObservableObject {
             hold.end()
             performArrowTap(direction)
         case let .slowMotionBegan(direction):
-            // `!hold.isActive` is the caller's half of a refusal `hold.begin`
-            // makes silently, and it has to be tested here because the status
-            // line is written here: a refused `begin` must not word the status
-            // after a hold it did not start. The old `beginArrow` got this from
-            // its `heldDirection == nil` guard, which returned before touching
-            // `status`. It matters for the cross-direction press — ⌘→ held, then
+            // Two different preconditions, and neither subsumes the other.
+            //
+            // `currentVideo != nil` is the viewer's own: with no clip selected
+            // there is nothing to scrub, and the player still exists, so
+            // `begin` would happily hold an item-less player. This is the only
+            // copy of that rule.
+            //
+            // `hold.begin`'s answer is the shared one, and it is read rather
+            // than re-derived on purpose: the status line is written here, so a
+            // refused `begin` must not word the status after a hold it did not
+            // start. It matters for the cross-direction press — ⌘→ held, then
             // ⌘← without releasing — where the player keeps running forward and
-            // an unguarded write would announce "Slow backward" over it.
-            // `players` is never empty here, so this is `begin`'s only reachable
-            // refusal.
-            guard currentVideo != nil, !hold.isActive else { return }
-            hold.begin(direction, players: [player])
+            // an unguarded write would announce "Slow backward" over it. This
+            // used to be a local `!hold.isActive`, which was the same rule
+            // written out a second time; `ComparisonModel` wrote it out a third
+            // time and got it wrong. Short-circuiting matters: `begin` is not
+            // reached, and so cannot start a hold, when there is no clip.
+            guard currentVideo != nil,
+                  hold.begin(direction, players: [player])
+            else { return }
             status = direction == .forward ? "Slow forward" : "Slow backward"
         case .slowMotionEnded:
             endSlowMotion()
