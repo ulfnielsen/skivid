@@ -9,9 +9,9 @@ import AVFoundation
 /// differently, and a shared unit that owned the wording would have to know
 /// which model it was serving.
 ///
-/// This is `ViewerModel`'s former `startHold`/`resumeHeldPlayback`/`endArrow`
-/// machinery, lifted so `ComparisonModel` can have the same behaviour rather
-/// than a second, subtly different copy of it.
+/// This is `ViewerModel`'s former arrow-hold machinery, lifted so
+/// `ComparisonModel` can have the same behaviour rather than a second, subtly
+/// different copy of it.
 @MainActor
 final class SlowMotionHold {
     /// Matches the rate the viewer's long-press has always used.

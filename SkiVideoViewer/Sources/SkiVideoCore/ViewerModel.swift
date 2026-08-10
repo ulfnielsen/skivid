@@ -31,9 +31,9 @@ public final class ViewerModel: ObservableObject {
     @Published public private(set) var duration = 0.0
     /// Whether the player is actually moving. Derived from the player by KVO —
     /// see `startObservingRate` — not written by hand at each call site, because
-    /// there are six of those (`togglePlayback`, `applyTransport`'s `.slow`,
-    /// `startHold`/`resumeHeldPlayback`, `pauseHeldPlayback`, `endArrow` and
-    /// `loadCurrentVideo`) and a seventh is one refactor away.
+    /// there are several of those (`togglePlayback`, `applyTransport`'s `.slow`,
+    /// `SlowMotionHold.begin`/`.end` and `loadCurrentVideo`) and another is one
+    /// refactor away.
     ///
     /// `ContentView` uses it to give up the athlete-search field's focus once
     /// the operator starts watching, so Space reaches the transport instead of
@@ -44,12 +44,7 @@ public final class ViewerModel: ObservableObject {
 
     private var activeAthleteID: String?
     private var hasStarted = false
-    private var heldDirection: ScrubDirection?
-    private var reverseTimer: Timer?
-    private var holdStarted = false
-    private var holdPausedManually = false
-    private var wasPlayingBeforeHold = false
-    private var rateBeforeHold: Float = 1
+    private let hold = SlowMotionHold()
     private var lastTapDirection: ScrubDirection?
     private var lastTapTime = Date.distantPast
     private var driveMediaByURL: [URL: DriveMedia] = [:]
@@ -105,12 +100,14 @@ public final class ViewerModel: ObservableObject {
         case let .athlete(step):
             changeAthlete(by: step.offset)
         case let .seek(direction):
-            endArrow(performTap: false)
+            hold.end()
             performArrowTap(direction)
         case let .slowMotionBegan(direction):
-            beginArrow(direction)
+            guard currentVideo != nil else { return }
+            hold.begin(direction, players: [player])
+            status = direction == .forward ? "Slow forward" : "Slow backward"
         case .slowMotionEnded:
-            endArrow(performTap: false)
+            endSlowMotion()
         case .focusAthleteSearch, .openFolder:
             // Handled by the view layer, which owns focus and the picker.
             break
@@ -189,7 +186,7 @@ public final class ViewerModel: ObservableObject {
     public func setKeyboardControlsEnabled(_ enabled: Bool) {
         input.setEnabled(enabled)
         if !enabled {
-            endArrow(performTap: false)
+            endSlowMotion()
         }
     }
 
@@ -227,7 +224,7 @@ public final class ViewerModel: ObservableObject {
                 status = "Scanning Shared Drive…"
                 let library = try await drive.scanSharedDrive(folderID: folderID)
                 guard !library.athletes.isEmpty else { throw ViewerError.noVideos }
-                endArrow(performTap: false)
+                endSlowMotion()
                 player.pause()
                 directory = nil
                 athletes = library.athletes
@@ -250,7 +247,7 @@ public final class ViewerModel: ObservableObject {
         do {
             let scannedAthletes = try VideoLibrary.scan(url)
             guard !scannedAthletes.isEmpty else { throw ViewerError.noVideos }
-            endArrow(performTap: false)
+            endSlowMotion()
             player.pause()
             directory = url
             athletes = scannedAthletes
@@ -271,7 +268,7 @@ public final class ViewerModel: ObservableObject {
         else {
             return
         }
-        endArrow(performTap: false)
+        endSlowMotion()
         activeAthleteID = id
         selectedAthleteID = id
         videoIndex = 0
@@ -283,7 +280,7 @@ public final class ViewerModel: ObservableObject {
         guard let athlete = currentAthlete, !athlete.videos.isEmpty else {
             return false
         }
-        endArrow(performTap: false)
+        endSlowMotion()
         videoIndex = (videoIndex + offset + athlete.videos.count) % athlete.videos.count
         loadCurrentVideo()
         return true
@@ -308,16 +305,7 @@ public final class ViewerModel: ObservableObject {
 
     public func togglePlayback() {
         guard currentVideo != nil else { return }
-        if let heldDirection, holdStarted {
-            if player.rate == 0 {
-                holdPausedManually = false
-                resumeHeldPlayback(heldDirection)
-            } else {
-                holdPausedManually = true
-                pauseHeldPlayback(heldDirection)
-            }
-            return
-        }
+        endSlowMotion()
         if player.rate == 0 {
             player.playImmediately(atRate: 1)
             status = "Playing"
@@ -331,21 +319,22 @@ public final class ViewerModel: ObservableObject {
     /// `ComparisonModel.applyTransport`. One shape across both screens means
     /// one shared `TransportControls` view can drive either.
     public func applyTransport(_ action: TransportAction) {
-        // Any in-flight arrow hold ends first. Without this the hold's state
-        // survives the press — `heldDirection` stays set, and `beginArrow`
-        // refuses every later hold.
-        endArrow(performTap: false)
+        // Any in-flight slow-motion hold ends first. Without this the hold's
+        // state survives the press — `SlowMotionHold.isActive` stays true, and
+        // its `begin` refuses every later hold.
+        endSlowMotion()
         switch action {
         case .back5: seek(seconds: -5)
         case .back1: seek(seconds: -1)
         case .forward1: seek(seconds: 1)
         case .forward5: seek(seconds: 5)
         case .playPause:
-            // `endArrow` above already cleared `heldDirection`, so unlike the
-            // Space key — which reaches `togglePlayback` directly via
-            // `handle(.togglePlayback)` and so can resume/pause a live hold —
-            // this button always takes the plain play/pause branch. Intentional:
-            // the transport's Play/Pause exits a hold rather than steering it.
+            // `togglePlayback` ends the hold itself, so the `endSlowMotion`
+            // above is a no-op by the time this branch runs. Kept there anyway:
+            // it is what makes the *seeking* actions cancel a hold, and this
+            // button behaving the same as the Space key — which reaches
+            // `togglePlayback` directly via `handle(.togglePlayback)` — is the
+            // point. Play/Pause exits a hold rather than steering it.
             togglePlayback()
         case .slow:
             guard currentVideo != nil else { return }
@@ -358,7 +347,7 @@ public final class ViewerModel: ObservableObject {
     /// coalesces instead of queueing one seek per pixel.
     public func scrub(to seconds: Double) {
         guard player.currentItem != nil else { return }
-        endArrow(performTap: false)
+        endSlowMotion()
         player.currentItem?.cancelPendingSeeks()
         var target = max(0, seconds)
         if duration > 0 { target = min(target, duration) }
@@ -370,34 +359,13 @@ public final class ViewerModel: ObservableObject {
         )
     }
 
-    func beginArrow(_ direction: ScrubDirection) {
-        guard currentVideo != nil, heldDirection == nil else { return }
-        heldDirection = direction
-        holdStarted = false
-        startHold()
-    }
-
-    func endArrow(performTap: Bool = true) {
-        guard let direction = heldDirection else { return }
-        reverseTimer?.invalidate()
-        reverseTimer = nil
-        heldDirection = nil
-
-        if holdStarted {
-            player.pause()
-            if holdPausedManually {
-                status = "Paused"
-            } else if wasPlayingBeforeHold {
-                player.playImmediately(atRate: rateBeforeHold)
-                status = "Playing"
-            } else {
-                status = "Paused"
-            }
-        } else if performTap {
-            performArrowTap(direction)
-        }
-        holdStarted = false
-        holdPausedManually = false
+    /// The single teardown. Every library change and every transport action
+    /// routes here, because a hold left running into a clip it was not started
+    /// on is the defect this replaces.
+    private func endSlowMotion() {
+        guard hold.isActive else { return }
+        hold.end()
+        status = player.rate == 0 ? "Paused" : "Playing"
     }
 
     /// 0.1s matches the comparison screen's interval: fast enough that the
@@ -420,7 +388,7 @@ public final class ViewerModel: ObservableObject {
     /// `isPlaying == true` with the picture frozen, and the operator's focus
     /// would be taken away for playback that never started. `rate != 0` is also
     /// the same predicate the model already branches on in `togglePlayback` and
-    /// `startHold`, so the published flag cannot disagree with the decisions
+    /// `endSlowMotion`, so the published flag cannot disagree with the decisions
     /// made from it. Reverse playback (`atRate: -0.35`) counts as playing, as it
     /// should; the reverse *fallback*, which pauses the player and steps it with
     /// a timer, does not — the player really is stopped there.
@@ -495,47 +463,6 @@ public final class ViewerModel: ObservableObject {
         status = "\(direction == .forward ? "Forward" : "Back") \(isDoubleTap ? 5 : 1) seconds"
         lastTapDirection = isDoubleTap ? nil : direction
         lastTapTime = isDoubleTap ? .distantPast : timestamp
-    }
-
-    private func startHold() {
-        guard let direction = heldDirection else { return }
-        holdStarted = true
-        holdPausedManually = false
-        wasPlayingBeforeHold = player.rate != 0
-        rateBeforeHold = player.rate == 0 ? 1 : abs(player.rate)
-
-        resumeHeldPlayback(direction)
-    }
-
-    private func resumeHeldPlayback(_ direction: ScrubDirection) {
-        switch direction {
-        case .forward:
-            player.playImmediately(atRate: 0.35)
-            status = "Slow forward"
-        case .backward:
-            if player.currentItem?.canPlayReverse == true {
-                player.playImmediately(atRate: -0.35)
-            } else {
-                player.pause()
-                let timer = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
-                    Task { @MainActor in
-                        self?.seek(seconds: -0.08)
-                    }
-                }
-                reverseTimer = timer
-                RunLoop.main.add(timer, forMode: .common)
-            }
-            status = "Slow backward"
-        }
-    }
-
-    private func pauseHeldPlayback(_ direction: ScrubDirection) {
-        if direction == .backward {
-            reverseTimer?.invalidate()
-            reverseTimer = nil
-        }
-        player.pause()
-        status = "Slow \(direction == .forward ? "forward" : "backward") paused"
     }
 
     private func normalizedName(_ name: String) -> String {

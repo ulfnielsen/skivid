@@ -54,9 +54,9 @@ final class AppKitInputSource: PlaybackInputSource {
     var arrowsRepeat = false
 
     /// Which arrow key is physically held for slow motion. Deliberately *not*
-    /// the same fact as `ViewerModel.heldDirection`, which is hold state: the
-    /// model clears its copy from `endArrow(performTap:false)` whenever the
-    /// library changes (`openDirectory`, `selectAthlete`, `changeVideo`,
+    /// the same fact as the model's `SlowMotionHold`, which is hold state: the
+    /// model tears its hold down from `endSlowMotion()` whenever the library
+    /// changes (`openDirectory`, `selectAthlete`, `changeVideo`,
     /// `connectGoogleDrive`) while the key is still held, and this copy must
     /// survive that so the eventual key-up is still consumed rather than
     /// leaking to the app.

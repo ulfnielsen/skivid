@@ -101,6 +101,34 @@ final class ViewerModelIntentTests: XCTestCase {
         XCTAssertNil(model.lastSeekOffset, "releasing a hold must not seek")
     }
 
+    /// The hold is a held key now, so Space during one is an ordinary
+    /// play/pause rather than a steering control for the hold. Pinning it
+    /// because the old model had a dedicated branch in `togglePlayback` that
+    /// paused and resumed the hold in place, and that branch is gone.
+    func testSpaceDuringAHoldIsAnOrdinaryPlayPause() throws {
+        let (model, input, _) = try makeModel()
+
+        input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.status, "Slow forward")
+
+        input.emit(.togglePlayback)
+
+        XCTAssertNotEqual(model.status, "Slow forward paused",
+                          "the hold's own pause branch must be gone")
+    }
+
+    /// Every library change used to clear the hold as part of its teardown.
+    /// The replacement (`endSlowMotion`) must keep doing it, or a hold survives
+    /// into a clip it was never started on.
+    func testChangingClipEndsAnActiveHold() throws {
+        let (model, input, _) = try makeModel()
+
+        input.emit(.slowMotionBegan(.forward))
+        input.emit(.clip(.next))
+
+        XCTAssertEqual(model.player.rate, 0, "the hold must not survive a clip change")
+    }
+
     /// Both directions matter. `changeVideo(by:)` wraps with
     /// `(videoIndex + offset + count) % count`, and the `+ count` term exists
     /// only so Swift's `%` behaves for a negative offset. Without a

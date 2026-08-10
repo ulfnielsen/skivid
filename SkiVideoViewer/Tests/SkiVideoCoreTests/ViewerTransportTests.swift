@@ -87,34 +87,32 @@ final class ViewerTransportTests: XCTestCase {
         XCTAssertEqual(model.player.rate, 0, "the second press must pause")
     }
 
-    /// A transport press while an arrow hold is in flight must cancel the hold.
-    /// Without this the hold's state survives the press: `heldDirection` stays
-    /// set, so `beginArrow` refuses the next hold entirely — the same class of
-    /// stranded-state defect that the `heldDirection == nil` guard exists for.
+    /// A transport press while a slow-motion hold is in flight must cancel the
+    /// hold. Without this the hold's state survives the press:
+    /// `SlowMotionHold.isActive` stays true, so its `begin` refuses the next
+    /// hold entirely — the same class of stranded-state defect that the
+    /// `guard !isActive` there exists for.
     func testATransportPressCancelsAnArrowHold() throws {
         let model = try makeLoadedModel(seconds: 20)
         waitUntil("the duration must be published") { model.duration > 0 }
-        model.beginArrow(.forward)
+        model.handle(.slowMotionBegan(.forward))
+        waitUntil("precondition: the hold must be running before the transport press") {
+            abs(model.player.rate - 0.35) < 0.01
+        }
         model.applyTransport(.forward5)
         settle(model)
 
-        // The first hold must not merely be delayed — it must not survive at
-        // all. Without `endArrow` in `applyTransport`, this *first*,
-        // uncancelled hold starts on its own once `holdThreshold` elapses, with
-        // no second `beginArrow` involved: the user-visible bug is a fifth of a
-        // second of unrequested slow-forward playback right after pressing a
-        // transport button. Wait well past `holdThreshold` and check the rate
-        // is still 0 *before* the second `beginArrow`, so this failure mode
-        // cannot hide behind the assertion below.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        // The hold must be cancelled outright, not left running. Without
+        // `endSlowMotion` in `applyTransport` the player keeps creeping
+        // forward at 0.35 after the press, and the hold's state also strands
+        // `SlowMotionHold.isActive`, so `begin` refuses every later hold.
         XCTAssertEqual(model.player.rate, 0, accuracy: 0.01,
-                       "a transport press must cancel the arrow hold outright, not merely delay it")
+                       "a transport press must cancel the hold, not leave it running")
 
         // Assert on an effect the *second* hold produces, not on
         // `lastSeekOffset`: `applyTransport(.forward5)` already sets that, so an
         // assertion on it would pass whether or not the hold was cancelled.
-        // A hold that starts drives the rate to 0.35 after `holdThreshold`.
-        model.beginArrow(.forward)
+        model.handle(.slowMotionBegan(.forward))
         waitUntil("a hold after a transport press must be accepted and start") {
             abs(model.player.rate - 0.35) < 0.01
         }
@@ -183,7 +181,8 @@ final class ViewerTransportTests: XCTestCase {
     }
 
     /// The other public entry point. Worth its own test: `applyTransport` calls
-    /// `endArrow` before `togglePlayback`, a second place the rate can change.
+    /// `endSlowMotion` before `togglePlayback`, a second place the rate can
+    /// change.
     func testIsPlayingFollowsThePlayPauseTransport() throws {
         let model = try makeLoadedModel(seconds: 9)
         waitUntil("the duration must be published") { model.duration > 0 }
@@ -198,11 +197,11 @@ final class ViewerTransportTests: XCTestCase {
         XCTAssertEqual(model.player.rate, 0)
     }
 
-    /// The case a hand-written flag gets wrong. An arrow hold started from a
-    /// *paused* clip drives the rate to 0.35 without `togglePlayback` being
-    /// called at all — `startHold` → `resumeHeldPlayback` reaches the player
-    /// directly — and releasing it drives the rate back to 0 through
-    /// `endArrow`, again with no toggle involved. A flag set inside
+    /// The case a hand-written flag gets wrong. A slow-motion hold started from
+    /// a *paused* clip drives the rate to 0.35 without `togglePlayback` being
+    /// called at all — `SlowMotionHold.begin` reaches the player directly — and
+    /// releasing it drives the rate back to 0 through `SlowMotionHold.end()`,
+    /// again with no toggle involved. A flag set inside
     /// `togglePlayback` stays false through both, so `isPlaying` would report
     /// "paused" over half a second of visibly moving video, and the search
     /// field would keep the focus exactly when the operator started watching.
@@ -214,7 +213,7 @@ final class ViewerTransportTests: XCTestCase {
         waitUntil("the duration must be published") { model.duration > 0 }
         XCTAssertFalse(model.isPlaying, "precondition: paused, and no toggle will be called in this test")
 
-        model.beginArrow(.forward)
+        model.handle(.slowMotionBegan(.forward))
         waitUntil("precondition: the hold must actually start and drive the rate") {
             abs(model.player.rate - 0.35) < 0.01
         }
@@ -222,7 +221,7 @@ final class ViewerTransportTests: XCTestCase {
             model.isPlaying
         }
 
-        model.endArrow(performTap: false)
+        model.handle(.slowMotionEnded)
         waitUntil("precondition: releasing a hold taken from pause must stop the player") {
             model.player.rate == 0
         }
@@ -234,8 +233,9 @@ final class ViewerTransportTests: XCTestCase {
     /// The complementary leg: a hold taken *during* playback restores the
     /// previous rate on release, so `isPlaying` must be true on both sides of
     /// it and never latch false on the way through. The rate genuinely changes
-    /// three times here (1 → 0.35 → 0 → 1), the middle stop being `endArrow`'s
-    /// `player.pause()` before it restores `rateBeforeHold`.
+    /// three times here (1 → 0.35 → 0 → 1), the middle stop being
+    /// `SlowMotionHold.end()`'s `player.pause()` before it restores the
+    /// pre-hold rate.
     func testIsPlayingSurvivesAHoldTakenDuringPlayback() throws {
         let model = try makeLoadedModel(seconds: 9)
         waitUntil("the duration must be published") { model.duration > 0 }
@@ -243,12 +243,12 @@ final class ViewerTransportTests: XCTestCase {
         model.togglePlayback()
         waitUntil("precondition: playback must start") { model.player.rate == 1 }
 
-        model.beginArrow(.forward)
+        model.handle(.slowMotionBegan(.forward))
         waitUntil("precondition: the hold must take over the rate") {
             abs(model.player.rate - 0.35) < 0.01
         }
 
-        model.endArrow(performTap: false)
+        model.handle(.slowMotionEnded)
         waitUntil("precondition: releasing must restore the pre-hold rate") { model.player.rate == 1 }
         waitUntil("isPlaying must still be true once the hold hands playback back") { model.isPlaying }
 
