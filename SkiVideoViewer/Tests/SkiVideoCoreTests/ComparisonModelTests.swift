@@ -250,6 +250,107 @@ final class ComparisonModelTests: XCTestCase {
         XCTAssertEqual(model.status, statusAfterClose)
     }
 
+    // MARK: - Slow motion
+
+    func testSlowMotionRunsTheTargetedSideWhileAligning() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+
+        input.emit(.slowMotionBegan(.forward))
+
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001)
+        XCTAssertEqual(model.rightPlayer.rate, 0, "the untargeted side must stay put")
+    }
+
+    func testSlowMotionRunsBothSidesWhenBothAreTargeted() throws {
+        let input = FakeInputSource()
+        let model = try makeSyncedModel(input: input)
+        defer { model.close() }
+        model.target = .both
+
+        input.emit(.slowMotionBegan(.forward))
+
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001)
+        XCTAssertEqual(model.rightPlayer.rate, 0.35, accuracy: 0.001)
+    }
+
+    /// A per-side hold on a locked pair drives the pair, matching
+    /// `playIndividual` — running one clip alone would desync exactly what the
+    /// operator just aligned.
+    func testSlowMotionOnOneSideOfASyncedPairDrivesBoth() throws {
+        let input = FakeInputSource()
+        let model = try makeSyncedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+
+        input.emit(.slowMotionBegan(.forward))
+
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001)
+        XCTAssertEqual(model.rightPlayer.rate, 0.35, accuracy: 0.001)
+    }
+
+    func testEndingSlowMotionStopsThePlayers() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .right
+
+        input.emit(.slowMotionBegan(.forward))
+        input.emit(.slowMotionEnded)
+
+        XCTAssertEqual(model.rightPlayer.rate, 0)
+    }
+
+    /// The cross-direction press — ⌘→ held, then ⌘← without releasing it.
+    /// `SlowMotionHold.begin` refuses the second one silently, so the status
+    /// must be guarded here or it announces "Slow backward" over a clip still
+    /// running forward. Same defect the viewer's `.slowMotionBegan` case names.
+    func testARefusedSecondHoldChangesNeitherRateNorStatus() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        defer { model.close() }
+        model.target = .left
+
+        input.emit(.slowMotionBegan(.forward))
+        XCTAssertEqual(model.status, "Slow forward")
+
+        input.emit(.slowMotionBegan(.backward))
+
+        XCTAssertEqual(model.leftPlayer.rate, 0.35, accuracy: 0.001,
+                       "the running direction must not change")
+        XCTAssertEqual(model.status, "Slow forward",
+                       "a refused begin must not word the status after a hold it did not start")
+    }
+
+    func testClosingEndsAnActiveHold() throws {
+        let input = FakeInputSource()
+        let model = try makeAlignedModel(input: input)
+        model.target = .left
+
+        input.emit(.slowMotionBegan(.forward))
+        model.close()
+
+        XCTAssertEqual(model.leftPlayer.rate, 0)
+    }
+
+    /// The other teardown path. `pauseBoth` is what every seek, sync and
+    /// alignment change goes through, and a hold left running under it would
+    /// restart the clip the moment the fallback timer or the restore fired.
+    func testPausingBothEndsAnActiveHold() throws {
+        let input = FakeInputSource()
+        let model = try makeSyncedModel(input: input)
+        defer { model.close() }
+        model.target = .both
+
+        input.emit(.slowMotionBegan(.forward))
+        model.pauseBoth()
+
+        XCTAssertEqual(model.leftPlayer.rate, 0)
+        XCTAssertEqual(model.rightPlayer.rate, 0)
+    }
+
     // MARK: - File selection
 
     func testChooseVideoLoadsWhatThePickerReturnsIntoTheRequestedSide() async throws {

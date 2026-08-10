@@ -24,7 +24,11 @@ final class SlowMotionHold {
 
     private var players: [AVPlayer] = []
     private var ratesBeforeHold: [Float] = []
-    private var reverseTimer: Timer?
+    /// Readable inside the module so a test can hold the timer itself and ask
+    /// whether it survived the hold — after `deinit` there is no other way to
+    /// reach it, and "did this leak a firing timer" is exactly the question.
+    /// Writable only here.
+    private(set) var reverseTimer: Timer?
 
     /// The last target the reverse fallback asked for. Exposed so a test can
     /// prove the timer fired without racing a real seek's completion, and nil
@@ -88,6 +92,20 @@ final class SlowMotionHold {
         }
         players = []
         ratesBeforeHold = []
+    }
+
+    /// The last line of defence for the reverse fallback's timer. `end()` is
+    /// what normally invalidates it, and every teardown path calls that — but
+    /// the run loop, not this object, owns the scheduled timer, so a hold
+    /// released while the fallback is running would leave it firing every 80ms
+    /// for the rest of the session. The `[weak self]` in the block means those
+    /// firings do nothing, which is precisely why the leak would be silent.
+    ///
+    /// The players are deliberately *not* restored here: `deinit` has no
+    /// guarantee of running at a point where changing playback would make
+    /// sense, and the owning model has already torn its playback down by then.
+    deinit {
+        reverseTimer?.invalidate()
     }
 
     private func stepBack() {

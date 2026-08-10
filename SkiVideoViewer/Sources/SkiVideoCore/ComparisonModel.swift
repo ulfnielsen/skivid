@@ -205,6 +205,10 @@ public final class ComparisonModel: ObservableObject {
     private var rightDurationObserver: NSKeyValueObservation?
     private var playbackGeneration = 0
 
+    /// The ⌘+Arrow hold, shared with `ViewerModel` so the two screens scrub the
+    /// same way rather than keeping two subtly different copies of it.
+    private let hold = SlowMotionHold()
+
     /// Optional because a unit-test model needs neither. A comparison window
     /// without an input source simply has no keyboard control, and one without
     /// a folder picker cannot open the "Choose File…" panel.
@@ -313,10 +317,10 @@ public final class ComparisonModel: ObservableObject {
     /// outside the module drives it directly.
     ///
     /// The comparison window's `NSEvent` monitor bound exactly three keys —
-    /// Space, Left and Right — and acted on key-down only. Acting on
-    /// `.seek` and ignoring the slow-motion pair reproduces that: it never had
-    /// hold-to-scrub. The remaining intents were passed through to the app by
-    /// the old monitor and stay unhandled here.
+    /// Space, Left and Right — and acted on key-down only. The bare arrows
+    /// still seek, and ⌘+Arrow adds the hold-to-scrub the window never had.
+    /// The remaining intents were passed through to the app by the old monitor
+    /// and stay unhandled here.
     ///
     /// Routed through `applyTransport` so the keys and the on-screen buttons
     /// cannot disagree. They used to: these called `playSynced`/`seekSynced`
@@ -330,9 +334,42 @@ public final class ComparisonModel: ObservableObject {
             applyTransport(.back1)
         case .seek(.forward):
             applyTransport(.forward1)
+        case let .slowMotionBegan(direction):
+            beginSlowMotion(direction)
+        case .slowMotionEnded:
+            hold.end()
         default:
             break
         }
+    }
+
+    /// Which players a hold drives, by the same rule the rest of the model
+    /// follows: `both` is the pair, a side is that side — except on a locked
+    /// pair, where a per-side hold drives both, matching `playIndividual`.
+    /// Running one clip alone would desync exactly what was just aligned.
+    ///
+    /// `!hold.isActive` is the caller's half of a refusal `hold.begin` makes
+    /// silently, and it has to be tested here because the status line is
+    /// written here: a refused `begin` must not word the status after a hold it
+    /// did not start. It matters for the cross-direction press — ⌘→ held, then
+    /// ⌘← without releasing — where the clips keep running forward and an
+    /// unguarded write would announce "Slow backward" over them. Guarding
+    /// before `noteTouched` too: a refused hold expresses no preference for a
+    /// side. `players` is never empty here, so this is `begin`'s only reachable
+    /// refusal. `ViewerModel.handle` guards its own case the same way.
+    private func beginSlowMotion(_ direction: ScrubDirection) {
+        guard !hold.isActive else { return }
+        let players: [AVPlayer]
+        switch target {
+        case .both:
+            players = [leftPlayer, rightPlayer]
+        case .left, .right:
+            let side: ComparisonSide = target == .left ? .left : .right
+            noteTouched(side)
+            players = isSynced ? [leftPlayer, rightPlayer] : [player(for: side)]
+        }
+        hold.begin(direction, players: players)
+        status = direction == .forward ? "Slow forward" : "Slow backward"
     }
 
     public func chooseVideo(side: ComparisonSide) async {
@@ -668,6 +705,11 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func pauseBoth() {
+        // First, and before the pauses: `end()` restores the rate the clips
+        // were running at before the hold, so a pause that ran first would be
+        // undone by it. Every seek, sync and alignment change funnels through
+        // here, and each of them is a reason a hold must not still be running.
+        hold.end()
         playbackGeneration += 1
         leftPlayer.pause()
         rightPlayer.pause()
@@ -704,6 +746,11 @@ public final class ComparisonModel: ObservableObject {
     }
 
     public func close() {
+        // The window can be closed with ⌘+Arrow still held — the key-up would
+        // then arrive at a detached input source, or not at all — so the hold
+        // is torn down here rather than waited for. First, for the same reason
+        // as in `pauseBoth`: `end()` restores the pre-hold rate.
+        hold.end()
         leftPlayer.pause()
         rightPlayer.pause()
         if let leftTimeObserver {

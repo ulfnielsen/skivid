@@ -26,6 +26,24 @@ final class AppKitInputSourceTests: XCTestCase {
         )!
     }
 
+    private func flagsChanged(
+        modifiers: NSEvent.ModifierFlags,
+        windowNumber: Int = 0
+    ) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 55   // Left Command
+        )!
+    }
+
     /// An off-screen window whose first responder really is an `NSTextView`,
     /// which is what SwiftUI's macOS `TextField` installs as its field editor.
     /// Events built with `windowNumber: window.windowNumber` resolve back to it
@@ -112,7 +130,6 @@ final class AppKitInputSourceTests: XCTestCase {
     }
 
     func testModifiedKeysAreIgnored() {
-        // Cmd-O and Cmd-F belong to the menu, not to playback.
         XCTAssertTrue(capture([key(49, modifiers: .command)]).isEmpty)
         XCTAssertTrue(capture([key(125, modifiers: .option)]).isEmpty)
         XCTAssertTrue(capture([key(124, modifiers: .control)]).isEmpty)
@@ -322,6 +339,152 @@ final class AppKitInputSourceTests: XCTestCase {
                 "keyCode \(code) must stay one-shot under arrowsRepeat: \(captured)"
             )
         }
+    }
+
+    // MARK: - Cmd+Arrow slow motion
+
+    func testCommandArrowBeginsAndEndsSlowMotion() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        XCTAssertTrue(source.handle(key(124, modifiers: .command)))
+        XCTAssertTrue(source.handle(key(124, type: .keyUp, modifiers: .command)))
+
+        XCTAssertEqual(captured.count, 2)
+        guard captured.count == 2,
+              case let .slowMotionBegan(direction) = captured[0],
+              case .slowMotionEnded = captured[1]
+        else {
+            return XCTFail("expected a slow-motion pair, got \(captured)")
+        }
+        XCTAssertEqual(direction, .forward)
+    }
+
+    /// AppKit may withhold `keyUp` while Command is down, and an operator can
+    /// lift Command before the arrow in any case. Dropping the modifier must
+    /// end the hold on its own.
+    func testReleasingCommandEndsTheHold() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        XCTAssertTrue(source.handle(key(123, modifiers: .command)))
+        XCTAssertFalse(
+            source.handle(flagsChanged(modifiers: [])),
+            "the hold ends, but the flags change still belongs to AppKit"
+        )
+
+        XCTAssertEqual(captured.count, 2)
+        guard case .slowMotionEnded = captured[1] else {
+            return XCTFail("expected slowMotionEnded, got \(captured)")
+        }
+    }
+
+    /// And the release that follows must not end it a second time — a doubled
+    /// end would restore the pre-hold rate twice, and the second restore reads
+    /// a rate the hold itself set.
+    func testTheHoldEndsExactlyOnceWhenCommandIsReleasedFirst() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        _ = source.handle(key(123, modifiers: .command))
+        _ = source.handle(flagsChanged(modifiers: []))
+        XCTAssertFalse(
+            source.handle(key(123, type: .keyUp)),
+            "the hold is already over; this release is not ours"
+        )
+
+        XCTAssertEqual(captured.count, 2, "exactly one begin and one end: \(captured)")
+    }
+
+    func testCommandArrowRepeatsDoNotRebeginTheHold() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        _ = source.handle(key(124, modifiers: .command))
+        _ = source.handle(key(124, modifiers: .command, isARepeat: true))
+        _ = source.handle(key(124, modifiers: .command, isARepeat: true))
+
+        XCTAssertEqual(captured.count, 1, "one physical press is one hold: \(captured)")
+    }
+
+    /// `arrowsRepeat` unlocks repeats for the *bare* arrows, whose repeat means
+    /// another seek in the sorting window. A ⌘+arrow repeat is a different
+    /// thing entirely — the same physical press, still held — so the flag must
+    /// not reach it. One press is one hold on every instance.
+    func testCommandArrowRepeatsAreStillOneHoldForAnOptedInSource() {
+        let source = AppKitInputSource()
+        source.arrowsRepeat = true
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        _ = source.handle(key(123, modifiers: .command))
+        _ = source.handle(key(123, modifiers: .command, isARepeat: true))
+        _ = source.handle(key(123, modifiers: .command, isARepeat: true))
+
+        XCTAssertEqual(captured.count, 1, "arrowsRepeat must not re-begin a hold: \(captured)")
+    }
+
+    /// A second arrow pressed mid-hold must not steal the hold, or its release
+    /// ends a hold it never began and the real held arrow's release does
+    /// nothing. This is the Cmd-era replacement for the guard the bare arrows
+    /// used to need.
+    func testASecondCommandArrowMidHoldNeitherBeginsNorEnds() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        _ = source.handle(key(123, modifiers: .command))
+        XCTAssertEqual(captured.count, 1)
+
+        _ = source.handle(key(124, modifiers: .command))
+        XCTAssertEqual(captured.count, 1, "the second arrow must not begin a hold")
+
+        XCTAssertFalse(
+            source.handle(key(124, type: .keyUp, modifiers: .command)),
+            "releasing the second arrow is not ours to consume"
+        )
+        XCTAssertEqual(captured.count, 1)
+
+        _ = source.handle(key(123, type: .keyUp, modifiers: .command))
+        XCTAssertEqual(captured.count, 2)
+        guard case .slowMotionEnded = captured[1] else {
+            return XCTFail("the held arrow's release ends the hold, got \(captured)")
+        }
+    }
+
+    func testDisablingMidHoldEndsIt() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+
+        _ = source.handle(key(123, modifiers: .command))
+        source.setEnabled(false)
+
+        XCTAssertEqual(captured.count, 2)
+        guard case .slowMotionEnded = captured[1] else {
+            return XCTFail("expected a cancelling slowMotionEnded, got \(captured)")
+        }
+    }
+
+    /// Command is meaningful on the two arrows only. Cmd-O and Cmd-F belong to
+    /// the menu, and Cmd-Space to the system.
+    func testCommandIsIgnoredOnEveryOtherKey() {
+        for code in [UInt16(49), 126, 125, 116, 121] {
+            XCTAssertTrue(
+                capture([key(code, modifiers: .command)]).isEmpty,
+                "keyCode \(code) must not act under Command"
+            )
+        }
+    }
+
+    func testControlAndOptionAreStillRefusedOnTheArrows() {
+        XCTAssertTrue(capture([key(124, modifiers: .control)]).isEmpty)
+        XCTAssertTrue(capture([key(124, modifiers: .option)]).isEmpty)
+        XCTAssertTrue(capture([key(124, modifiers: [.command, .option])]).isEmpty)
     }
 
     // MARK: - Teardown

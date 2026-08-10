@@ -64,13 +64,15 @@ final class AppKitInputSource: PlaybackInputSource {
     /// Collapsing the two would mean this source querying the model, reversing
     /// the seam's dependency direction.
     ///
-    /// Nothing sets it yet: the bare arrows now seek on key-down and never
-    /// arm a hold. The ⌘ bindings that do arm one land in the next commit.
+    /// Set by ⌘+Left/⌘+Right only. A bare arrow seeks on key-down and never
+    /// arms a hold, so it leaves this nil — which is what makes its key-up fall
+    /// through the key-up switch's default instead of ending someone else's
+    /// hold.
     private var heldDirection: ScrubDirection?
 
     init() {
         monitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .keyUp]
+            matching: [.keyDown, .keyUp, .flagsChanged]
         ) { [weak self] event in
             guard let self else { return event }
             return self.handle(event) ? nil : event
@@ -94,6 +96,9 @@ final class AppKitInputSource: PlaybackInputSource {
     /// Only the two arrows the sorting window's monitor used to bind, and only
     /// on an instance that asked for it.
     ///
+    /// The name is still exact: what it exempts is the sorting window's ±5s
+    /// seeks, and those are what a bare arrow now produces.
+    ///
     /// Both event types bypass, but only the key-down produces anything now
     /// that a bare arrow seeks instead of arming a hold: nothing sets
     /// `heldDirection` for it, so its key-up falls through the key-up switch's
@@ -116,15 +121,43 @@ final class AppKitInputSource: PlaybackInputSource {
         onIntent?(intent)
     }
 
+    /// The two arrows are the only keys Command means anything on. Control and
+    /// Option are refused everywhere, and Command anywhere else belongs to the
+    /// menu (⌘O, ⌘F) or to the system.
+    private func isSlowMotionArrow(_ event: NSEvent) -> Bool {
+        (event.keyCode == 123 || event.keyCode == 124)
+            && event.modifierFlags.intersection([.command, .control, .option]) == [.command]
+    }
+
     func handle(_ event: NSEvent) -> Bool {
         guard isEnabled else { return false }
-        if event.window?.firstResponder is NSTextView, !bypassesTextFieldFocus(event) {
-            return false
-        }
-        if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+
+        // A dropped Command ends the hold on its own. AppKit may withhold
+        // `keyUp` while Command is down, and an operator can lift the modifier
+        // first regardless — either way the hold must not outlive the chord.
+        //
+        // Never consumed. A flags change is how AppKit tracks modifier state
+        // app-wide; swallowing it would leave menus and every other responder
+        // believing Command is still down. This reads the event and lets it
+        // through.
+        if event.type == .flagsChanged {
+            if heldDirection != nil, !event.modifierFlags.contains(.command) {
+                cancelHold()
+            }
             return false
         }
 
+        if event.window?.firstResponder is NSTextView, !bypassesTextFieldFocus(event) {
+            return false
+        }
+        if !isSlowMotionArrow(event),
+           !event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            return false
+        }
+
+        // Keyed off the keyCode alone, never the modifier: by the time the
+        // release arrives the operator may already have lifted Command, so the
+        // key-up carries no flag to match on.
         if event.type == .keyUp {
             switch event.keyCode {
             case 123 where heldDirection == .backward,
@@ -148,13 +181,28 @@ final class AppKitInputSource: PlaybackInputSource {
             if !event.isARepeat { emit(.athlete(.previous)) }
         case 121: // Page Down
             if !event.isARepeat { emit(.athlete(.next)) }
+        // A repeat under Command is the same physical press, so it must not
+        // re-begin the hold — `arrowsRepeat` is about the bare arrows and
+        // deliberately does not reach these two cases. A second *arrow*
+        // mid-hold must not steal it either — its release would then end a hold
+        // it never began, and the real held arrow's release would do nothing.
+        case 123 where isSlowMotionArrow(event):
+            if !event.isARepeat, heldDirection == nil {
+                heldDirection = .backward
+                emit(.slowMotionBegan(.backward))
+            }
+        case 124 where isSlowMotionArrow(event):
+            if !event.isARepeat, heldDirection == nil {
+                heldDirection = .forward
+                emit(.slowMotionBegan(.forward))
+            }
         // The arrows are the one pair whose repeat can mean something, and only
         // where the receiving model is stateless enough to survive it — see
         // `arrowsRepeat`. The repeat stays consumed either way; the flag only
         // decides whether it also emits.
-        case 123: // Left Arrow
+        case 123: // Left Arrow, unmodified
             if !event.isARepeat || arrowsRepeat { emit(.seek(.backward)) }
-        case 124: // Right Arrow
+        case 124: // Right Arrow, unmodified
             if !event.isARepeat || arrowsRepeat { emit(.seek(.forward)) }
         default:
             return false

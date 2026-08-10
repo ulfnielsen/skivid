@@ -150,6 +150,28 @@ final class SlowMotionHoldTests: XCTestCase {
         XCTAssertFalse(hold.isActive)
     }
 
+    /// The reverse fallback schedules a repeating `Timer` on the main run loop,
+    /// and the run loop retains it — so a hold that is released mid-fallback,
+    /// without `end()` ever being called, leaves that timer firing every 80ms
+    /// for the rest of the session. `ComparisonModel` is what makes this
+    /// reachable: unlike the viewer it has a real teardown, and its window can
+    /// be closed with a key still held.
+    ///
+    /// The timer is held here on purpose — otherwise the only reference to it
+    /// dies with the hold and there is nothing left to ask.
+    func testDroppingTheHoldMidFallbackInvalidatesItsTimer() throws {
+        let player = try makeUnloadablePlayer()
+        var timer: Timer?
+        autoreleasepool {
+            let hold = SlowMotionHold()
+            hold.begin(.backward, players: [player])
+            timer = hold.reverseTimer
+            XCTAssertEqual(timer?.isValid, true, "premise: the fallback timer must be scheduled")
+        }
+
+        XCTAssertEqual(timer?.isValid, false, "a dropped hold must not leave its timer firing")
+    }
+
     /// Auto-repeat delivers more than one begin for one physical press. A
     /// second begin must not overwrite the captured rate, or `end()` would
     /// restore 0.35 instead of the rate the operator was watching at.
