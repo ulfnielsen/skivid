@@ -79,7 +79,16 @@ public enum VideoLibrary {
                 // rather than an event in a `root/2026/Event/Athlete` tree, and
                 // would mistake the athlete's own folder for an event in a
                 // `root/Athlete` one.
+                //
+                // The second test is for a clip loose at the top of the chosen
+                // root: its "athlete folder" is the root itself, which makes its
+                // "event folder" the root's *parent* — a directory the operator
+                // never selected and that the scan never walked. Naming it would
+                // put a section header like "Desktop" in the sidebar, and above
+                // the date-prefixed real events at that, since letters sort
+                // after digits under the descending event order.
                 let hasEvent = !rootPaths.contains(eventFolder.standardizedFileURL.path)
+                    && !rootPaths.contains(athleteFolder.standardizedFileURL.path)
                 return LibraryGrouping.Entry(
                     video: video,
                     athlete: athleteFolder.lastPathComponent,

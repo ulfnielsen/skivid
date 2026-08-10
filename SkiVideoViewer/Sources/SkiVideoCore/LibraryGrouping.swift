@@ -49,7 +49,17 @@ enum LibraryGrouping {
         var videos: [Key: [URL]] = [:]
         var order: [Key] = []
 
-        for entry in entries {
+        // Sorting first is what makes "the first spelling seen wins" mean
+        // anything: the winner is the one on the path-alphabetically-first
+        // clip, not whatever order the caller happened to hand over. A local
+        // scan hands over raw `FileManager.enumerator` order, which APFS
+        // returns in name-hash order — so without this, sibling folders that
+        // fold alike (`Andre/` and `André/`, typed inconsistently across two
+        // card imports) would show whichever label the directory hash favoured,
+        // and it would change when the library was copied to another volume.
+        // The event name is picked the same way and is the sidebar's *sort*
+        // key, so a flipped spelling can move a whole section.
+        for entry in entries.sorted(by: pathOrder) {
             let eventKey = entry.event.map(fold)
             let key = Key(event: eventKey, athlete: fold(entry.athlete))
             if let eventKey, let event = entry.event {
@@ -89,7 +99,7 @@ enum LibraryGrouping {
             }
             .map { key in
                 AthleteGroup(
-                    id: "\(key.event ?? "")/\(key.athlete)",
+                    id: id(event: key.event, athlete: key.athlete),
                     name: athleteNames[key] ?? key.athlete,
                     event: key.event.flatMap { eventNames[$0] },
                     videos: (videos[key] ?? []).sorted {
@@ -97,6 +107,33 @@ enum LibraryGrouping {
                     }
                 )
             }
+    }
+
+    /// The sidebar tags its rows by this and looks groups up by it, so two
+    /// groups sharing one would leave the second permanently unselectable.
+    ///
+    /// U+0000 separates because it is the one character that can appear in
+    /// neither a POSIX path component nor a Google Drive folder name, and the
+    /// leading tag keeps "no event" apart from "an event named the empty
+    /// string". Joining on `/` was both: `("a/b", "c")` and `("a", "b/c")` made
+    /// one id, as did a nil event and an empty one. Drive names may contain `/`
+    /// and may be empty, which is exactly the scanner Task 8 routes through
+    /// here.
+    private static func id(event: String?, athlete: String) -> String {
+        guard let event else { return "a\u{0}\(athlete)" }
+        return "e\u{0}\(event)\u{0}\(athlete)"
+    }
+
+    /// A total order on entries, so the pre-sort above is itself deterministic.
+    /// `path` alone ties for two Drive clips that share a file name — their URLs
+    /// differ only in the host, which carries the file id — so the full URL
+    /// breaks it.
+    private static func pathOrder(_ left: Entry, _ right: Entry) -> Bool {
+        let byPath = left.video.path.localizedCaseInsensitiveCompare(right.video.path)
+        if byPath == .orderedSame {
+            return left.video.absoluteString < right.video.absoluteString
+        }
+        return byPath == .orderedAscending
     }
 
     private static func fold(_ name: String) -> String {

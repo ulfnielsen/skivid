@@ -81,6 +81,40 @@ final class LibraryGroupingTests: XCTestCase {
         )
     }
 
+    /// "The first spelling seen wins" has to mean the path-alphabetically-first
+    /// clip's spelling, not the caller's arrangement: a local scan hands over
+    /// raw `FileManager.enumerator` order, which APFS returns in name-hash
+    /// order and which changes when the library is copied to another volume.
+    /// Both orders below must therefore name the group "Andre", after `a.mp4`.
+    func testTheWinningSpellingComesFromTheFirstClipByPathNotTheInputOrder() {
+        let early = LibraryGrouping.Entry(video: video("a.mp4"), athlete: "Andre", event: "Are")
+        let late = LibraryGrouping.Entry(video: video("b.mp4"), athlete: "André", event: "Åre")
+
+        for entries in [[early, late], [late, early]] {
+            let groups = LibraryGrouping.group(entries)
+            XCTAssertEqual(groups.count, 1, "the two spellings fold alike and merge")
+            XCTAssertEqual(groups[0].name, "Andre")
+            XCTAssertEqual(groups[0].event, "Are")
+        }
+    }
+
+    /// Ids are the sidebar's selection tags, so a collision makes the second
+    /// group unselectable. A `/` join collided two ways at once: `("a/b", "c")`
+    /// against `("a", "b/c")`, and a nil event against an empty one. Neither
+    /// pair is constructible from a POSIX tree — both are constructible from
+    /// Drive folder names, which is the scan Task 8 routes through here.
+    func testIdsDoNotCollideOnNamesContainingTheSeparatorOrOnAnEmptyEvent() {
+        let groups = LibraryGrouping.group([
+            .init(video: video("a.mp4"), athlete: "c", event: "a/b"),
+            .init(video: video("b.mp4"), athlete: "b/c", event: "a"),
+            .init(video: video("c.mp4"), athlete: "Alice", event: ""),
+            .init(video: video("d.mp4"), athlete: "Alice", event: nil),
+        ])
+
+        XCTAssertEqual(groups.count, 4)
+        XCTAssertEqual(Set(groups.map(\.id)).count, 4, "ids must not collide")
+    }
+
     func testAnEmptyInputProducesNoGroups() {
         XCTAssertTrue(LibraryGrouping.group([]).isEmpty)
     }

@@ -63,10 +63,16 @@ final class VideoLibraryTests: XCTestCase {
 
     /// The root arrives from a folder picker, a bookmark or a defaults string,
     /// so it can spell the same directory differently from the URLs the
-    /// enumerator hands back: with a trailing slash, through a symlink, or as
-    /// `/var/…` where the enumerator resolves `/private/var/…`. None of those
-    /// may turn "directly under the root" into a spurious event.
-    func testTheRootIsRecognisedThroughTrailingSlashesAndSymlinks() throws {
+    /// enumerator hands back. None of those spellings may turn "directly under
+    /// the root" into a spurious event.
+    ///
+    /// The `/private` case is not hypothetical and is not macOS trivia: every
+    /// test here roots in `/var/folders/…`, and `FileManager.enumerator` was
+    /// measured to hand back its children as `/private/var/folders/…`. The
+    /// comparison survives because `standardizedFileURL` drops a leading
+    /// `/private` when the shorter path exists — so it is standardization, not
+    /// any spelling-preservation by the enumerator, that does the work.
+    func testTheRootIsRecognisedThroughEverySpellingOfTheSamePath() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -74,17 +80,49 @@ final class VideoLibraryTests: XCTestCase {
         try FileManager.default.createDirectory(at: alice, withIntermediateDirectories: true)
         try Data().write(to: alice.appendingPathComponent("run.mp4"))
 
-        let trailing = URL(fileURLWithPath: root.path + "/")
-        XCTAssertNil(try VideoLibrary.scan(trailing).first?.event, "trailing slash")
+        var spellings: [(String, URL)] = [
+            ("as given", root),
+            ("trailing slash", URL(fileURLWithPath: root.path + "/")),
+            ("unstandardised path", root.appendingPathComponent("Alice/..")),
+        ]
+        let privatised = URL(fileURLWithPath: "/private" + root.path)
+        if FileManager.default.fileExists(atPath: privatised.path) {
+            spellings.append(("/private prefix", privatised))
+        }
 
-        let dotted = root.appendingPathComponent("Alice/..")
-        XCTAssertNil(try VideoLibrary.scan(dotted).first?.event, "unstandardised path")
+        for (label, spelling) in spellings {
+            let groups = try VideoLibrary.scan(spelling)
+            // Asserting the count first: `scan` returns an empty array rather
+            // than throwing when it finds nothing, so `first?.event` is nil for
+            // a gutted scan too and the nil assertion alone passes vacuously.
+            // That vacuity hid a real result here — a symlinked root enumerates
+            // as empty, so it is not one of the spellings under test.
+            XCTAssertEqual(groups.count, 1, label)
+            XCTAssertNil(groups.first?.event, label)
+            XCTAssertEqual(groups.first?.name, "Alice", label)
+        }
+    }
 
-        let link = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
-        defer { try? FileManager.default.removeItem(at: link) }
-        XCTAssertNil(try VideoLibrary.scan(link).first?.event, "symlinked root")
+    /// A clip loose at the top of the chosen root has no athlete folder, so it
+    /// has no event either — its parent *is* the root. Before this was pinned,
+    /// the root's own parent became the event: pick `~/Desktop/Ski clips` and
+    /// the sidebar grew a "Desktop" section, above the real date-prefixed
+    /// events because letters sort after digits under the descending order,
+    /// and the app auto-selects the first group on open.
+    func testALooseClipAtTheRootHasNoEventAndIsNamedAfterTheRoot() throws {
+        let parent = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("Ski clips", isDirectory: true)
+        let nested = root.appendingPathComponent("2026-08-02_Oberhof/Alice")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("loose.mp4"))
+        try Data().write(to: nested.appendingPathComponent("run.mp4"))
+
+        let athletes = try VideoLibrary.scan(root)
+
+        XCTAssertEqual(athletes.map(\.name), ["Alice", "Ski clips"])
+        XCTAssertEqual(athletes[0].event, "2026-08-02_Oberhof")
+        XCTAssertNil(athletes[1].event, "the root's own parent is not an event")
     }
 
     /// The event is the folder directly above the athlete, not the first
