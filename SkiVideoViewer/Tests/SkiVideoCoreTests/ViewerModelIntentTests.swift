@@ -113,20 +113,49 @@ final class ViewerModelIntentTests: XCTestCase {
 
         input.emit(.togglePlayback)
 
-        XCTAssertNotEqual(model.status, "Slow forward paused",
-                          "the hold's own pause branch must be gone")
+        // Positively, not as a `!= "Slow forward paused"`: nothing in `Sources`
+        // produces that literal any more, so the negative form could only fail
+        // if someone retyped the exact string. Space on a hold taken from a
+        // paused clip ends the hold, finds the restored rate at 0, and plays.
+        XCTAssertEqual(model.status, "Playing",
+                       "Space must fall through to the plain play/pause branch")
     }
 
-    /// Every library change used to clear the hold as part of its teardown.
-    /// The replacement (`endSlowMotion`) must keep doing it, or a hold survives
-    /// into a clip it was never started on.
+    /// A second begin while a hold runs is refused — auto-repeat delivers
+    /// several key-downs per press — and a refused begin must not write the
+    /// status either, or the line describes a hold that never started. The
+    /// press that exposes it is the cross-direction one: ⌘→ held, then ⌘←
+    /// without releasing, where the player is still running forward.
+    func testASecondBeginInTheOtherDirectionIsRefusedWithoutRewordingTheStatus() throws {
+        let (model, input, _) = try makeModel()
+
+        input.emit(.slowMotionBegan(.forward))
+        input.emit(.slowMotionBegan(.backward))
+
+        XCTAssertEqual(model.status, "Slow forward",
+                       "a refused begin must not word the status after itself")
+    }
+
+    /// Every library change used to clear the hold as part of its teardown, and
+    /// the replacement (`endSlowMotion`) must keep doing it.
+    ///
+    /// Asserts that a *later* hold is accepted, not that the rate is 0 after the
+    /// change: `loadCurrentVideo` calls `player.pause()` unconditionally, so a
+    /// rate assertion is satisfied by that line whether or not the hold was torn
+    /// down, and would pass with `endSlowMotion` deleted from `changeVideo`.
+    /// Acceptance is exactly what a stranded `hold.isActive` destroys — `begin`
+    /// refuses every hold for the rest of the session — and the status is how a
+    /// refusal shows from outside, since a refused begin writes nothing and
+    /// leaves `loadCurrentVideo`'s "Paused" standing.
     func testChangingClipEndsAnActiveHold() throws {
         let (model, input, _) = try makeModel()
 
         input.emit(.slowMotionBegan(.forward))
         input.emit(.clip(.next))
+        input.emit(.slowMotionBegan(.backward))
 
-        XCTAssertEqual(model.player.rate, 0, "the hold must not survive a clip change")
+        XCTAssertEqual(model.status, "Slow backward",
+                       "a hold must not survive a clip change and lock out every later hold")
     }
 
     /// Both directions matter. `changeVideo(by:)` wraps with

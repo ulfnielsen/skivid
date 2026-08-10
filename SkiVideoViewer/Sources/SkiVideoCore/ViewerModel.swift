@@ -103,7 +103,17 @@ public final class ViewerModel: ObservableObject {
             hold.end()
             performArrowTap(direction)
         case let .slowMotionBegan(direction):
-            guard currentVideo != nil else { return }
+            // `!hold.isActive` is the caller's half of a refusal `hold.begin`
+            // makes silently, and it has to be tested here because the status
+            // line is written here: a refused `begin` must not word the status
+            // after a hold it did not start. The old `beginArrow` got this from
+            // its `heldDirection == nil` guard, which returned before touching
+            // `status`. It matters for the cross-direction press — ⌘→ held, then
+            // ⌘← without releasing — where the player keeps running forward and
+            // an unguarded write would announce "Slow backward" over it.
+            // `players` is never empty here, so this is `begin`'s only reachable
+            // refusal.
+            guard currentVideo != nil, !hold.isActive else { return }
             hold.begin(direction, players: [player])
             status = direction == .forward ? "Slow forward" : "Slow backward"
         case .slowMotionEnded:
