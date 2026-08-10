@@ -30,7 +30,10 @@ enum LibraryGrouping {
     /// Events sort descending: the folders are date-prefixed in practice, so
     /// that puts the most recent event at the top of the sidebar. Athletes sort
     /// alphabetically within an event, and groups with no event collect at the
-    /// end.
+    /// end. Both comparisons are `localizedCaseInsensitiveCompare`, so the
+    /// order — and with it the sidebar's sections — is locale-dependent and not
+    /// reproducible across machines set to different locales. Deliberate: the
+    /// sidebar is read by a person, who wants their own collation.
     ///
     /// The comparator is a total order on the keys, not a set of hints on top
     /// of the input's arrangement, because `sorted` is not stable: every pair

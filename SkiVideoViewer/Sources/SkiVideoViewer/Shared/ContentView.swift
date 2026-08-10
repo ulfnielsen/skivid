@@ -169,15 +169,28 @@ struct ContentView: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
-            List(model.filteredAthletes, selection: $model.selectedAthleteID) { athlete in
-                HStack {
-                    Text(athlete.name)
-                    Spacer()
-                    Text("\(athlete.videos.count)")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+            List(selection: $model.selectedAthleteID) {
+                ForEach(model.events) { event in
+                    // A `Section` without a header renders as a plain run of
+                    // rows, so a library with no event folders looks exactly as
+                    // it did before events existed.
+                    Section {
+                        ForEach(event.athletes) { athlete in
+                            HStack {
+                                Text(athlete.name)
+                                Spacer()
+                                Text("\(athlete.videos.count)")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            .tag(athlete.id)
+                        }
+                    } header: {
+                        if let name = event.name {
+                            Text(name)
+                        }
+                    }
                 }
-                .tag(athlete.id)
             }
         }
         .navigationTitle("Athletes")

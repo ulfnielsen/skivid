@@ -132,7 +132,36 @@ public final class ViewerModel: ObservableObject {
     public var filteredAthletes: [AthleteGroup] {
         let query = normalizedName(athleteQuery)
         guard !query.isEmpty else { return athletes }
-        return athletes.filter { normalizedName($0.name).contains(query) }
+        return athletes.filter {
+            normalizedName($0.name).contains(query)
+                || normalizedName($0.event ?? "").contains(query)
+        }
+    }
+
+    /// `filteredAthletes` in sidebar sections. Built by walking the array in
+    /// order and starting a section wherever the event changes — the grouping
+    /// already sorted every event's athletes together, so one pass is enough
+    /// and the sections come out in the same order as the flat list.
+    public var events: [EventGroup] {
+        var sections: [EventGroup] = []
+        for athlete in filteredAthletes {
+            if let last = sections.last, last.name == athlete.event {
+                sections[sections.count - 1] = EventGroup(
+                    id: last.id,
+                    name: last.name,
+                    athletes: last.athletes + [athlete]
+                )
+            } else {
+                sections.append(
+                    EventGroup(
+                        id: athlete.event ?? "",
+                        name: athlete.event,
+                        athletes: [athlete]
+                    )
+                )
+            }
+        }
+        return sections
     }
 
     var currentVideo: URL? {

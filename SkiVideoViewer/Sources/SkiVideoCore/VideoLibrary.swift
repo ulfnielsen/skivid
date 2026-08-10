@@ -18,6 +18,30 @@ public struct AthleteGroup: Identifiable, Equatable {
     }
 }
 
+/// One sidebar section: the athletes that shared an event folder.
+///
+/// A derived reading of `ViewerModel.athletes`, never a second store — the flat
+/// array stays the source of truth because selection-by-id, `changeAthlete` and
+/// the Page keys all run on it, and a section list that could drift from it
+/// would put the keyboard and the sidebar on different orders.
+public struct EventGroup: Identifiable, Equatable {
+    /// The event's display name, or the empty string for the event-less
+    /// section. `LibraryGrouping` already collapsed the folder spellings that
+    /// fold alike onto one name, so this identifies the section: two sections
+    /// can only carry the same name if they came from the same folded event,
+    /// and then they are one section.
+    public let id: String
+    /// nil for the trailing section holding athletes that had no event folder.
+    public let name: String?
+    public let athletes: [AthleteGroup]
+
+    public init(id: String, name: String?, athletes: [AthleteGroup]) {
+        self.id = id
+        self.name = name
+        self.athletes = athletes
+    }
+}
+
 public enum VideoLibrary {
     /// Only what AVFoundation can actually open.
     ///

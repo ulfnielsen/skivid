@@ -32,6 +32,36 @@ final class ViewerModelIntentTests: XCTestCase {
         return root
     }
 
+    /// A tree of `root/<event>/<athlete>/a.mp4`, for the sectioned sidebar.
+    private func makeEventLibrary(_ events: [String: [String]]) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        for (event, athleteNames) in events {
+            for athleteName in athleteNames {
+                let athlete = root
+                    .appendingPathComponent(event, isDirectory: true)
+                    .appendingPathComponent(athleteName, isDirectory: true)
+                try FileManager.default.createDirectory(at: athlete, withIntermediateDirectories: true)
+                FileManager.default.createFile(
+                    atPath: athlete.appendingPathComponent("a.mp4").path,
+                    contents: Data()
+                )
+            }
+        }
+        temporaryDirectory = root
+        return root
+    }
+
+    private func makeEventModel(_ events: [String: [String]]) throws -> ViewerModel {
+        let model = ViewerModel(
+            input: FakeInputSource(),
+            folderPicker: FakeFolderPicker(),
+            oauthPresenter: FakeOAuthPresenter()
+        )
+        model.openDirectory(try makeEventLibrary(events))
+        return model
+    }
+
     override func tearDown() async throws {
         if let temporaryDirectory {
             try? FileManager.default.removeItem(at: temporaryDirectory)
@@ -290,5 +320,76 @@ final class ViewerModelIntentTests: XCTestCase {
 
         XCTAssertEqual(picker.pickFileCallCount, 1)
         XCTAssertEqual(model.clientSecretsPath, pathBefore)
+    }
+
+    func testEventsSectionTheAthleteList() throws {
+        let model = try makeEventModel([
+            "2026-07-16_Neuss": ["Alice", "Bob"],
+            "2026-08-02_Oberhof": ["Alice"],
+        ])
+
+        XCTAssertEqual(model.events.map(\.name), ["2026-08-02_Oberhof", "2026-07-16_Neuss"])
+        XCTAssertEqual(model.events[0].athletes.map(\.name), ["Alice"])
+        XCTAssertEqual(model.events[1].athletes.map(\.name), ["Alice", "Bob"])
+    }
+
+    /// The flat list and the sections are two readings of one array, so they
+    /// cannot disagree — and PageUp/PageDown, which walk the flat list, step
+    /// through the sections in the order they are drawn.
+    func testTheFlatListIsTheSectionsConcatenated() throws {
+        let model = try makeEventModel([
+            "2026-07-16_Neuss": ["Alice", "Bob"],
+            "2026-08-02_Oberhof": ["Alice"],
+        ])
+
+        XCTAssertEqual(
+            model.events.flatMap { $0.athletes.map(\.id) },
+            model.athletes.map(\.id)
+        )
+    }
+
+    /// A library with no event folders must render exactly as it did before
+    /// this feature: one unnamed section holding everything.
+    func testAnEventlessLibraryIsASingleUnnamedSection() throws {
+        let (model, _, _) = try makeModel(athletes: ["Alma", "Idun"])
+
+        XCTAssertEqual(model.events.count, 1)
+        XCTAssertNil(model.events[0].name)
+        XCTAssertEqual(model.events[0].athletes.map(\.name), ["Alma", "Idun"])
+    }
+
+    func testSearchingAnEventNameNarrowsToThatEvent() throws {
+        let model = try makeEventModel([
+            "2026-07-16_Neuss": ["Alice", "Bob"],
+            "2026-08-02_Oberhof": ["Chris"],
+        ])
+
+        model.athleteQuery = "Oberhof"
+
+        XCTAssertEqual(model.events.map(\.name), ["2026-08-02_Oberhof"])
+        XCTAssertEqual(model.events[0].athletes.map(\.name), ["Chris"])
+    }
+
+    func testSearchingAnAthleteNameStillWorksAcrossEvents() throws {
+        let model = try makeEventModel([
+            "2026-07-16_Neuss": ["Alice", "Bob"],
+            "2026-08-02_Oberhof": ["Alice"],
+        ])
+
+        model.athleteQuery = "Alice"
+
+        XCTAssertEqual(model.events.count, 2)
+        XCTAssertEqual(model.events.flatMap { $0.athletes.map(\.name) }, ["Alice", "Alice"])
+    }
+
+    func testASectionEmptiedByTheSearchIsDropped() throws {
+        let model = try makeEventModel([
+            "2026-07-16_Neuss": ["Alice"],
+            "2026-08-02_Oberhof": ["Chris"],
+        ])
+
+        model.athleteQuery = "Chris"
+
+        XCTAssertEqual(model.events.count, 1, "the empty section must not be drawn")
     }
 }
