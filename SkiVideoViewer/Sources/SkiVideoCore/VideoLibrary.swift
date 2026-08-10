@@ -139,7 +139,9 @@ public enum VideoLibrary {
         //    does not undo that. Only `resolvingSymlinksInPath` matches there.
         //
         // Without the second spelling that root's loose clips would find no
-        // match below and be handed the root's parent as their event. Resolving
+        // match below and be handed the *resolved* root's parent as their event
+        // — `real`, a directory whose name the operator never even typed, not
+        // the parent of the `link/…` spelling they chose. Resolving
         // once here costs one `stat` for the whole scan, not one per video.
         let rootPaths: Set<String> = [
             root.standardizedFileURL.path,

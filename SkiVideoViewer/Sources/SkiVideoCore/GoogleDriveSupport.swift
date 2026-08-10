@@ -79,7 +79,20 @@ struct GoogleDriveClient {
         // until 2026-08-09, which was wrong because the name is the grouping
         // *key*, not a caption — a Drive folder genuinely named `Unsorted` and
         // the loose files silently became one athlete.
-        let rootName = try await folderName(of: folderID)
+        //
+        // Deliberately non-fatal. The name is a label for one group that many
+        // libraries never even produce, so it must not be able to fail a scan
+        // that would otherwise succeed — a folder whose *children* are shared
+        // with the operator but whose own record is not would list fine here and
+        // 403 on the `files.get`. Falling back to the pasted folder id keeps a
+        // unique key, which is the whole reason "Unsorted" had to go.
+        //
+        // UNVERIFIED, and it needs credentials to settle: whether `files.get`
+        // returns a name when `folderID` is a Shared Drive's own id rather than
+        // a folder inside it. With `try?` the answer stops mattering — either
+        // the name arrives or the id is used — which is why this does not wait
+        // on someone measuring it.
+        let rootName = (try? await folderName(of: folderID)) ?? folderID
 
         // Both names are carried, not just the athlete's: the event is the
         // folder directly above the athlete, so the recursion has to remember
@@ -108,6 +121,16 @@ struct GoogleDriveClient {
                     continue
                 }
 
+                // The folder hierarchy is absent from this URL: the host is the
+                // file id and the path is just `/<name>`. So where a local scan
+                // sorts clips by folder-then-name, both inside `LibraryGrouping`
+                // and within a group, Drive clips sort by file name alone. Two
+                // sibling folders that fold alike (`Andre/`, `André/`) therefore
+                // take their winning spelling from whichever folder holds the
+                // alphabetically first *file* name, and their clips interleave
+                // instead of staying in folder blocks. Deterministic run to run
+                // — `pathOrder` is a total order and breaks the file-name tie on
+                // the full URL — just not the local scanner's order.
                 let streamURL = URL(string: "drivevideo://\(file.id)")!
                     .appendingPathComponent(file.name)
                 mediaByURL[streamURL] = DriveMedia(
@@ -125,10 +148,12 @@ struct GoogleDriveClient {
                         // folder nor an event; one in `root/Athlete` has an
                         // athlete but no event, exactly as locally. The latter
                         // holds because the top-level call seeds *both* names
-                        // nil: threading the root's own name as a parent would
-                        // read the root as an event one level down, which is the
-                        // mistake the local scanner had to fix.
-                        event: parentName == nil ? nil : grandparentName
+                        // nil: seeding `parentName` with the root's own name
+                        // instead would read the root as an event one level
+                        // down, which is the mistake the local scanner had to
+                        // fix. Nothing here can catch that — this comment is the
+                        // guard, so keep the seeding as it is.
+                        event: grandparentName
                     )
                 )
             }
@@ -144,11 +169,10 @@ struct GoogleDriveClient {
     /// The chosen root folder's own name, which is all the loose clips at the
     /// top of it have to be grouped under.
     ///
-    /// One extra request per scan, next to the many `files.list` calls the walk
-    /// makes, and it fails the whole scan if it fails — the very next listing of
-    /// that same folder would fail for the same reason anyway, and doing it
-    /// first turns a mistyped folder id into "File not found" before any of the
-    /// recursion runs.
+    /// Throws like every other call here, but the one caller swallows it: see
+    /// `scanSharedDrive` for why a label that most libraries never display must
+    /// not be able to fail a scan. It costs one request per scan, next to the
+    /// many `files.list` calls the walk makes.
     private func folderName(of folderID: String) async throws -> String {
         var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
         // Appended through `path` rather than interpolated into the string, so a
