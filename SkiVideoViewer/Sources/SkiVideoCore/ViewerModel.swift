@@ -165,7 +165,11 @@ public final class ViewerModel: ObservableObject {
         athletes.map { athlete in
             ComparisonAthleteChoice(
                 id: athlete.id,
-                name: athlete.name,
+                // The picker draws a flat menu with no section headers, so two
+                // Alices from two events would be indistinguishable without
+                // this. Left alone when there is no event, so a single-event
+                // library reads exactly as it always has.
+                name: athlete.event.map { "\(athlete.name) — \($0)" } ?? athlete.name,
                 videos: athlete.videos.map { video in
                     ComparisonVideoChoice(
                         id: "\(athlete.id)|\(video.absoluteString)",
@@ -179,7 +183,11 @@ public final class ViewerModel: ObservableObject {
 
     public var clipDescription: String {
         guard let athlete = currentAthlete, let currentVideo else { return "" }
-        return "Clip \(videoIndex + 1) of \(athlete.videos.count) · \(currentVideo.lastPathComponent)"
+        let position = "Clip \(videoIndex + 1) of \(athlete.videos.count)"
+        guard let event = athlete.event else {
+            return "\(position) · \(currentVideo.lastPathComponent)"
+        }
+        return "\(position) · \(event) · \(currentVideo.lastPathComponent)"
     }
 
     public func start(initialDirectory: URL?) {

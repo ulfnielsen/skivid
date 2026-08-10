@@ -417,4 +417,37 @@ final class ViewerModelIntentTests: XCTestCase {
         XCTAssertEqual(sections.map(\.name), ["", nil])
         XCTAssertEqual(sections.count, Set(sections.map(\.id)).count, "section ids must be unique")
     }
+
+    func testClipDescriptionNamesTheEvent() throws {
+        let model = try makeEventModel(["2026-08-02_Oberhof": ["Alice"]])
+
+        XCTAssertEqual(model.clipDescription, "Clip 1 of 1 · 2026-08-02_Oberhof · a.mp4")
+    }
+
+    func testClipDescriptionOmitsAMissingEvent() throws {
+        let (model, _, _) = try makeModel()
+
+        XCTAssertEqual(model.clipDescription, "Clip 1 of 2 · a.mp4")
+    }
+
+    /// Two same-named athletes at different events are two entries in the
+    /// comparison picker, and the picker has no section headers — so the names
+    /// have to carry the event or the operator cannot tell them apart.
+    func testComparisonLibraryDistinguishesSameNamedAthletesByEvent() throws {
+        let model = try makeEventModel([
+            "2026-07-16_Neuss": ["Alice"],
+            "2026-08-02_Oberhof": ["Alice"],
+        ])
+
+        XCTAssertEqual(
+            model.comparisonLibrary.map(\.name),
+            ["Alice — 2026-08-02_Oberhof", "Alice — 2026-07-16_Neuss"]
+        )
+    }
+
+    func testComparisonLibraryLeavesAnEventlessAthleteNameAlone() throws {
+        let (model, _, _) = try makeModel()
+
+        XCTAssertEqual(model.comparisonLibrary.map(\.name), ["Idun"])
+    }
 }
