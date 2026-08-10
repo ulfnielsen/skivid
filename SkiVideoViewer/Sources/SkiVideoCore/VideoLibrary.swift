@@ -126,13 +126,21 @@ public enum VideoLibrary {
             }
             videos.append(fileURL)
         }
-        // Both spellings of the root, computed once. The enumerator was
-        // measured to hand back URLs that keep whatever spelling `root` came
-        // with — a trailing slash, `..`, or a symlinked path all survive into
-        // the children — so standardizing is enough today. The resolved
-        // spelling is here so that a root given as `/var/…` still matches
-        // children reported as `/private/var/…` if that ever changes, and it
-        // costs one `stat` for the whole scan rather than one per video.
+        // Both spellings of the root, computed once, because the enumerator was
+        // measured to hand back children under the *resolved* path rather than
+        // the spelling `root` came with. Two ways that bites, both measured:
+        //
+        //  - a root of `/var/folders/…` yields `/private/var/folders/…`
+        //    children. `standardizedFileURL` drops the `/private` prefix on
+        //    both sides, so that one cancels — which is why every temp-directory
+        //    test passes on the standardized spelling alone.
+        //  - a root reached *through* a symlink (`…/link/Season`) yields
+        //    children under the target (`…/real/Season`), and standardizing
+        //    does not undo that. Only `resolvingSymlinksInPath` matches there.
+        //
+        // Without the second spelling that root's loose clips would find no
+        // match below and be handed the root's parent as their event. Resolving
+        // once here costs one `stat` for the whole scan, not one per video.
         let rootPaths: Set<String> = [
             root.standardizedFileURL.path,
             root.resolvingSymlinksInPath().standardizedFileURL.path,

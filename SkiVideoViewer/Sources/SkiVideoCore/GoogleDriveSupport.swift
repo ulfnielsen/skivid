@@ -69,14 +69,31 @@ struct GoogleDriveClient {
     }
 
     func scanSharedDrive(folderID: String) async throws -> DriveLibrary {
-        var groups: [String: [URL]] = [:]
-        var names: [String: String] = [:]
+        var entries: [LibraryGrouping.Entry] = []
         var mediaByURL: [URL: DriveMedia] = [:]
 
-        func scan(folderID: String, parentName: String?) async throws {
+        // A clip sitting loose in the chosen root has no athlete folder to be
+        // named after, so ask Drive what the root itself is called:
+        // `VideoLibrary.scan` names that group after the chosen folder, and this
+        // is the closest Drive can come to it. The literal "Unsorted" stood here
+        // until 2026-08-09, which was wrong because the name is the grouping
+        // *key*, not a caption — a Drive folder genuinely named `Unsorted` and
+        // the loose files silently became one athlete.
+        let rootName = try await folderName(of: folderID)
+
+        // Both names are carried, not just the athlete's: the event is the
+        // folder directly above the athlete, so the recursion has to remember
+        // one more level than it used to. `VideoLibrary.scan` reads the same
+        // two components out of the path — the rule is one rule, applied to
+        // whatever each scanner can see.
+        func scan(folderID: String, parentName: String?, grandparentName: String?) async throws {
             for file in try await listChildren(of: folderID) {
                 if file.mimeType == Self.folderMimeType {
-                    try await scan(folderID: file.id, parentName: file.name)
+                    try await scan(
+                        folderID: file.id,
+                        parentName: file.name,
+                        grandparentName: parentName
+                    )
                     continue
                 }
                 // The same list the local library uses, deliberately not a copy.
@@ -91,43 +108,77 @@ struct GoogleDriveClient {
                     continue
                 }
 
-                let athleteName = parentName ?? "Unsorted"
-                let key = athleteName.folding(
-                    options: [.caseInsensitive, .diacriticInsensitive],
-                    locale: .current
-                )
                 let streamURL = URL(string: "drivevideo://\(file.id)")!
                     .appendingPathComponent(file.name)
-                let media = DriveMedia(
+                mediaByURL[streamURL] = DriveMedia(
                     fileID: file.id,
                     name: file.name,
                     mimeType: file.mimeType,
                     size: Int64(file.size ?? "") ?? 0,
                     accessToken: accessToken
                 )
-                names[key] = names[key] ?? athleteName
-                groups[key, default: []].append(streamURL)
-                mediaByURL[streamURL] = media
+                entries.append(
+                    LibraryGrouping.Entry(
+                        video: streamURL,
+                        athlete: parentName ?? rootName,
+                        // A file loose in the chosen root has neither an athlete
+                        // folder nor an event; one in `root/Athlete` has an
+                        // athlete but no event, exactly as locally. The latter
+                        // holds because the top-level call seeds *both* names
+                        // nil: threading the root's own name as a parent would
+                        // read the root as an event one level down, which is the
+                        // mistake the local scanner had to fix.
+                        event: parentName == nil ? nil : grandparentName
+                    )
+                )
             }
         }
 
-        try await scan(folderID: folderID, parentName: nil)
-        let athletes = groups.keys
-            .sorted {
-                (names[$0] ?? $0).localizedCaseInsensitiveCompare(names[$1] ?? $1)
-                    == .orderedAscending
-            }
-            .map { key in
-                AthleteGroup(
-                    id: key,
-                    name: names[key] ?? key,
-                    videos: groups[key, default: []].sorted {
-                        $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent)
-                            == .orderedAscending
-                    }
-                )
-            }
-        return DriveLibrary(athletes: athletes, mediaByURL: mediaByURL)
+        try await scan(folderID: folderID, parentName: nil, grandparentName: nil)
+        return DriveLibrary(
+            athletes: LibraryGrouping.group(entries),
+            mediaByURL: mediaByURL
+        )
+    }
+
+    /// The chosen root folder's own name, which is all the loose clips at the
+    /// top of it have to be grouped under.
+    ///
+    /// One extra request per scan, next to the many `files.list` calls the walk
+    /// makes, and it fails the whole scan if it fails — the very next listing of
+    /// that same folder would fail for the same reason anyway, and doing it
+    /// first turns a mistyped folder id into "File not found" before any of the
+    /// recursion runs.
+    private func folderName(of folderID: String) async throws -> String {
+        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
+        // Appended through `path` rather than interpolated into the string, so a
+        // pasted id that is not URL-safe gets percent-encoded instead of
+        // reshaping the request.
+        components.path += "/\(folderID)"
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "name"),
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+        ]
+        guard let url = components.url else {
+            throw DriveError.api("That Shared Drive folder ID cannot be used in a request to Google.")
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode)
+        else {
+            throw GoogleAPIError.describe(
+                data: data,
+                response: response,
+                action: "open this Shared Drive folder"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(DriveFolderName.self, from: data).name
+        } catch {
+            throw DriveError.api("Google Drive returned an unexpected folder record: \(error.localizedDescription)")
+        }
     }
 
     private func listChildren(of folderID: String) async throws -> [DriveFile] {
@@ -168,6 +219,13 @@ struct GoogleDriveClient {
         } while pageToken != nil
         return files
     }
+}
+
+/// Its own type rather than a `DriveFile` decode, because the folder record is
+/// fetched with `fields=name` alone: everything `DriveFile` requires beyond the
+/// name is absent from that response.
+private struct DriveFolderName: Decodable {
+    let name: String
 }
 
 private struct DriveListResponse: Decodable {
