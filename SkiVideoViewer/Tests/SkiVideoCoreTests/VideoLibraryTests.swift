@@ -19,6 +19,7 @@ final class VideoLibraryTests: XCTestCase {
         let athletes = try VideoLibrary.scan(root)
 
         XCTAssertEqual(athletes.map(\.name), ["Alice", "Bob"])
+        XCTAssertEqual(athletes.map(\.event), ["2026-07-16_Neuss", "2026-07-16_Neuss"])
         XCTAssertEqual(
             athletes[0].videos.map(\.lastPathComponent),
             ["C0001.mov", "C0002.MP4"]
@@ -26,7 +27,7 @@ final class VideoLibraryTests: XCTestCase {
         XCTAssertEqual(athletes[1].videos.map(\.lastPathComponent), ["C0003.m4v"])
     }
 
-    func testMergesSameAthleteAcrossEventsCaseInsensitively() throws {
+    func testSplitsTheSameAthleteAcrossEvents() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -39,11 +40,87 @@ final class VideoLibraryTests: XCTestCase {
 
         let athletes = try VideoLibrary.scan(root)
 
+        XCTAssertEqual(athletes.count, 2, "an athlete at two events is two entries")
+        XCTAssertEqual(athletes.map(\.event), ["event-two", "event-one"])
+        XCTAssertEqual(athletes[0].videos.map(\.lastPathComponent), ["second.mp4"])
+        XCTAssertEqual(athletes[1].videos.map(\.lastPathComponent), ["first.mp4"])
+    }
+
+    func testAnAthleteFolderDirectlyUnderTheRootHasNoEvent() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let alice = root.appendingPathComponent("Alice")
+        try FileManager.default.createDirectory(at: alice, withIntermediateDirectories: true)
+        try Data().write(to: alice.appendingPathComponent("run.mp4"))
+
+        let athletes = try VideoLibrary.scan(root)
+
         XCTAssertEqual(athletes.count, 1)
-        XCTAssertEqual(
-            athletes[0].videos.map(\.lastPathComponent),
-            ["first.mp4", "second.mp4"]
-        )
+        XCTAssertNil(athletes[0].event)
+        XCTAssertEqual(athletes[0].name, "Alice")
+    }
+
+    /// The root arrives from a folder picker, a bookmark or a defaults string,
+    /// so it can spell the same directory differently from the URLs the
+    /// enumerator hands back: with a trailing slash, through a symlink, or as
+    /// `/var/…` where the enumerator resolves `/private/var/…`. None of those
+    /// may turn "directly under the root" into a spurious event.
+    func testTheRootIsRecognisedThroughTrailingSlashesAndSymlinks() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let alice = root.appendingPathComponent("Alice")
+        try FileManager.default.createDirectory(at: alice, withIntermediateDirectories: true)
+        try Data().write(to: alice.appendingPathComponent("run.mp4"))
+
+        let trailing = URL(fileURLWithPath: root.path + "/")
+        XCTAssertNil(try VideoLibrary.scan(trailing).first?.event, "trailing slash")
+
+        let dotted = root.appendingPathComponent("Alice/..")
+        XCTAssertNil(try VideoLibrary.scan(dotted).first?.event, "unstandardised path")
+
+        let link = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        defer { try? FileManager.default.removeItem(at: link) }
+        XCTAssertNil(try VideoLibrary.scan(link).first?.event, "symlinked root")
+    }
+
+    /// The event is the folder directly above the athlete, not the first
+    /// component under the root. Taking the first component would call this
+    /// athlete's event "2026", which is a season, not an event.
+    func testTheEventIsTheFolderDirectlyAboveTheAthlete() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let alice = root.appendingPathComponent("2026/2026-08-02_Oberhof/Alice")
+        try FileManager.default.createDirectory(at: alice, withIntermediateDirectories: true)
+        try Data().write(to: alice.appendingPathComponent("run.mp4"))
+
+        let athletes = try VideoLibrary.scan(root)
+
+        XCTAssertEqual(athletes.count, 1)
+        XCTAssertEqual(athletes[0].event, "2026-08-02_Oberhof")
+        XCTAssertEqual(athletes[0].name, "Alice")
+    }
+
+    func testAMixedDepthTreeGroupsEachAthleteByItsOwnParent() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let nested = root.appendingPathComponent("2026-08-02_Oberhof/Alice")
+        let loose = root.appendingPathComponent("Bob")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: loose, withIntermediateDirectories: true)
+        try Data().write(to: nested.appendingPathComponent("a.mp4"))
+        try Data().write(to: loose.appendingPathComponent("b.mp4"))
+
+        let athletes = try VideoLibrary.scan(root)
+
+        XCTAssertEqual(athletes.map(\.name), ["Alice", "Bob"])
+        XCTAssertEqual(athletes[0].event, "2026-08-02_Oberhof")
+        XCTAssertNil(athletes[1].event, "the event-less group sorts last")
     }
 
     func testRejectsMissingDirectory() {
