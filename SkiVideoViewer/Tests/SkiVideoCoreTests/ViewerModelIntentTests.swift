@@ -382,14 +382,39 @@ final class ViewerModelIntentTests: XCTestCase {
         XCTAssertEqual(model.events.flatMap { $0.athletes.map(\.name) }, ["Alice", "Alice"])
     }
 
+    /// Three events and a query that empties exactly one of them. The two
+    /// survivors are what gives this teeth: with a single event surviving, a
+    /// gutted `events` returning one all-inclusive section would also leave a
+    /// count of 1 and pass — measured, not assumed.
     func testASectionEmptiedByTheSearchIsDropped() throws {
         let model = try makeEventModel([
-            "2026-07-16_Neuss": ["Alice"],
-            "2026-08-02_Oberhof": ["Chris"],
+            "2026-07-16_Neuss": ["Bob"],
+            "2026-08-02_Oberhof": ["Alice"],
+            "2026-09-05_Ruhpolding": ["Alice"],
         ])
 
-        model.athleteQuery = "Chris"
+        model.athleteQuery = "Alice"
 
-        XCTAssertEqual(model.events.count, 1, "the empty section must not be drawn")
+        XCTAssertEqual(model.events.count, 2, "the empty section must not be drawn")
+        XCTAssertEqual(
+            model.events.map(\.name),
+            ["2026-09-05_Ruhpolding", "2026-08-02_Oberhof"],
+            "Neuss held only Bob, so it must be gone entirely rather than drawn empty"
+        )
+    }
+
+    /// A folder named the empty string and *no* folder are different sections,
+    /// and `ForEach(model.events)` needs different ids for them or SwiftUI
+    /// draws duplicates. Built from hand-made groups because the local scanner
+    /// cannot produce an empty event name — `lastPathComponent` is never empty
+    /// — which is exactly why this only bites once the Drive scan lands.
+    func testAnEmptyEventNameAndNoEventAreDistinctSections() {
+        let sections = EventGroup.sections(of: [
+            AthleteGroup(id: "e\u{0}\u{0}Alice", name: "Alice", event: "", videos: []),
+            AthleteGroup(id: "a\u{0}Bob", name: "Bob", event: nil, videos: []),
+        ])
+
+        XCTAssertEqual(sections.map(\.name), ["", nil])
+        XCTAssertEqual(sections.count, Set(sections.map(\.id)).count, "section ids must be unique")
     }
 }

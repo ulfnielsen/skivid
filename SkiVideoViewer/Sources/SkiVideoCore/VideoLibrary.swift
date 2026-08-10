@@ -25,11 +25,18 @@ public struct AthleteGroup: Identifiable, Equatable {
 /// the Page keys all run on it, and a section list that could drift from it
 /// would put the keyboard and the sidebar on different orders.
 public struct EventGroup: Identifiable, Equatable {
-    /// The event's display name, or the empty string for the event-less
-    /// section. `LibraryGrouping` already collapsed the folder spellings that
-    /// fold alike onto one name, so this identifies the section: two sections
-    /// can only carry the same name if they came from the same folded event,
-    /// and then they are one section.
+    /// `"e\0<display name>"`, or `"a"` for the event-less section — the same
+    /// tagging `LibraryGrouping.id` uses on rows, and for the same reason: a
+    /// folder named the empty string and *no* folder are different sections,
+    /// and an untagged `event ?? ""` would give both the id `""`. The
+    /// comparator puts an empty-named event immediately before the event-less
+    /// run, so the two would collide adjacently, and `ForEach` would be drawing
+    /// duplicate ids. Never displayed, so the tag costs nothing.
+    ///
+    /// Within the evented case the display name identifies the section on its
+    /// own: `LibraryGrouping` already collapsed the folder spellings that fold
+    /// alike onto one name, so two sections can only carry the same name if
+    /// they came from the same folded event — and then they are one section.
     public let id: String
     /// nil for the trailing section holding athletes that had no event folder.
     public let name: String?
@@ -39,6 +46,43 @@ public struct EventGroup: Identifiable, Equatable {
         self.id = id
         self.name = name
         self.athletes = athletes
+    }
+
+    /// The id a section carrying `event` must have. One function so the pass
+    /// below and the row tagging in `LibraryGrouping` cannot drift apart on
+    /// what "no event" means.
+    static func id(for event: String?) -> String {
+        guard let event else { return "a" }
+        return "e\u{0}\(event)"
+    }
+
+    /// Splits a sidebar-ordered athlete list into sections by walking it in
+    /// order and starting a section wherever the event changes.
+    ///
+    /// A free function on the type that owns the id rather than a closure
+    /// inside `ViewerModel.events`, so a test can hand it athletes that no
+    /// local scan can produce — an event named the empty string, which only the
+    /// Drive scanner admits.
+    static func sections(of athletes: [AthleteGroup]) -> [EventGroup] {
+        var sections: [EventGroup] = []
+        for athlete in athletes {
+            if let last = sections.last, last.name == athlete.event {
+                sections[sections.count - 1] = EventGroup(
+                    id: last.id,
+                    name: last.name,
+                    athletes: last.athletes + [athlete]
+                )
+            } else {
+                sections.append(
+                    EventGroup(
+                        id: id(for: athlete.event),
+                        name: athlete.event,
+                        athletes: [athlete]
+                    )
+                )
+            }
+        }
+        return sections
     }
 }
 

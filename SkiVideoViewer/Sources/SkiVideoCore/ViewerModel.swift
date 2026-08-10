@@ -138,30 +138,13 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
-    /// `filteredAthletes` in sidebar sections. Built by walking the array in
-    /// order and starting a section wherever the event changes — the grouping
-    /// already sorted every event's athletes together, so one pass is enough
-    /// and the sections come out in the same order as the flat list.
+    /// `filteredAthletes` in sidebar sections — the grouping already sorted
+    /// every event's athletes together, so one forward pass is enough and the
+    /// sections come out in the same order as the flat list. Computed, never
+    /// stored: the flat array stays the source of truth because selection-by-id,
+    /// `changeAthlete` and the Page keys all run on it.
     public var events: [EventGroup] {
-        var sections: [EventGroup] = []
-        for athlete in filteredAthletes {
-            if let last = sections.last, last.name == athlete.event {
-                sections[sections.count - 1] = EventGroup(
-                    id: last.id,
-                    name: last.name,
-                    athletes: last.athletes + [athlete]
-                )
-            } else {
-                sections.append(
-                    EventGroup(
-                        id: athlete.event ?? "",
-                        name: athlete.event,
-                        athletes: [athlete]
-                    )
-                )
-            }
-        }
-        return sections
+        EventGroup.sections(of: filteredAthletes)
     }
 
     var currentVideo: URL? {
