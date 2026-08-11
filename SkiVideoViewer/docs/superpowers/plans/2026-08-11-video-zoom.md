@@ -19,7 +19,7 @@
 - Platforms: `.macOS(.v13)`, `.iOS(.v17)`. The iPad target is `TARGETED_DEVICE_FAMILY: "2"` — iPad only, no iPhone.
 - `SkiVideoCore` must stay platform-agnostic: `CorePurityTests` fails the build if a core source names AppKit or UIKit. `VideoZoom` imports Foundation and CoreGraphics only.
 - Access levels stay narrow: `public` marks only what the app target touches. `VideoZoom` is public (the views read it); helpers stay internal.
-- **Exact values.** Zoom range `1.0...4.0`. Pan centre normalised, clamped to `[1/(2s), 1 − 1/(2s)]` in both axes. Layer frame `size = bounds × s`, `origin = bounds × 0.5 − center × bounds × s`. A drag of `d` points moves the centre by `d / (paneSize × scale)`, and **dragging right decreases `center.x`**.
+- **Exact values.** Zoom range `1.0...4.0`. Pan centre normalised, clamped to `[1/(2s), 1 − 1/(2s)]` in both axes. Layer frame: `fitted` = the largest rect of the video's aspect that fits `bounds`, then `size = fitted × s`, `origin = bounds × 0.5 − center × size`. (Corrected after Task 1's review — scaling `bounds` instead of `fitted` clamps a box around the picture rather than the picture, and lets a 16:9 clip be panned entirely off a 500×800 pane at 4×.) A drag of `d` points moves the centre by `d / (paneSize × scale)`, and **dragging right decreases `center.x`**.
 - This codebase documents *why* heavily, with measured evidence. A load-bearing decision without its reasoning is a defect; a comment restating the code is noise.
 - Commit messages: imperative mood, no `feat:`/`fix:` prefixes. End each with:
   ```
