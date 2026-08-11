@@ -115,10 +115,29 @@ final class ZoomWiringTests: XCTestCase {
         // more than once while an asset finishes loading, and a host attached
         // inside that window gets re-placed by a *change* — which passes
         // whether or not `.initial` is there, and is not the case being
-        // tested. Measured directly: on an item that has been settled for
-        // three seconds, attaching a fresh `AVPlayerLayer` — even hosting it
-        // in an on-screen window — posts nothing at all, so after this wait
-        // `.initial` is the only thing that can place the layer.
+        // tested.
+        //
+        // **What this test does and does not pin, mutation-checked.** Of the
+        // two `.initial` options in `observeVideoSize`, only one is load-bearing
+        // *here*:
+        //
+        //     remove the presentationSize observation entirely -> FAILS, 1600
+        //     drop .initial from \.currentItem                 -> FAILS, 1600
+        //     drop .initial from \.presentationSize            -> PASSES
+        //
+        // So something does re-post `presentationSize` when this second
+        // `AVPlayerLayer` attaches to the settled player, and the inner
+        // `.initial` is not what places the layer in this test. An earlier
+        // probe concluded the opposite — that a settled item posts nothing for
+        // a late layer — and the mutation above is the better evidence, so the
+        // claim was withdrawn rather than restated.
+        //
+        // Both options stay. The reason is the difference between this test and
+        // production: here the player already has an `AVPlayerLayer` and this is
+        // its *second*, whereas the models own a long-lived player and the view
+        // that attaches is the *first* layer on it. The inner `.initial` may
+        // well be load-bearing in that arrangement while being invisible to
+        // this one, and no test in this suite pins it either way.
         XCTAssertNotEqual(
             player.currentItem?.presentationSize, .zero,
             "precondition: the size is known before the settle"
@@ -128,11 +147,12 @@ final class ZoomWiringTests: XCTestCase {
         // The *other* order, which is the one production actually runs: the
         // models own long-lived players and load clips into them, and the
         // SwiftUI view is built — and rebuilt on every navigation — after
-        // that. `attach` then arrives at an item whose size is already real
-        // and which will never post a change again, so the entire re-place
-        // happens on the observations' `.initial` delivery. Note there is no
-        // `layout()` call after `attach` here: that would place the layer
-        // correctly on its own and hide exactly the defect being tested.
+        // that. `attach` then arrives at an item whose size is already real, so
+        // the outer observation has no `currentItem` change left to wait for
+        // and only its `.initial` delivery can start the chain — which is the
+        // half the mutations above do pin. Note there is no `layout()` call
+        // after `attach` here: that would place the layer correctly on its own
+        // and hide exactly the defect being tested.
         let alreadyLoaded = PlayerLayerHostView()
         alreadyLoaded.frame = NSRect(origin: .zero, size: pane)
         alreadyLoaded.apply(zoom)
@@ -165,11 +185,74 @@ final class ZoomWiringTests: XCTestCase {
     /// expression is symmetric, which is why this is pinned by a test rather
     /// than left to be found in Task 4 as a gesture that scrolls the wrong way
     /// on one platform and debugged in the wrong file.
-    func testTheHostIsFlippedSoTheSharedRectIsReadTopDown() {
-        XCTAssertTrue(
-            PlayerLayerHostView().isFlipped,
-            "an unflipped AppKit host inverts every vertical pan relative to iPad"
+    ///
+    /// **Asserted on rendered pixels, not on `isFlipped` itself.** Reading the
+    /// flag back would be a tautology over the one line that implements it: it
+    /// would still pass if `layerFrame`'s convention were later inverted, which
+    /// is the change that would actually break this contract. So this places a
+    /// marker sublayer at the *top* of the rect `layerFrame` returns and asserts
+    /// that it renders at the top of the view.
+    ///
+    /// **A marker rather than the video.** `cacheDisplay` gives black for an
+    /// `AVPlayerLayer`'s content — as `attachedPlayer`'s comment says — but that
+    /// is a fact about video, not about layer *placement*, and placement is the
+    /// whole of this contract. A plain `CALayer` with a background colour
+    /// renders fine through `cacheDisplay` on a windowless, screenless view,
+    /// which is what makes this a standing headless guard rather than one that
+    /// skips wherever it cannot reach a screen. Use `cacheDisplay` and not
+    /// `CALayer.render(in:)`: on the same view with the same marker, the two
+    /// routes were measured side by side and only `cacheDisplay` discriminates.
+    /// `render(in:)` reads top 0 / bottom 255 — the marker at the bottom —
+    /// whether the view is flipped or not. Why it ignores the flip was not
+    /// established; only that it does, which is enough to rule the route out.
+    ///
+    /// Measured, and mutation-checked by deleting `isFlipped` — the rect is
+    /// identical in both variants, because `VideoZoom` is platform-independent
+    /// and it is only the reading of it that differs:
+    ///
+    /// | `layerFrame` = (-480, 0, 1280, 720), marker = its top 90pt | top third | bottom third |
+    /// | ---------------------------------------------------------- | --------- | ------------ |
+    /// | `isFlipped = true` (shipping)                               | 255       | 0            |
+    /// | flip deleted                                                | 0         | 255          |
+    ///
+    /// `testPanningDownRevealsTheTopOfThePicture` is the same contract proved
+    /// against real video content on a real screen; it skips where it cannot
+    /// capture, so this one is what guards the geometry on a headless run.
+    func testTheHostIsFlippedSoTheSharedRectIsReadTopDown() throws {
+        let pane = CGSize(width: 320, height: 180)
+        let videoSize = CGSize(width: 640, height: 360)
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: pane, videoSize: videoSize)
+        // Positive height is a downward drag; `pan` negates it. This is
+        // `center.y`'s legal minimum at 4x — the picture pushed as far down as
+        // it goes, so the picture's top edge sits exactly on the pane's top and
+        // `layerFrame`'s `origin.y` comes back 0.
+        zoom.pan(by: CGSize(width: 0, height: 270), in: pane, videoSize: videoSize)
+        XCTAssertEqual(zoom.center.y, 0.125, accuracy: 0.001, "precondition: panned to the bound")
+
+        let rect = zoom.layerFrame(in: pane, videoSize: videoSize)
+        XCTAssertEqual(rect.minY, 0, accuracy: 0.5, "precondition: the picture's top is at the pane's top")
+
+        let view = PlayerLayerHostView(frame: NSRect(origin: .zero, size: pane))
+        // The top eighth of the picture, in the same coordinates the host places
+        // its player layer in. An eighth rather than the whole rect because the
+        // whole rect is four times the pane and covers it in either convention,
+        // which would discriminate nothing; 90pt is exactly half the pane, so
+        // the two conventions put it in opposite halves.
+        let marker = CALayer()
+        marker.frame = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height / 8)
+        marker.backgroundColor = NSColor.white.cgColor
+        try XCTUnwrap(view.layer).addSublayer(marker)
+
+        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let (top, bottom) = try bands(of: try XCTUnwrap(rep.cgImage))
+
+        XCTAssertGreaterThan(
+            top, 200,
+            "the top of the zoomed rect must render at the top of the view; an unflipped host puts it at the bottom"
         )
+        XCTAssertLessThan(bottom, 40, "the marker must not reach the bottom third")
     }
 
     /// The same contract as above, but proved on the screen rather than by the

@@ -69,7 +69,14 @@ final class PlayerLayerHostView: NSView {
     var attachedPlayer: AVPlayer? { playerLayer.player }
 
     /// Readable for the same reason `attachedPlayer` is: the geometry is the
-    /// whole of the zoom behaviour, and pixels cannot answer "did it zoom".
+    /// whole of the zoom behaviour, and pixels cannot answer "did it zoom"
+    /// *from the video*, which is what `attachedPlayer` explains.
+    ///
+    /// Pixels can answer where a layer was *placed*, though — that limitation is
+    /// about video content, not about layer geometry. A plain marker sublayer
+    /// renders through `cacheDisplay` on a windowless view, which is how
+    /// `testTheHostIsFlippedSoTheSharedRectIsReadTopDown` pins the y-axis
+    /// convention on rendered pixels instead of on the `isFlipped` flag.
     var playerLayerFrame: CGRect { playerLayer.frame }
 
     /// The zoom this view was last given, as distinct from the frame it
@@ -121,13 +128,21 @@ final class PlayerLayerHostView: NSView {
     /// | `isFlipped = true` | 255 (its top)                | 0 (its bottom)  |
     ///
     /// A clean inversion, and `isFlipped` fixes it. Two things were measured
-    /// rather than assumed alongside it: the flip moves the layer's *frame*
-    /// without turning the video content upside down (at 1x the white band
-    /// stays at the top of the pane in both variants, 191 vs 0), and
-    /// `layer.isGeometryFlipped = true` — the other obvious candidate — does
-    /// **nothing** here, giving byte-identical readings to the unflipped case,
-    /// because AppKit owns the backing layer's geometry for a layer-backed
-    /// view and overwrites it.
+    /// rather than assumed alongside it.
+    ///
+    /// The flip moves the layer's *frame* without turning the video content
+    /// upside down: at 1x the white band stays at the top of the pane in both
+    /// variants, reading 191 in that capture's **top** third against 0 in its
+    /// **bottom** third either way.
+    ///
+    /// And `layer.isGeometryFlipped = true` — the other obvious candidate —
+    /// does **nothing** here, giving byte-identical readings to the unflipped
+    /// case. Note what that is *not*: AppKit does not overwrite the value.
+    /// Measured on a layer-backed `NSView`, it reads back `true` immediately
+    /// after being set and still `true` after a render, and the render is
+    /// simply unaffected — top 0 / bottom 255, identical to never setting it.
+    /// Why it has no effect was not established, only that it has none, which
+    /// is why `isFlipped` is what ships.
     override var isFlipped: Bool { true }
 
     override func layout() {
@@ -186,12 +201,30 @@ final class PlayerLayerHostView: NSView {
     /// after `attach` (and gets a new one on every clip the operator loads),
     /// and that item gets a real `presentationSize` after its tracks load.
     ///
-    /// **`.initial` on each is load-bearing, not belt and braces.** The models
-    /// own long-lived players and load clips into them; the SwiftUI view is
-    /// built — and rebuilt on every navigation — afterwards, so `attach`
-    /// normally arrives at a player whose item already has a real size and
-    /// which will never post a change. Dropping either `.initial` leaves every
-    /// already-loaded clip on the pane fallback for good.
+    /// **`.initial` on each, but only one of the two is pinned by a test.** The
+    /// models own long-lived players and load clips into them; the SwiftUI view
+    /// is built — and rebuilt on every navigation — afterwards, so `attach`
+    /// normally arrives at a player whose item already has a real size and no
+    /// `currentItem` change left to post.
+    ///
+    /// - The **outer** `.initial`, on `\.currentItem`, is load-bearing and
+    ///   measured: deleting it strands an already-loaded clip on the pane
+    ///   fallback, and `testTheLayerIsRePlacedWhenThePresentationSizeArrives`
+    ///   fails at 1600 instead of 1200.
+    /// - The **inner** `.initial`, on `\.presentationSize`, is *not* pinned:
+    ///   that same test still passes without it, because something re-posts
+    ///   `presentationSize` when a second `AVPlayerLayer` attaches to a settled
+    ///   player. It is kept anyway, and not because "belt and braces" — the
+    ///   test attaches the *second* layer to that player, while production
+    ///   attaches the *first* to a model-owned one, so the delivery the test
+    ///   rides on may simply not exist in the arrangement that ships. Keeping
+    ///   it costs nothing; removing it on the strength of a test that does not
+    ///   cover the production case would be trading a known-safe line for an
+    ///   unmeasured one.
+    ///
+    /// Do not "clean up" the inner option on the grounds that the suite still
+    /// passes. The suite passing is the documented starting point here, not new
+    /// information.
     ///
     /// **Neither hop reads the KVO change payload**, and that is what makes
     /// them order-safe: `Task { @MainActor }` gives no ordering guarantee
