@@ -12,18 +12,33 @@ import XCTest
 final class VideoZoomTests: XCTestCase {
     private let pane = CGSize(width: 800, height: 450)
 
+    /// An independent reimplementation of `layerFrame`'s aspect-fit, used as
+    /// an oracle in the tests below rather than reusing the production
+    /// formula — so a sweep that asks "is the picture large enough to cover
+    /// this axis" is checking the implementation against separately-derived
+    /// arithmetic, not against itself.
+    private func fittedSize(video: CGSize, pane: CGSize) -> CGSize {
+        let videoAspect = video.width / video.height
+        let paneAspect = pane.width / pane.height
+        if videoAspect > paneAspect {
+            return CGSize(width: pane.width, height: pane.width / videoAspect)
+        } else {
+            return CGSize(width: pane.height * videoAspect, height: pane.height)
+        }
+    }
+
     // MARK: - The invariant
 
-    /// At scale s the visible picture shows 1/s of the video's own content, so
-    /// the centre is confined to [1/(2s), 1 - 1/(2s)]. At s == 1 that interval
-    /// is the single point 0.5.
+    /// At scale s with matched aspect, the visible picture shows 1/s of the
+    /// video's own content, so the centre is confined to [1/(2s), 1 - 1/(2s)].
+    /// At s == 1 that interval is the single point 0.5.
     func testOneTimesPinsTheCentreWhateverThePanHistory() {
         var zoom = VideoZoom()
-        zoom.setScale(4)
-        zoom.pan(by: CGSize(width: -400, height: -300), in: pane)
+        zoom.setScale(4, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: -400, height: -300), in: pane, videoSize: pane)
         XCTAssertNotEqual(zoom.center.x, 0.5, accuracy: 0.0001, "precondition: the pan must have moved it")
 
-        zoom.setScale(1)
+        zoom.setScale(1, in: pane, videoSize: pane)
 
         XCTAssertEqual(zoom.center.x, 0.5, accuracy: 0.0001)
         XCTAssertEqual(zoom.center.y, 0.5, accuracy: 0.0001)
@@ -35,11 +50,11 @@ final class VideoZoomTests: XCTestCase {
     /// with black down one side.
     func testZoomingOutReclampsAPannedCentre() {
         var zoom = VideoZoom()
-        zoom.setScale(4)
-        zoom.pan(by: CGSize(width: -10_000, height: 0), in: pane)
+        zoom.setScale(4, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: -10_000, height: 0), in: pane, videoSize: pane)
         XCTAssertEqual(zoom.center.x, 1 - 1 / 8.0, accuracy: 0.0001, "precondition: panned to the right edge at 4x")
 
-        zoom.setScale(1.5)
+        zoom.setScale(1.5, in: pane, videoSize: pane)
 
         XCTAssertEqual(
             zoom.center.x, 1 - 1 / 3.0, accuracy: 0.0001,
@@ -55,8 +70,8 @@ final class VideoZoomTests: XCTestCase {
             (CGSize(width: 0, height: 10_000), CGPoint(x: 0.5, y: 0.25)),
         ] {
             var zoom = VideoZoom()
-            zoom.setScale(2)
-            zoom.pan(by: drag, in: pane)
+            zoom.setScale(2, in: pane, videoSize: pane)
+            zoom.pan(by: drag, in: pane, videoSize: pane)
             XCTAssertEqual(zoom.center.x, expected.x, accuracy: 0.0001, "drag \(drag)")
             XCTAssertEqual(zoom.center.y, expected.y, accuracy: 0.0001, "drag \(drag)")
         }
@@ -70,12 +85,12 @@ final class VideoZoomTests: XCTestCase {
     /// is the difference between panning and flinging.
     func testADragMovesThePictureTheSameDistanceAtEveryScale() {
         var slow = VideoZoom()
-        slow.setScale(1.5)
-        slow.pan(by: CGSize(width: -80, height: 0), in: pane)
+        slow.setScale(1.5, in: pane, videoSize: pane)
+        slow.pan(by: CGSize(width: -80, height: 0), in: pane, videoSize: pane)
 
         var fast = VideoZoom()
-        fast.setScale(4)
-        fast.pan(by: CGSize(width: -80, height: 0), in: pane)
+        fast.setScale(4, in: pane, videoSize: pane)
+        fast.pan(by: CGSize(width: -80, height: 0), in: pane, videoSize: pane)
 
         // 80pt of an 800pt pane, divided by the scale.
         XCTAssertEqual(slow.center.x - 0.5, 0.1 / 1.5, accuracy: 0.0001)
@@ -88,24 +103,31 @@ final class VideoZoomTests: XCTestCase {
     /// whoever writes the gesture.
     func testDraggingRightMovesThePictureRight() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
-        zoom.pan(by: CGSize(width: 40, height: 0), in: pane)
+        zoom.setScale(2, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: 40, height: 0), in: pane, videoSize: pane)
 
         XCTAssertLessThan(zoom.center.x, 0.5, "dragging right must decrease the centre")
     }
 
     /// Not just "the centre is still 0.5" — a stub `pan` that never moved
     /// anything would pass that trivially. The contrasting drag at a real
-    /// scale proves the no-op above is the `isZoomed` guard doing work against
-    /// a `pan` that does move the centre elsewhere, not an inert function.
+    /// scale proves `pan` genuinely moves the centre when zoomed, so the
+    /// no-op above is meaningful evidence about 1x specifically, not about an
+    /// inert function. It does *not* by itself prove the `isZoomed` guard is
+    /// what blocks the drag at 1x: at s == 1 the clamp interval is already
+    /// the single point 0.5 regardless of that guard, so deleting `isZoomed`
+    /// from `pan` passes this test too (and every other test in this file) —
+    /// the invariant alone already produces the same answer. The guard stays
+    /// for what it is: a clear statement of intent, not a load-bearing check
+    /// this test can claim to pin.
     func testPanningIsIgnoredAtOneTimes() {
         var zoom = VideoZoom()
-        zoom.pan(by: CGSize(width: 100, height: 100), in: pane)
+        zoom.pan(by: CGSize(width: 100, height: 100), in: pane, videoSize: pane)
         XCTAssertEqual(zoom, VideoZoom(), "the whole value must be untouched, not merely the centre")
 
         var zoomed = VideoZoom()
-        zoomed.setScale(2)
-        zoomed.pan(by: CGSize(width: 100, height: 100), in: pane)
+        zoomed.setScale(2, in: pane, videoSize: pane)
+        zoomed.pan(by: CGSize(width: 100, height: 100), in: pane, videoSize: pane)
         XCTAssertNotEqual(zoomed.center, VideoZoom().center, "precondition: the same drag does move it when zoomed")
     }
 
@@ -118,8 +140,8 @@ final class VideoZoomTests: XCTestCase {
     /// companion 0/0 = NaN branch, which the clamp cannot resolve at all.
     func testPanningInAZeroSizedPaneChangesNothing() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
-        zoom.pan(by: CGSize(width: 40, height: 40), in: .zero)
+        zoom.setScale(2, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: 40, height: 40), in: .zero, videoSize: pane)
 
         XCTAssertEqual(zoom.center.x, 0.5, accuracy: 0.0001)
         XCTAssertEqual(zoom.center.y, 0.5, accuracy: 0.0001)
@@ -132,8 +154,8 @@ final class VideoZoomTests: XCTestCase {
     /// division ever happens, so it never reaches the clamp to fail there.
     func testPanningWithNoTranslationInAZeroSizedPaneChangesNothing() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
-        zoom.pan(by: .zero, in: .zero)
+        zoom.setScale(2, in: pane, videoSize: pane)
+        zoom.pan(by: .zero, in: .zero, videoSize: pane)
 
         XCTAssertEqual(zoom.center.x, 0.5, accuracy: 0.0001)
         XCTAssertEqual(zoom.center.y, 0.5, accuracy: 0.0001)
@@ -148,20 +170,20 @@ final class VideoZoomTests: XCTestCase {
     /// the fix is to never let one in.
     func testPanRejectsANonFiniteTranslation() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
+        zoom.setScale(2, in: pane, videoSize: pane)
 
-        zoom.pan(by: CGSize(width: CGFloat.nan, height: 0), in: pane)
+        zoom.pan(by: CGSize(width: CGFloat.nan, height: 0), in: pane, videoSize: pane)
         XCTAssertEqual(zoom.center.x, 0.5, accuracy: 0.0001, "a NaN component must reject the whole drag")
         XCTAssertEqual(zoom.center.y, 0.5, accuracy: 0.0001)
 
         // A NaN translation must not linger and poison later, ordinary calls.
-        zoom.pan(by: CGSize(width: -80, height: 0), in: pane)
+        zoom.pan(by: CGSize(width: -80, height: 0), in: pane, videoSize: pane)
         XCTAssertEqual(zoom.center.x, 0.5 + 0.1 / 2.0, accuracy: 0.0001, "a normal drag afterwards must still work")
 
         var afterSetScale = VideoZoom()
-        afterSetScale.setScale(2)
-        afterSetScale.pan(by: CGSize(width: CGFloat.nan, height: CGFloat.nan), in: pane)
-        afterSetScale.setScale(3)
+        afterSetScale.setScale(2, in: pane, videoSize: pane)
+        afterSetScale.pan(by: CGSize(width: CGFloat.nan, height: CGFloat.nan), in: pane, videoSize: pane)
+        afterSetScale.setScale(3, in: pane, videoSize: pane)
         XCTAssertEqual(afterSetScale.center.x, 0.5, accuracy: 0.0001, "setScale must not inherit a poisoned centre")
         XCTAssertEqual(afterSetScale.center.y, 0.5, accuracy: 0.0001)
     }
@@ -173,13 +195,13 @@ final class VideoZoomTests: XCTestCase {
     /// silently killing every later `pan` with no signal why.
     func testSetScaleRejectsANonFiniteScale() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
+        zoom.setScale(2, in: pane, videoSize: pane)
 
-        zoom.setScale(.nan)
+        zoom.setScale(.nan, in: pane, videoSize: pane)
 
         XCTAssertEqual(zoom.scale, 2, "a non-finite scale must be rejected, not applied")
         XCTAssertTrue(zoom.isZoomed)
-        zoom.pan(by: CGSize(width: -80, height: 0), in: pane)
+        zoom.pan(by: CGSize(width: -80, height: 0), in: pane, videoSize: pane)
         XCTAssertEqual(zoom.center.x, 0.5 + 0.05, accuracy: 0.0001, "pan must still work after a rejected setScale")
     }
 
@@ -187,23 +209,23 @@ final class VideoZoomTests: XCTestCase {
 
     func testTheScaleIsClampedToItsRange() {
         var zoom = VideoZoom()
-        zoom.setScale(100)
+        zoom.setScale(100, in: pane, videoSize: pane)
         XCTAssertEqual(zoom.scale, 4)
-        zoom.setScale(0.1)
+        zoom.setScale(0.1, in: pane, videoSize: pane)
         XCTAssertEqual(zoom.scale, 1)
     }
 
     func testIsZoomedIsFalseOnlyAtOneTimes() {
         var zoom = VideoZoom()
         XCTAssertFalse(zoom.isZoomed)
-        zoom.setScale(1.01)
+        zoom.setScale(1.01, in: pane, videoSize: pane)
         XCTAssertTrue(zoom.isZoomed)
     }
 
     func testResetReturnsToOneTimesAndCentre() {
         var zoom = VideoZoom()
-        zoom.setScale(3)
-        zoom.pan(by: CGSize(width: -200, height: -200), in: pane)
+        zoom.setScale(3, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: -200, height: -200), in: pane, videoSize: pane)
 
         zoom.reset()
 
@@ -221,7 +243,7 @@ final class VideoZoomTests: XCTestCase {
         XCTAssertEqual(frame, CGRect(origin: .zero, size: pane))
 
         var zoomed = VideoZoom()
-        zoomed.setScale(2)
+        zoomed.setScale(2, in: pane, videoSize: pane)
         let zoomedFrame = zoomed.layerFrame(in: pane, videoSize: pane)
         XCTAssertNotEqual(zoomedFrame, CGRect(origin: .zero, size: pane))
     }
@@ -232,11 +254,14 @@ final class VideoZoomTests: XCTestCase {
     /// `bounds` as the fitted rect: the same numbers as
     /// `testTheLayerPutsTheCentredPointAtThePaneMiddle` below, which uses a
     /// `videoSize` equal to `pane` to establish that fitted-to-bounds is
-    /// exactly the pre-load case.
+    /// exactly the pre-load case. The mutators are driven with `videoSize:
+    /// pane` too, so the centre they leave behind is the known (0.25, 0.25)
+    /// that test also relies on — only the final `layerFrame` call is what's
+    /// under test here.
     func testLayerFrameFallsBackToBoundsBeforeTheVideoSizeIsKnown() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
-        zoom.pan(by: CGSize(width: 10_000, height: 10_000), in: pane)
+        zoom.setScale(2, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: 10_000, height: 10_000), in: pane, videoSize: pane)
 
         for videoSize in [
             CGSize.zero,
@@ -255,8 +280,8 @@ final class VideoZoomTests: XCTestCase {
     /// arithmetic from the aspect-fitting this file tests separately below.
     func testTheLayerPutsTheCentredPointAtThePaneMiddle() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
-        zoom.pan(by: CGSize(width: 10_000, height: 10_000), in: pane)
+        zoom.setScale(2, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: 10_000, height: 10_000), in: pane, videoSize: pane)
         XCTAssertEqual(zoom.center.x, 0.25, accuracy: 0.0001, "precondition: panned to the left/top bound")
 
         let frame = zoom.layerFrame(in: pane, videoSize: pane)
@@ -271,8 +296,9 @@ final class VideoZoomTests: XCTestCase {
     /// has landed, the layer covers the whole pane. This is the invariant's
     /// consequence, asserted where the operator would actually see it fail.
     /// `videoSize == pane` keeps this about the clamp, not about aspect
-    /// fitting (see `testThePictureNeverLeavesANonSquarePaneEntirely` for
-    /// that). The scale sweep is dense rather than five hand-picked values.
+    /// fitting (see `testCoverageAcrossMismatchedAspectPanesAndScales` below
+    /// for that). The scale sweep is dense rather than five hand-picked
+    /// values.
     ///
     /// Containment is checked edge-by-edge with a point-sized epsilon rather
     /// than via `union(_:).equalTo(_:)`: `frame.width` is computed directly
@@ -290,8 +316,8 @@ final class VideoZoomTests: XCTestCase {
                 CGSize(width: 37, height: -91),
             ] {
                 var zoom = VideoZoom()
-                zoom.setScale(scale)
-                zoom.pan(by: drag, in: pane)
+                zoom.setScale(scale, in: pane, videoSize: pane)
+                zoom.pan(by: drag, in: pane, videoSize: pane)
                 let frame = zoom.layerFrame(in: pane, videoSize: pane)
                 XCTAssertLessThanOrEqual(frame.minX, epsilon, "scale \(scale), drag \(drag): gap on the left")
                 XCTAssertGreaterThanOrEqual(
@@ -311,7 +337,7 @@ final class VideoZoomTests: XCTestCase {
     func testTheGeometryIsCorrectInANonSquarePane() {
         let tall = CGSize(width: 300, height: 900)
         var zoom = VideoZoom()
-        zoom.setScale(3)
+        zoom.setScale(3, in: tall, videoSize: tall)
 
         let frame = zoom.layerFrame(in: tall, videoSize: tall)
 
@@ -332,11 +358,13 @@ final class VideoZoomTests: XCTestCase {
     /// moment the operator has hit a pan bound and most needs to see the
     /// edge they hit.
     ///
-    /// This does not claim the picture fully covers the pane at every bound
-    /// — with a real aspect mismatch, some letterboxing surviving a hard pan
-    /// is expected, not a bug. It claims the picture never vanishes, and that
-    /// the axis matching the pane's own aspect (width, here) is still always
-    /// fully covered exactly as it was before this fix.
+    /// This is deliberately the weaker of two claims about this scenario: it
+    /// only asserts the picture is a substantial fraction of the pane, not
+    /// that it fully covers it. `testAPortraitPaneWithASixteenByNineClipCoversCompletelyAtFourX`
+    /// below asserts the stronger, now-true claim for this exact geometry.
+    /// Both are kept: this one is a general "never vanishes" regression
+    /// guard that does not depend on the axis-aware clamp fix being correct
+    /// in every detail.
     func testThePictureNeverLeavesANonSquarePaneEntirely() {
         let portraitPane = CGSize(width: 500, height: 800)
         let sixteenByNine = CGSize(width: 1920, height: 1080)
@@ -349,8 +377,8 @@ final class VideoZoomTests: XCTestCase {
             (CGSize(width: 0, height: 10_000), "top bound"),
         ] {
             var zoom = VideoZoom()
-            zoom.setScale(4)
-            zoom.pan(by: drag, in: portraitPane)
+            zoom.setScale(4, in: portraitPane, videoSize: sixteenByNine)
+            zoom.pan(by: drag, in: portraitPane, videoSize: sixteenByNine)
 
             let frame = zoom.layerFrame(in: portraitPane, videoSize: sixteenByNine)
             let overlap = frame.intersection(paneRect)
@@ -373,8 +401,8 @@ final class VideoZoomTests: XCTestCase {
     /// before this parameter existed.
     func testFittingFallsBackToBoundsForADegenerateVideoSize() {
         var zoom = VideoZoom()
-        zoom.setScale(2)
-        zoom.pan(by: CGSize(width: 10_000, height: 10_000), in: pane)
+        zoom.setScale(2, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: 10_000, height: 10_000), in: pane, videoSize: pane)
 
         for videoSize in [
             CGSize.zero,
@@ -385,5 +413,153 @@ final class VideoZoomTests: XCTestCase {
             let frame = zoom.layerFrame(in: pane, videoSize: videoSize)
             XCTAssertEqual(frame, CGRect(x: 0, y: 0, width: 1600, height: 900), "videoSize \(videoSize)")
         }
+    }
+
+    // MARK: - Coverage under aspect mismatch
+
+    /// The coordinator's exact repro for the gap that survived the first
+    /// aspect-fit fix: 500x800 pane, 16:9 clip, 4x. Measured before this
+    /// round's fix: the picture is 1125pt tall against an 800pt pane — big
+    /// enough to fully cover — yet panned to a y bound left a 259pt (32.4%)
+    /// black band the operator could not pan away, because the aspect-
+    /// independent `1/(2s)` clamp let the centre travel further than the
+    /// picture's own edge allowed. The axis-aware half-extent
+    /// (`min(bounds / (2 * fitted * scale), 0.5)`) closes it: at this
+    /// geometry the y half-extent becomes ~0.3556 instead of 0.125, so the
+    /// centre cannot travel past the point that keeps the picture flush with
+    /// the pane.
+    func testAPortraitPaneWithASixteenByNineClipCoversCompletelyAtFourX() {
+        let portraitPane = CGSize(width: 500, height: 800)
+        let sixteenByNine = CGSize(width: 1920, height: 1080)
+        let epsilon = 1e-6
+
+        for (drag, description) in [
+            (CGSize(width: -10_000, height: 0), "left bound"),
+            (CGSize(width: 10_000, height: 0), "right bound"),
+            (CGSize(width: 0, height: -10_000), "bottom bound"),
+            (CGSize(width: 0, height: 10_000), "top bound"),
+        ] {
+            var zoom = VideoZoom()
+            zoom.setScale(4, in: portraitPane, videoSize: sixteenByNine)
+            zoom.pan(by: drag, in: portraitPane, videoSize: sixteenByNine)
+
+            let frame = zoom.layerFrame(in: portraitPane, videoSize: sixteenByNine)
+
+            XCTAssertLessThanOrEqual(frame.minX, epsilon, description)
+            XCTAssertGreaterThanOrEqual(frame.maxX, portraitPane.width - epsilon, description)
+            XCTAssertLessThanOrEqual(frame.minY, epsilon, description)
+            XCTAssertGreaterThanOrEqual(frame.maxY, portraitPane.height - epsilon, description)
+        }
+    }
+
+    /// The dense version of the case above: a portrait and a landscape pane,
+    /// both with a 16:9 clip, swept across scale and drag. At every point,
+    /// `fittedSize` (this file's independent oracle) says whether the
+    /// picture is at least as large as the pane on each axis; where it is,
+    /// full coverage on that axis must hold, and where it is not, the centre
+    /// must sit exactly at 0.5 on that axis (unavoidable letterboxing,
+    /// centred rather than off to one side). The previous coverage sweep
+    /// used `videoSize == pane` throughout and so never exercised an aspect
+    /// mismatch at all — this is the sweep that would have caught the gap
+    /// this round closes.
+    func testCoverageAcrossMismatchedAspectPanesAndScales() {
+        let sixteenByNine = CGSize(width: 1920, height: 1080)
+        let panes = [
+            CGSize(width: 500, height: 800),
+            CGSize(width: 800, height: 500),
+        ]
+        let epsilon = 1e-6
+
+        for testPane in panes {
+            let base = fittedSize(video: sixteenByNine, pane: testPane)
+            for scale in stride(from: 1.0, through: 4.0, by: 0.05) {
+                let xCovers = base.width * scale >= testPane.width
+                let yCovers = base.height * scale >= testPane.height
+                for drag in [
+                    CGSize(width: -10_000, height: -10_000),
+                    CGSize(width: 10_000, height: 10_000),
+                    CGSize(width: -10_000, height: 10_000),
+                    CGSize(width: 10_000, height: -10_000),
+                ] {
+                    var zoom = VideoZoom()
+                    zoom.setScale(scale, in: testPane, videoSize: sixteenByNine)
+                    zoom.pan(by: drag, in: testPane, videoSize: sixteenByNine)
+                    let frame = zoom.layerFrame(in: testPane, videoSize: sixteenByNine)
+                    let context = "pane \(testPane), scale \(scale), drag \(drag)"
+
+                    if xCovers {
+                        XCTAssertLessThanOrEqual(frame.minX, epsilon, "\(context): x gap on the left")
+                        XCTAssertGreaterThanOrEqual(frame.maxX, testPane.width - epsilon, "\(context): x gap on the right")
+                    } else {
+                        XCTAssertEqual(zoom.center.x, 0.5, accuracy: 1e-9, "\(context): unavoidable x letterboxing must stay centred")
+                    }
+
+                    if yCovers {
+                        XCTAssertLessThanOrEqual(frame.minY, epsilon, "\(context): y gap on the top")
+                        XCTAssertGreaterThanOrEqual(frame.maxY, testPane.height - epsilon, "\(context): y gap on the bottom")
+                    } else {
+                        XCTAssertEqual(zoom.center.y, 0.5, accuracy: 1e-9, "\(context): unavoidable y letterboxing must stay centred")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The degenerate case at the other end from full coverage: a picture
+    /// that stays smaller than the pane on one axis even at the maximum
+    /// scale. The raw half-extent formula would ask for an interval wider
+    /// than [0, 1] there; capped at 0.5 it collapses the centre to the
+    /// middle instead, on that axis only — the matching axis (here, width,
+    /// since the pane and clip share it) behaves exactly as the
+    /// matched-aspect case throughout.
+    func testAPictureSmallerThanThePaneOnAnAxisPinsTheCentreThereEvenAtMaxScale() {
+        let squarePane = CGSize(width: 1000, height: 1000)
+        let wideClip = CGSize(width: 1000, height: 100) // 10:1 — height letterboxes hard.
+
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: squarePane, videoSize: wideClip)
+        zoom.pan(by: CGSize(width: 0, height: 10_000), in: squarePane, videoSize: wideClip)
+
+        XCTAssertEqual(
+            zoom.center.y, 0.5, accuracy: 1e-9,
+            "the picture is 400pt tall in a 1000pt pane even at 4x; no pan can cover it, so the centre must stay put"
+        )
+
+        zoom.pan(by: CGSize(width: -10_000, height: 0), in: squarePane, videoSize: wideClip)
+        XCTAssertEqual(
+            zoom.center.x, 1 - 1 / 8.0, accuracy: 1e-9,
+            "the matching axis (width) is unaffected: half == 1/(2*4), same as the matched-aspect case"
+        )
+    }
+
+    /// `layerFrame` re-clamps against whatever `bounds`/`videoSize` it is
+    /// actually called with, not the geometry the last mutator saw. A window
+    /// resize is exactly this: `bounds` changes with no mutator running, so
+    /// a centre that was legal — even flush with the pane — for the old size
+    /// can leave an avoidable gap against the new one if it is rendered
+    /// as-is.
+    func testLayerFrameReClampsAfterAWindowResize() {
+        let originalPane = CGSize(width: 500, height: 300)
+        let resizedPane = CGSize(width: 500, height: 600)
+        let clip = CGSize(width: 1920, height: 1080)
+
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: originalPane, videoSize: clip)
+        zoom.pan(by: CGSize(width: 0, height: 10_000), in: originalPane, videoSize: clip)
+
+        let base = fittedSize(video: clip, pane: originalPane)
+        let expectedHalf = min(originalPane.height / (2 * base.height * 4), 0.5)
+        XCTAssertEqual(
+            zoom.center.y, expectedHalf, accuracy: 1e-9,
+            "precondition: panned to the y bound legal for the original (shorter) pane"
+        )
+
+        // No mutator has run against `resizedPane`; only `layerFrame` sees it.
+        let frame = zoom.layerFrame(in: resizedPane, videoSize: clip)
+
+        XCTAssertLessThanOrEqual(frame.minY, 1e-6, "a stale centre must not leave an avoidable gap after a resize")
+        XCTAssertGreaterThanOrEqual(frame.maxY, resizedPane.height - 1e-6)
+        XCTAssertLessThanOrEqual(frame.minX, 1e-6)
+        XCTAssertGreaterThanOrEqual(frame.maxX, resizedPane.width - 1e-6)
     }
 }

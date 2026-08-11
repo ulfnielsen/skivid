@@ -7,16 +7,33 @@ import CoreGraphics
 /// exhaustively without a media fixture. `SinglePlayerView`'s layer host is a
 /// thin applier of `layerFrame`.
 ///
-/// **The invariant.** At scale `s` the visible picture shows `1/s` of the
-/// video's own content, so the visible half-extent is `1/(2s)` and the centre
-/// is confined to `[1/(2s), 1 - 1/(2s)]` in both axes. At `s == 1` that
-/// interval collapses to the single point `0.5`, so 1x is centred by
-/// construction rather than by a special case. Both mutators re-establish it
-/// — see `setScale`, where forgetting to is the defect this type exists to
-/// prevent. It bounds a fraction of the *video*, not of the pane: when the
-/// pane's aspect does not match the clip's, `layerFrame` still letterboxes at
-/// 1x exactly as `.resizeAspect` would on its own — that is inherent to the
-/// aspect mismatch, not a gap in this invariant.
+/// **The invariant.** On each axis independently, the centre is confined to
+/// the widest interval that still keeps the picture covering the pane on that
+/// axis, capped at `[0, 1]`'s own midpoint. Concretely, the half-extent on an
+/// axis is `min(bounds / (2 · fitted · scale), 0.5)`, where `fitted` is that
+/// axis' extent of the video once it has been letterboxed to fit `bounds`
+/// (see `layerFrame`). Two cases fall out of that one formula:
+///
+/// - When the pane's aspect matches the clip's, `fitted == bounds` on both
+///   axes and this degenerates to exactly `1/(2 · scale)` — the picture
+///   shows `1/scale` of the video's own content, unaffected by pane shape.
+/// - When the aspects don't match, the letterboxed axis (`fitted < bounds`)
+///   gets a *narrower* legal interval than `1/(2 · scale)` once the picture
+///   is at least as large as the pane on that axis, because letterboxing
+///   already used up some of the scale before any of it could cover the
+///   pane. Below that threshold — the picture is still smaller than the pane
+///   on that axis even scaled up — the formula would ask for a half-extent
+///   past `0.5`, i.e. an interval wider than legal; capping at `0.5`
+///   collapses the centre to the middle instead, which is correct: no
+///   position covers the pane there, so centring the unavoidable bars is the
+///   right answer, not a special case bolted on.
+///
+/// At `scale == 1` with matched aspect that interval collapses to the single
+/// point `0.5`, so 1x is centred by construction rather than by a special
+/// case. Both mutators re-establish this — see `setScale`, where forgetting
+/// to is the defect this type exists to prevent — and `layerFrame` enforces
+/// it defensively too, because a window resize changes `bounds` without
+/// running either mutator.
 public struct VideoZoom: Equatable, Sendable {
     /// 4x on a 1080p clip is roughly a 270p crop blown up to the pane, which is
     /// about as far as the source holds up. Below 1x the picture would shrink
@@ -35,20 +52,21 @@ public struct VideoZoom: Equatable, Sendable {
         center = CGPoint(x: 0.5, y: 0.5)
     }
 
-    /// Re-clamps the centre. Zooming *out* narrows the legal interval, so a
-    /// centre that was legal at 4x is not at 1.5x; without this the picture
-    /// hangs off one edge with black down the side, which reads as a rendering
-    /// bug rather than as a pan that needed correcting.
+    /// Re-clamps the centre against `bounds`/`videoSize`. Zooming *out* narrows
+    /// the legal interval, so a centre that was legal at 4x is not at 1.5x;
+    /// without this the picture hangs off one edge with black down the side,
+    /// which reads as a rendering bug rather than as a pan that needed
+    /// correcting.
     ///
     /// A non-finite `newScale` — reachable from a slider binding or a gesture
     /// magnitude — is rejected outright rather than clamped: `min`/`max`
     /// propagate NaN instead of absorbing it, so clamping a NaN leaves `scale`
     /// itself NaN, which breaks the type's headline promise that `scale`
     /// always lives in `range`.
-    public mutating func setScale(_ newScale: Double) {
+    public mutating func setScale(_ newScale: Double, in bounds: CGSize, videoSize: CGSize) {
         guard newScale.isFinite else { return }
         scale = min(max(newScale, Self.range.lowerBound), Self.range.upperBound)
-        center = Self.clamped(center, at: scale)
+        center = Self.clamped(center, bounds: bounds, videoSize: videoSize, scale: scale)
     }
 
     /// `translation` and `paneSize` are both in points.
@@ -76,7 +94,7 @@ public struct VideoZoom: Equatable, Sendable {
     /// it not to — is rejected the same way: `min`/`max` propagate rather than
     /// absorb it, so a NaN component would poison `center` permanently, with
     /// no later `pan` or `setScale` able to recover it.
-    public mutating func pan(by translation: CGSize, in paneSize: CGSize) {
+    public mutating func pan(by translation: CGSize, in paneSize: CGSize, videoSize: CGSize) {
         guard
             isZoomed,
             paneSize.width > 0, paneSize.height > 0,
@@ -86,7 +104,7 @@ public struct VideoZoom: Equatable, Sendable {
             x: center.x - translation.width / (paneSize.width * scale),
             y: center.y - translation.height / (paneSize.height * scale)
         )
-        center = Self.clamped(moved, at: scale)
+        center = Self.clamped(moved, bounds: paneSize, videoSize: videoSize, scale: scale)
     }
 
     public mutating func reset() {
@@ -115,23 +133,64 @@ public struct VideoZoom: Equatable, Sendable {
     /// a fudge: there is no picture on screen yet to bound, and the next
     /// layout pass after the size arrives re-places the layer against the
     /// real aspect.
+    ///
+    /// **Defensively re-clamps `center` against the `bounds`/`videoSize` it
+    /// was actually called with**, rather than trusting the stored value. The
+    /// mutators keep `center` legal for the geometry they were given, but a
+    /// window resize changes `bounds` with no mutator running at all — a
+    /// centre that fully covered a portrait pane can leave a gap once the
+    /// pane goes landscape. Belt and braces on purpose: re-clamping here is
+    /// cheap, and the failure it prevents is a black band the operator has no
+    /// gesture to explain or correct.
     public func layerFrame(in bounds: CGSize, videoSize: CGSize) -> CGRect {
         let base = Self.fitted(videoSize, in: bounds)
         let size = CGSize(width: base.width * scale, height: base.height * scale)
+        let renderCenter = Self.clamped(center, bounds: bounds, videoSize: videoSize, scale: scale)
         return CGRect(
-            x: bounds.width * 0.5 - center.x * size.width,
-            y: bounds.height * 0.5 - center.y * size.height,
+            x: bounds.width * 0.5 - renderCenter.x * size.width,
+            y: bounds.height * 0.5 - renderCenter.y * size.height,
             width: size.width,
             height: size.height
         )
     }
 
-    private static func clamped(_ point: CGPoint, at scale: Double) -> CGPoint {
-        let half = 1 / (2 * scale)
+    /// Clamps `point` to the legal centre interval for `scale` against
+    /// `bounds`/`videoSize`, independently on each axis. See the type-level
+    /// doc comment for the formula and why it degenerates to `1/(2·scale)`
+    /// when the aspects match.
+    private static func clamped(_ point: CGPoint, bounds: CGSize, videoSize: CGSize, scale: Double) -> CGPoint {
+        let base = Self.fitted(videoSize, in: bounds)
+        let halfX = Self.half(bounds: bounds.width, fitted: base.width, scale: scale)
+        let halfY = Self.half(bounds: bounds.height, fitted: base.height, scale: scale)
         return CGPoint(
-            x: min(max(point.x, half), 1 - half),
-            y: min(max(point.y, half), 1 - half)
+            x: min(max(point.x, halfX), 1 - halfX),
+            y: min(max(point.y, halfY), 1 - halfY)
         )
+    }
+
+    /// The half-extent of the legal centre interval on one axis:
+    /// `bounds / (2 · fitted · scale)`, capped at `0.5`.
+    ///
+    /// When the picture is at least as large as the pane on this axis
+    /// (`fitted · scale >= bounds`), this is exactly the fraction of the
+    /// picture's own extent that must stay inside the pane's half — matching
+    /// `1/(2·scale)` when `fitted == bounds` (aspects match), and shrinking
+    /// as `fitted` shrinks relative to `bounds` (more letterboxing leaves
+    /// less travel before the picture's own edge creates a gap).
+    ///
+    /// When the picture is smaller than the pane on this axis even at this
+    /// scale, the raw formula exceeds `0.5` — an interval wider than `[0, 1]`
+    /// can express. Capping at `0.5` collapses the centre to the middle
+    /// instead: no placement covers the pane on this axis regardless of pan,
+    /// so centring the unavoidable letterbox bars is the right answer.
+    ///
+    /// `fitted <= 0` only when `bounds` itself is degenerate (see
+    /// `fitted(_:in:)`); there is no meaningful pane to bound against, so
+    /// this collapses to the centre point the same as everywhere else that
+    /// falls back on a degenerate geometry.
+    private static func half(bounds: CGFloat, fitted: CGFloat, scale: Double) -> CGFloat {
+        guard fitted > 0 else { return 0.5 }
+        return min(bounds / (2 * fitted * scale), 0.5)
     }
 
     /// The largest rect of `videoSize`'s aspect that fits inside `bounds`,
