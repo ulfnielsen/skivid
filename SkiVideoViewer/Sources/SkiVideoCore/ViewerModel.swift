@@ -436,6 +436,16 @@ public final class ViewerModel: ObservableObject {
     /// yet" and falls back to the pane's rect for. Read fresh on every call
     /// rather than cached, for the same reason `SinglePlayerView`'s layer host
     /// re-reads it: it arrives late, and it changes on every clip.
+    ///
+    /// **The pre-load window is benign, traced rather than assumed.** While
+    /// this reads `.zero`, `VideoZoom`'s `fitted` falls back to the pane, so a
+    /// clamp computed here uses **the pane's aspect, not the clip's** — and a
+    /// stored `center` can therefore sit briefly outside the interval that is
+    /// legal once the clip's real aspect is known. Nothing draws wrong in the
+    /// meantime, because `layerFrame` re-clamps its own rendering copy against
+    /// the real geometry on every pass, and nothing jumps afterwards, because
+    /// the next `pan` clamps to the position already on screen. It self-heals
+    /// invisibly; there is no correction to make here.
     private var videoSize: CGSize {
         player.currentItem?.presentationSize ?? .zero
     }

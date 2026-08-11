@@ -18,7 +18,33 @@ struct ViewerPane: View {
     /// `DragGesture` reports `translation` from where the drag *began*, not
     /// since the last change, so this is what turns it into a per-change delta.
     /// See `panGesture`.
-    @State private var lastDrag: CGSize = .zero
+    ///
+    /// **`@GestureState`, not `@State`, and the difference is a measured bug
+    /// rather than a style preference.** `@GestureState` reverts to its initial
+    /// value automatically when the gesture ends *or is cancelled*; a `@State`
+    /// reset from `onEnded` only covers the first of those, and `onEnded` does
+    /// not run when the recognizer is torn down mid-drag. That is reachable
+    /// here — `panGesture` is only installed while `isZoomed`, so a second
+    /// finger on the chip's `−` or its level readout removes it underneath a
+    /// live drag, as does any system drag cancellation (an edge swipe to the
+    /// app switcher, Slide Over, a notification), which needs no second finger.
+    ///
+    /// Measured on a hosted `ViewerPane` in a real window, 400×300 pane at 4×:
+    /// a 60pt leftward drag torn down mid-flight, then a fresh 20pt leftward
+    /// drag after re-arming.
+    ///
+    /// | | second drag's `center.x` |
+    /// | ------------------------------ | ------ |
+    /// | `@GestureState` (shipping)     | 0.5125 |
+    /// | `@State` + `onEnded` reset     | 0.475  |
+    ///
+    /// 0.475 is the picture jumping 40pt *right* on the first frame of a
+    /// leftward drag — the stale 60pt subtracted from the new 20pt — and it
+    /// persists until one drag completes cleanly. Two consecutive *clean*
+    /// drags are exactly additive under both, which is why a single-drag test
+    /// cannot see this; `testASecondDragAfterTheGestureIsTornDownStartsFromRest`
+    /// is what pins it.
+    @GestureState private var lastDrag: CGSize = .zero
 
     /// **One `GeometryReader`, three consumers.** The drag, the zoom chip's
     /// slider and the model call underneath both of them all need the pane's
@@ -75,8 +101,16 @@ struct ViewerPane: View {
     /// bottom-leading (the caption) and top-trailing (the status chip).
     ///
     /// `.frame(maxWidth: 220)` for the same reason the status chip is capped:
-    /// unbounded, the control's own ideal width is 224pt and it would grow into
-    /// the caption on a narrow pane.
+    /// unbounded, the control's own ideal width is 224pt.
+    ///
+    /// **It shares the pane's bottom edge with the caption, and the overlap
+    /// point is arithmetic rather than a mystery.** The chip occupies 260pt of
+    /// trailing width — the 220pt cap, plus 8pt of inner padding and 12pt of
+    /// outer padding on each side — so a caption longer than
+    /// `paneWidth − 260` runs under it. That is left alone deliberately: the
+    /// caption draws *over* the chip and carries `.allowsHitTesting(false)`, so
+    /// the chip still receives every click, and the cost is cosmetic on a pane
+    /// narrow enough to reach it.
     private func zoomChip(in paneSize: CGSize) -> some View {
         ZoomControl(
             zoom: model.zoom,
@@ -101,9 +135,16 @@ struct ViewerPane: View {
     /// `ZoomWiringTests.testDraggingThePanePansByEachStepsDeltaRatherThanTheWholeTranslation`:
     /// a 60pt drag in three steps lands `center.x` on 0.5375 with the
     /// subtraction and 0.575 — a 60pt drag moving the picture 120pt — without.
+    ///
+    /// **`updating`, not `onChanged` with an `onEnded` reset.** Both compute
+    /// the same delta; only this one gets the running total cleared when the
+    /// gesture is *cancelled* as well as when it ends. See `lastDrag` for the
+    /// measurement, and note that the `onChanged`/`onEnded` shape is what this
+    /// view shipped with first — it is not a worse-looking version of the same
+    /// behaviour, it is a different and wrong one.
     private func panGesture(in paneSize: CGSize) -> some Gesture {
         DragGesture()
-            .onChanged { value in
+            .updating($lastDrag) { value, lastDrag, _ in
                 let delta = CGSize(
                     width: value.translation.width - lastDrag.width,
                     height: value.translation.height - lastDrag.height
@@ -111,7 +152,6 @@ struct ViewerPane: View {
                 lastDrag = value.translation
                 model.panZoom(by: delta, in: paneSize)
             }
-            .onEnded { _ in lastDrag = .zero }
     }
 
     private var caption: some View {

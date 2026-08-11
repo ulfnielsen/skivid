@@ -522,6 +522,148 @@ final class ZoomWiringTests: XCTestCase {
         XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.002, "a horizontal drag must not move the picture vertically")
     }
 
+    /// **Two clean drags are exactly additive**, which is the control for the
+    /// test below and worth pinning on its own: `lastDrag` has to be cleared
+    /// between gestures, but it must be cleared *back to rest* rather than left
+    /// holding anything, and a chain that drifted would show up here.
+    ///
+    /// Measured: 20pt left, mouse up, 20pt left again, at 4× in a 400pt pane —
+    /// `0.5 + 2 × 20/(400×4) = 0.525`.
+    func testTwoCleanDragsAreExactlyAdditive() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane)
+        let (host, window) = try hostedPane(model: model, pane: pane)
+        _ = host
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -20, releasing: true)
+        XCTAssertEqual(model.zoom.center.x, 0.5125, accuracy: 0.002, "precondition: the first drag lands where one drag should")
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -20, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom.center.x, 0.525, accuracy: 0.002,
+            "two clean 20pt drags must total 40pt of pan, not more and not less"
+        )
+    }
+
+    /// **A drag that is never ended must not poison the next one.**
+    ///
+    /// `panGesture` is installed only while `model.zoom.isZoomed`, so dropping
+    /// to 1× removes the recognizer out from under a live drag and
+    /// `DragGesture.onEnded` never runs. On iPadOS that is reachable two ways:
+    /// a second finger on the chip's `−` or its level readout while the first
+    /// is panning, and any system drag cancellation — an edge swipe to the app
+    /// switcher, Slide Over, a notification — which needs no second finger at
+    /// all.
+    ///
+    /// **Measured, and this is what `@GestureState` buys.** A 60pt leftward
+    /// drag torn down mid-flight, then a fresh 20pt leftward drag after
+    /// re-arming at 4×:
+    ///
+    /// | | second drag's `center.x` |
+    /// | ------------------------------ | ------ |
+    /// | `@GestureState` (shipping)     | 0.5125 |
+    /// | `@State` + `onEnded` reset     | 0.475  |
+    ///
+    /// 0.475 is a leftward drag moving the picture 40pt to the *right* on its
+    /// first frame — the dead drag's 60pt subtracted from the new 20pt — and it
+    /// stays wrong until some drag completes cleanly. Mutation-checked by
+    /// putting `@State` and `onEnded` back: this test fails at exactly 0.475
+    /// while every other test in the file, including the additive control
+    /// above, still passes.
+    func testASecondDragAfterTheGestureIsTornDownStartsFromRest() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane)
+        let (host, window) = try hostedPane(model: model, pane: pane)
+
+        // A 60pt drag with no mouse-up: the gesture is torn down underneath it
+        // instead, which is what `onEnded` cannot see.
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -60, releasing: false)
+        XCTAssertEqual(model.zoom.center.x, 0.5375, accuracy: 0.002, "precondition: the first drag panned")
+
+        model.resetZoom()
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(model.zoom.isZoomed, "precondition: 1x, so the pan gesture is no longer installed")
+
+        model.setZoomScale(4, in: pane)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(model.zoom.center.x, 0.5, accuracy: 0.0001, "precondition: the reset recentred the picture")
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -20, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom.center.x, 0.5125, accuracy: 0.002,
+            """
+            the second drag must move by its own 20pt only; 0.475 means the \
+            torn-down drag's 60pt was still being subtracted, sending a leftward \
+            drag 40pt to the right
+            """
+        )
+    }
+
+    /// **The chip is dead until a clip is loaded**, matching
+    /// `ViewerControlsWiringTests.testADisabledViewerControlBarDoesNotEnableAnyButton`
+    /// for the bar. Without this, replacing `isEnabled: model.currentPlaybackURL != nil`
+    /// with `isEnabled: true` passes the entire suite — and the failure it lets
+    /// through is visible: on an empty library the operator drags the slider,
+    /// `setZoomScale` runs against a player with no item, and the level readout
+    /// reads 2.5× over a blank pane.
+    ///
+    /// Asserts the real `NSButton.isEnabled`/`NSSlider.isEnabled`, for the same
+    /// reason that file does: they are plain AppKit properties, unlike the
+    /// accessibility ones, which are dead in a `swift test` host process.
+    ///
+    /// The model-side half is the weaker of the two on its own — `setZoomScale`
+    /// would happily run — so the enabled-state assertions are the ones that
+    /// carry this, and the click-through afterwards is the belt-and-braces. See
+    /// the comment on that click for a measurement of just how weak the
+    /// model-side half is for the slider specifically.
+    func testTheZoomChipIsDisabledWithNothingLoaded() throws {
+        let model = ViewerModel(
+            input: AppKitInputSource(),
+            folderPicker: AppKitFolderPicker(),
+            oauthPresenter: StubOAuthPresenter()
+        )
+        XCTAssertNil(model.currentPlaybackURL, "precondition: nothing is loaded")
+
+        let pane = CGSize(width: 800, height: 450)
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let slider = try XCTUnwrap(Self.sliders(in: host).first, "precondition: the chip renders a slider")
+        XCTAssertFalse(slider.isEnabled, "the zoom slider must read as disabled with no clip loaded")
+
+        let buttons = Self.buttons(in: host)
+        XCTAssertEqual(buttons.count, 3, "precondition: the chip's minus, plus and level-as-reset")
+        for (index, button) in buttons.enumerated() {
+            XCTAssertFalse(button.isEnabled, "chip button at index \(index) must read as disabled with no clip loaded")
+        }
+
+        // Belt and braces, matching the bar's test: a click through a disabled
+        // button must also do nothing to the model.
+        //
+        // Buttons only, deliberately. The slider's equivalent would be
+        // `sendAction(_:to:)`, and **that bypasses `isEnabled` entirely** —
+        // measured here: with the chip correctly disabled and every assertion
+        // above passing, `slider.sendAction(...)` still drove `model.zoom.scale`
+        // to 4.0. It is a direct dispatch, not an event, so no user can reach
+        // it; asserting on it would pin a behaviour AppKit does not have. That
+        // is precisely why the `isEnabled` assertions above are what carry this
+        // test rather than a model-side effect.
+        for button in buttons {
+            button.performClick(nil)
+        }
+
+        XCTAssertEqual(model.zoom, VideoZoom(), "a disabled zoom chip's buttons must not reach the model")
+    }
+
     /// **The chip takes its own clicks, and the video does not get them.**
     ///
     /// This is the rule the caption and the status chip meet by carrying
@@ -661,6 +803,46 @@ final class ZoomWiringTests: XCTestCase {
         XCTAssertEqual(model.player.rate, 1, "the pan gesture must not swallow a stationary click")
         XCTAssertEqual(model.zoom.center.x, 0.5, accuracy: 0.0001, "a click is not a pan")
         XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.0001, "a click is not a pan")
+    }
+
+    /// A `ViewerPane` in a real off-screen `NSWindow`, which is what synthetic
+    /// mouse events need to reach SwiftUI's gesture recognition — see
+    /// `ViewerControlsWiringTests.testTappingTheViewerPaneTogglesPlaybackOnMacOS`
+    /// for why `view.mouseDown(with:)` alone does not.
+    private func hostedPane(model: ViewerModel, pane: CGSize) throws -> (NSHostingView<some View>, NSWindow) {
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        return (host, window)
+    }
+
+    /// A horizontal drag in three equal steps. `releasing: false` leaves the
+    /// gesture live with no mouse-up, which is the cancellation case.
+    ///
+    /// Three steps rather than one because `DragGesture`'s default
+    /// `minimumDistance` is 10pt: a single event of less than that would never
+    /// start the gesture, and the per-change delta this file measures needs
+    /// more than one change to be distinguishable from the whole translation.
+    private static func drag(in window: NSWindow, from start: CGPoint, by dx: CGFloat, releasing: Bool) {
+        window.sendEvent(mouseEvent(.leftMouseDown, at: start, windowNumber: window.windowNumber))
+        for step in 1...3 {
+            let point = CGPoint(x: start.x + dx * CGFloat(step) / 3, y: start.y)
+            window.sendEvent(mouseEvent(.leftMouseDragged, at: point, windowNumber: window.windowNumber))
+        }
+        if releasing {
+            window.sendEvent(
+                mouseEvent(.leftMouseUp, at: CGPoint(x: start.x + dx, y: start.y), windowNumber: window.windowNumber)
+            )
+        }
     }
 
     private static func sliders(in view: NSView) -> [NSSlider] {
