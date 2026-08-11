@@ -110,7 +110,15 @@ struct SortingSheet: View {
     private var taggingView: some View {
         VStack(spacing: 0) {
             if model.currentVideo != nil {
-                NativePlayerView(player: model.player)
+                // A bare layer with no transport controls of its own, which
+                // is what this preview needs and what the viewer now uses too.
+                // The AVKit-backed view this replaced went when the viewer
+                // gained zoom. No zoom is passed, so the layer fills the pane
+                // exactly as it did before; the one visible change is gravity —
+                // that view used `.resizeAspectFill` on macOS, this
+                // letterboxes, which is the right default for judging a clip
+                // you are about to tag.
+                SinglePlayerView(player: model.player)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 12) {

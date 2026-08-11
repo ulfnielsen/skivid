@@ -3,8 +3,12 @@ import SkiVideoCore
 import SwiftUI
 
 /// One `AVPlayer` rendered by an `AVPlayerLayer`, with no transport controls.
-/// The overlay stacks two of these, so it needs a bare layer rather than the
-/// full player controller `NativePlayerView` provides.
+/// Every screen in the app draws video through this: the overlay stacks two of
+/// them, and the viewer and sorting sheet each use one. It began as the
+/// overlay's own view, because stacking needs a bare layer rather than the full
+/// AVKit player controller the other screens used at the time; that controller
+/// then turned out to be un-zoomable — its layer cannot be given a frame
+/// independent of its view — and went, leaving this.
 ///
 /// `resizeAspect`, not `resizeAspectFill`: the overlay compares two clips, and
 /// cropping either one would make the comparison lie. Phase 3 established the

@@ -40,6 +40,14 @@ public final class ViewerModel: ObservableObject {
     /// being typed into the field.
     @Published public private(set) var isPlaying = false
 
+    /// How far into the current clip the operator has zoomed.
+    ///
+    /// Kept across clip and athlete changes — watching several runs of one
+    /// drill at a fixed magnification is what the control is for — and reset in
+    /// `openDirectory`/`connectGoogleDrive`, where a pan into one library's
+    /// corner says nothing about another's.
+    @Published public private(set) var zoom = VideoZoom()
+
     public let player = AVPlayer()
 
     private var activeAthleteID: String?
@@ -271,6 +279,7 @@ public final class ViewerModel: ObservableObject {
                 activeAthleteID = nil
                 selectedAthleteID = library.athletes[0].id
                 athleteQuery = ""
+                zoom.reset()
                 selectAthlete(library.athletes[0].id)
                 status = "Google Drive connected"
             } catch {
@@ -293,6 +302,7 @@ public final class ViewerModel: ObservableObject {
             isUsingGoogleDrive = false
             activeAthleteID = nil
             selectedAthleteID = scannedAthletes[0].id
+            zoom.reset()
             selectAthlete(scannedAthletes[0].id)
         } catch {
             errorMessage = error.localizedDescription
@@ -395,6 +405,39 @@ public final class ViewerModel: ObservableObject {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
+    }
+
+    // MARK: - Zoom
+
+    /// `paneSize` is the video pane's own size, which only a view can know —
+    /// it comes from `ViewerPane`'s `GeometryReader`. `videoSize` is *not* a
+    /// parameter: `VideoZoom` needs the clip's dimensions to clamp the pan, and
+    /// this class holds the player, so a view passing them would have to reach
+    /// through the model to the player for a value the model already has.
+    ///
+    /// Out-of-range scales arrive here routinely — `ZoomControl`'s step buttons
+    /// offer `scale ± 0.5` without checking the bounds — and are correct to
+    /// pass on: `VideoZoom.setScale` clamps to `VideoZoom.range` unconditionally,
+    /// so the range is enforced in exactly one place.
+    public func setZoomScale(_ scale: Double, in paneSize: CGSize) {
+        zoom.setScale(scale, in: paneSize, videoSize: videoSize)
+    }
+
+    public func panZoom(by translation: CGSize, in paneSize: CGSize) {
+        zoom.pan(by: translation, in: paneSize, videoSize: videoSize)
+    }
+
+    public func resetZoom() {
+        zoom.reset()
+    }
+
+    /// The current clip's own dimensions, or `.zero` before its tracks have
+    /// loaded — which is the value `VideoZoom` documents as "no aspect to fit
+    /// yet" and falls back to the pane's rect for. Read fresh on every call
+    /// rather than cached, for the same reason `SinglePlayerView`'s layer host
+    /// re-reads it: it arrives late, and it changes on every clip.
+    private var videoSize: CGSize {
+        player.currentItem?.presentationSize ?? .zero
     }
 
     /// The single teardown. Every library change and every transport action

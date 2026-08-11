@@ -46,6 +46,16 @@ final class ViewerControlsWiringTests: XCTestCase {
 
     // MARK: - ViewerControlBar
 
+    /// **Measured** by counting what `transportButtons` finds: six transport
+    /// buttons, then `ZoomControl`'s minus, plus and level-as-reset, then
+    /// Previous and Next clip. It was 8 before the zoom control; the three it
+    /// added sit *between* the transport and the clip stepping, which is why
+    /// the indices below are written against this rather than against
+    /// `TransportAction.allCases.count` alone.
+    private static let zoomButtonCount = 3
+    private static let barButtonCount = TransportAction.allCases.count + zoomButtonCount + 2
+    private static let previousClipIndex = TransportAction.allCases.count + zoomButtonCount
+
     /// Kills the mutation of replacing `model.applyTransport(action)` with
     /// `_ = action` inside `ViewerControlBar.transport`. An empty fixture is
     /// enough: `applyTransport(.playPause)` sets `AVPlayer.rate` directly,
@@ -60,7 +70,10 @@ final class ViewerControlsWiringTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
 
         let buttons = transportButtons(in: host)
-        XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
+        XCTAssertEqual(
+            buttons.count, Self.barButtonCount,
+            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+        )
 
         let playPauseIndex = try XCTUnwrap(TransportAction.allCases.firstIndex(of: .playPause))
         buttons[playPauseIndex].performClick(nil)
@@ -78,8 +91,9 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// that only checked "the clip changed" could not tell a sign flip on
     /// the `Next` button's offset from a correct one.
     ///
-    /// **Buttons are located by `TransportAction.allCases.count`, not a bare
-    /// literal `7`, but this is still positional, not label-based.** Review
+    /// **Buttons are located by a named offset built from
+    /// `TransportAction.allCases.count` and `zoomButtonCount`, not a bare
+    /// literal, but this is still positional, not label-based.** Review
     /// asked for lookup by `accessibilityLabel`/title, matching how
     /// `SharedControlsWiringTests` locates `playPauseIndex` — and how
     /// `ComparisonControlBar`'s anchor button is found by trailing position
@@ -101,15 +115,18 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// `NSWindow`; this one needs the process itself to be a real app, which
     /// `swift test` cannot provide). Reading `NSButton.isEnabled` directly
     /// (below) works because that is a plain AppKit property, not routed
-    /// through Accessibility. Pinning "Previous clip"/"Next clip" text to
-    /// its button is Task 4's job, on the iPad XCUITest runner, whose
-    /// `XCUIElement` queries read a UIKit accessibility tree that is
-    /// actually populated.
+    /// through Accessibility. Pinning "Previous clip"/"Next clip" text to its
+    /// button is done on the iPad XCUITest runner instead, whose
+    /// `XCUIElement` queries read a UIKit accessibility tree that is actually
+    /// populated — `ViewerOnIPadUITests.testNextClipAdvancesAndPreviousClipGoesBack`.
     ///
     /// `transportButtons` walks the AppKit tree in declaration order — the
-    /// six transport buttons first, then `clipStepping`'s Previous, then
-    /// Next — confirmed the same way `SharedControlsWiringTests` confirms
-    /// `ComparisonControlBar`'s seven-button order.
+    /// six transport buttons first, then `ZoomControl`'s minus/plus/level,
+    /// then `clipStepping`'s Previous, then Next — confirmed the same way
+    /// `SharedControlsWiringTests` confirms `ComparisonControlBar`'s
+    /// seven-button order. The order is the same in both `ViewThatFits`
+    /// branches, and only one branch is ever realised, so these indices do not
+    /// depend on the 600pt width the host is given.
     func testClickingNextClipInViewerControlBarMovesTheModel() throws {
         let model = try makeModel(videoNames: ["run1.mp4", "run2.mp4", "run3.mp4"])
         XCTAssertEqual(model.currentVideo?.lastPathComponent, "run1.mp4", "precondition")
@@ -118,9 +135,12 @@ final class ViewerControlsWiringTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
 
         let buttons = transportButtons(in: host)
-        XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
+        XCTAssertEqual(
+            buttons.count, Self.barButtonCount,
+            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+        )
 
-        buttons[TransportAction.allCases.count + 1].performClick(nil)
+        buttons[Self.previousClipIndex + 1].performClick(nil)
 
         XCTAssertEqual(
             model.currentVideo?.lastPathComponent, "run2.mp4",
@@ -141,9 +161,12 @@ final class ViewerControlsWiringTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
 
         let buttons = transportButtons(in: host)
-        XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
+        XCTAssertEqual(
+            buttons.count, Self.barButtonCount,
+            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+        )
 
-        buttons[TransportAction.allCases.count].performClick(nil)
+        buttons[Self.previousClipIndex].performClick(nil)
 
         XCTAssertEqual(
             model.currentVideo?.lastPathComponent, "run3.mp4",
@@ -158,8 +181,8 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// own.
     ///
     /// Asserts the real `NSButton.isEnabled`, not a model-side effect.
-    /// Review caught that the model-side version of this test — clicking all
-    /// eight buttons and asserting `player.rate == 0` /
+    /// Review caught that the model-side version of this test — clicking every
+    /// button and asserting `player.rate == 0` /
     /// `currentVideo == nil` — cannot fail: `ViewerModel.togglePlayback`
     /// already guards on `currentVideo != nil` and `changeVideo(by:)` already
     /// guards on `currentAthlete`, so those two assertions hold whether or
@@ -181,7 +204,10 @@ final class ViewerControlsWiringTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
 
         let buttons = transportButtons(in: host)
-        XCTAssertEqual(buttons.count, 8, "precondition: six transport buttons plus Previous/Next clip")
+        XCTAssertEqual(
+            buttons.count, Self.barButtonCount,
+            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+        )
 
         for (index, button) in buttons.enumerated() {
             XCTAssertFalse(button.isEnabled, "button at index \(index) must read as disabled with nothing loaded")
@@ -214,11 +240,16 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// synthetic events through `window.sendEvent(_:)` against a real
     /// (still off-screen, `.prohibited`-policy) `NSWindow` reaches it.
     ///
-    /// **macOS only.** On iPadOS `ViewerPane` still renders through
-    /// `NativePlayerView`, backed by an `AVPlayerViewController` with its
-    /// own UIKit gesture arbitration — a different subsystem this
-    /// AppKit-event technique says nothing about. Tapping the video on iPad
-    /// stays a Task 4 XCUITest step.
+    /// **macOS only**, and it stays that way now for a different reason than
+    /// when it was written. The pane used to render through an AVKit player
+    /// view whose UIKit gesture arbitration this AppKit-event technique said
+    /// nothing about; both platforms now share `SinglePlayerView`, so the
+    /// *view* is no longer the difference. The technique still is: sending
+    /// synthetic `NSEvent`s through an `NSWindow` is an AppKit route with no
+    /// UIKit equivalent here, and UIKit's own hit-testing has already been
+    /// measured to behave differently from AppKit's on this very pane — see
+    /// `testTappingWhereTheStatusChipSitsStillTogglesPlayback` below. Tapping
+    /// the video on iPad therefore stays an XCUITest step.
     func testTappingTheViewerPaneTogglesPlaybackOnMacOS() throws {
         let model = try makeModel(videoNames: ["run1.mp4"])
         XCTAssertEqual(model.player.rate, 0, "precondition: nothing is playing yet")

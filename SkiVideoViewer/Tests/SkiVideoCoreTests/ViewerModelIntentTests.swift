@@ -450,4 +450,66 @@ final class ViewerModelIntentTests: XCTestCase {
 
         XCTAssertEqual(model.comparisonLibrary.map(\.name), ["Idun"])
     }
+
+    // MARK: - Zoom
+
+    /// The pane a view's `GeometryReader` would report. A 16:9 rect, matching
+    /// the fixtures' aspect so nothing here depends on aspect fitting; the
+    /// clips in this file are empty and report no `presentationSize` anyway,
+    /// which `VideoZoom` treats as "no aspect to fit yet".
+    private static let pane = CGSize(width: 800, height: 450)
+
+    func testTheViewerStartsUnzoomed() throws {
+        let (model, _, _) = try makeModel()
+
+        XCTAssertEqual(model.zoom, VideoZoom())
+        XCTAssertFalse(model.zoom.isZoomed)
+    }
+
+    func testSettingTheZoomScaleReachesTheModel() throws {
+        let (model, _, _) = try makeModel()
+
+        model.setZoomScale(2.5, in: Self.pane)
+
+        XCTAssertEqual(model.zoom.scale, 2.5, accuracy: 0.0001)
+    }
+
+    /// Zoom persists across clips: comparing several runs of one drill at a
+    /// fixed magnification is the point of the control.
+    func testZoomSurvivesAClipChange() throws {
+        let (model, _, _) = try makeModel()
+        model.setZoomScale(3, in: Self.pane)
+
+        model.changeVideo(by: 1)
+
+        XCTAssertEqual(model.zoom.scale, 3, accuracy: 0.0001)
+    }
+
+    /// It does not survive a new library, where a pan into one clip's corner
+    /// means nothing about another's.
+    func testOpeningADirectoryResetsTheZoom() throws {
+        let (model, _, _) = try makeModel()
+        model.setZoomScale(3, in: Self.pane)
+        model.panZoom(by: CGSize(width: -100, height: 0), in: Self.pane)
+        XCTAssertNotEqual(model.zoom, VideoZoom(), "precondition: the pan moved something")
+
+        model.openDirectory(try makeLibrary(athletes: ["Other"]))
+
+        XCTAssertEqual(model.zoom, VideoZoom())
+    }
+
+    /// `resetZoom` is what the level readout in `ZoomControl` calls, and it has
+    /// to undo the pan as well as the scale — a 1× picture is centred by
+    /// construction, so a stale `center` here would be a centre `VideoZoom`
+    /// itself can never produce.
+    func testResettingTheZoomUndoesBothTheScaleAndThePan() throws {
+        let (model, _, _) = try makeModel()
+        model.setZoomScale(4, in: Self.pane)
+        model.panZoom(by: CGSize(width: -200, height: -120), in: Self.pane)
+        XCTAssertNotEqual(model.zoom, VideoZoom(), "precondition: zoomed and panned")
+
+        model.resetZoom()
+
+        XCTAssertEqual(model.zoom, VideoZoom())
+    }
 }

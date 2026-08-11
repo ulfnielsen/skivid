@@ -26,8 +26,9 @@ import XCTest
 ///    `ViewerControlsWiringTests` finds those two buttons positionally, so
 ///    swapping only the label strings leaves every macOS test green.
 /// 2. `testTappingTheVideoTogglesPlaybackEvenThroughTheStatusChip` covers
-///    tap-to-play on iPadOS, where the pane is an `AVPlayerViewController` with
-///    its own UIKit gesture arbitration. Task 3 could only cover macOS.
+///    tap-to-play on iPadOS, whose UIKit gesture arbitration is a different
+///    subsystem from the AppKit one the macOS suite drives. Task 3 could only
+///    cover macOS.
 /// 3. `testTheStatusChipIsAConstantWidthAndClearsTheControlsBelowIt` measures
 ///    the chip on the device rather than in an `NSHostingView`.
 ///
@@ -198,8 +199,10 @@ final class ViewerOnIPadUITests: XCTestCase {
 
     /// **Tap-to-play on iPadOS**, which Task 3 could only cover on macOS: there
     /// the pane is an `NSView` reachable with a synthetic `NSEvent` through
-    /// `window.sendEvent(_:)`; here it is an `AVPlayerViewController` with its
-    /// own UIKit gesture arbitration, a different subsystem entirely.
+    /// `window.sendEvent(_:)`; here it is UIKit's own gesture arbitration, a
+    /// different subsystem entirely. (Both platforms have rendered the pane
+    /// through `SinglePlayerView` since the zoom landed — it is the *event*
+    /// route that differs, not the view.)
     ///
     /// The tap deliberately lands **on the status chip**, the strictest place on
     /// the pane to tap: the chip floats over the video and a chip that swallowed
@@ -212,8 +215,8 @@ final class ViewerOnIPadUITests: XCTestCase {
     /// mutation is killed on macOS instead, by
     /// `ViewerControlsWiringTests.testTappingWhereTheStatusChipSitsStillTogglesPlayback`.
     /// What this test *does* cover, and nothing else does, is that tap-to-play
-    /// works on iPadOS at all — the pane there is an `AVPlayerViewController`
-    /// whose gesture arbitration the macOS test says nothing about.
+    /// works on iPadOS at all — UIKit gesture arbitration, which the macOS
+    /// test says nothing about.
     func testTappingTheVideoTogglesPlaybackEvenThroughTheStatusChip() {
         let app = launchAndOpenTheFixtureFolder()
         XCTAssertEqual(
@@ -250,6 +253,15 @@ final class ViewerOnIPadUITests: XCTestCase {
     /// 11-inch and 863pt on a mini, both comfortably above the bar's ideal
     /// width, so transport, time readout and clip stepping share one row and the
     /// band measures the claimed 104pt.
+    ///
+    /// **NOT RE-MEASURED SINCE THE ZOOM CONTROL LANDED.** The measurement above
+    /// predates it, and the control moved the bar's ideal width by 236.0pt —
+    /// 557.0 to 793.0 on macOS metrics, per `ViewerControlBarLayoutTests`. iPad
+    /// metrics run wider still (a `.callout` is 16pt there against 13pt here),
+    /// so the iPad ideal is above 793 by some amount nobody has measured. 940pt
+    /// clears that comfortably; **863pt on a mini may not**. Whoever next runs
+    /// this suite on a mini should treat a failure here as the expected
+    /// discovery and record the number, not as a regression to patch.
     func testTheControlBarFitsOneRowInLandscape() {
         let app = launchAndOpenTheFixtureFolder()
         rotate(app, to: .landscapeLeft)
@@ -348,6 +360,15 @@ final class ViewerOnIPadUITests: XCTestCase {
     /// So the spec's arithmetic about the bar was correct: it does fit one row
     /// at 834pt and at 744pt. What it missed is that the viewer's bar is never
     /// offered those widths in portrait.
+    ///
+    /// **NOT RE-MEASURED SINCE THE ZOOM CONTROL LANDED, and this is the test
+    /// most likely to have changed.** The bar's ideal width moved from 557.0pt
+    /// to 793.0pt on macOS metrics (`ViewerControlBarLayoutTests`), and 744pt is
+    /// now below it there. iPad metrics are wider again, so on a mini this test
+    /// should now be expected to *fail* — 744pt no longer buys the one-row bar
+    /// back. On an 11-inch, 834pt is 41pt above the macOS ideal, which is the
+    /// margin the iPad's wider `.callout` eats into. Run it and record what it
+    /// says; do not shrink a control to make it green.
     func testHidingTheSidebarInPortraitRestoresTheOneRowBar() {
         let app = launchAndOpenTheFixtureFolder()
         rotate(app, to: .portrait)

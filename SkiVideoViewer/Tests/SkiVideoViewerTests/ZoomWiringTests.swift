@@ -405,6 +405,236 @@ final class ZoomWiringTests: XCTestCase {
         XCTAssertTrue(didReset, "the level is the route to 1x that does not depend on gesture arbitration")
     }
 
+    // MARK: - The viewer
+
+    /// The bar's slider must reach the model, not merely compile against it.
+    /// `ZoomControl`'s own tests drive a closure; this one drives the real
+    /// `NSSlider` the bar renders, through the real `ViewerModel`.
+    ///
+    /// **The hosted `NSSlider` is normalised, not scaled — measured, because
+    /// the obvious spelling silently passes the wrong number.** Printing the
+    /// slider's own bounds with `ZoomControl`'s `in: VideoZoom.range` in place
+    /// gives `minValue 0.0, maxValue 1.0`, and at 2× it reads `0.3333…` —
+    /// SwiftUI keeps the range in its own binding and hands AppKit a 0–1
+    /// control. So `doubleValue = 3.5` saturates at 1.0 and asks the model for
+    /// **4.0**, which is the max and would pass an `isZoomed`-style assertion
+    /// while proving nothing about the value. The position is therefore written
+    /// in normalised units and converted here.
+    func testDraggingTheZoomSliderReachesTheViewerModel() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 800, height: 450)
+        model.setZoomScale(2, in: pane)
+
+        let host = NSHostingView(
+            rootView: ViewerControlBar(model: model, videoPaneSize: pane).frame(width: 900, height: 200)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let sliders = Self.sliders(in: host)
+        XCTAssertEqual(sliders.count, 1, "precondition: the bar carries exactly one slider")
+        XCTAssertEqual(
+            sliders[0].maxValue, 1.0, accuracy: 0.0001,
+            "precondition: the hosted slider is normalised; a 1...4 slider would make the line below ask for 1.83"
+        )
+        let target = 3.5
+        let span = VideoZoom.range.upperBound - VideoZoom.range.lowerBound
+        sliders[0].doubleValue = (target - VideoZoom.range.lowerBound) / span
+        sliders[0].sendAction(sliders[0].action, to: sliders[0].target)
+
+        XCTAssertEqual(
+            model.zoom.scale, target, accuracy: 0.0001,
+            "the real slider must reach the model, not merely compile against it"
+        )
+    }
+
+    /// **The drag must not run away.** `DragGesture.value.translation` is
+    /// measured from where the drag *began*, not since the previous change, so
+    /// forwarding it straight to `panZoom` re-applies the whole distance on
+    /// every event: a three-step drag of 20pt each would move the picture by
+    /// 20 + 40 + 60 = 120pt instead of 60pt, accelerating the further the
+    /// operator drags. `ViewerPane` subtracts its `lastDrag` to get a per-change
+    /// delta, and this is the number that tells the two apart.
+    ///
+    /// Measured on this harness at 4× in a 400×300 pane, dragging 60pt left in
+    /// three steps (`center.x` starts at 0.5, and `pan` negates, so leftward
+    /// drags raise it):
+    ///
+    /// | | `center.x` |
+    /// | --------------------------------- | ------ |
+    /// | per-change delta (shipping)       | 0.5375 |
+    /// | raw cumulative translation (bug)  | 0.575  |
+    ///
+    /// Both are inside the legal interval at 4× (`[0.03125, 0.96875]` for this
+    /// pane), so the clamp cannot mask the difference — mutation-checked by
+    /// deleting the `lastDrag` subtraction, which lands on 0.575.
+    ///
+    /// Same real-`NSWindow` technique as
+    /// `ViewerControlsWiringTests.testTappingTheViewerPaneTogglesPlaybackOnMacOS`;
+    /// see that test for why `view.mouseDown(with:)` alone does not reach
+    /// SwiftUI's gesture recognition.
+    func testDraggingThePanePansByEachStepsDeltaRatherThanTheWholeTranslation() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane)
+        XCTAssertEqual(model.zoom.center.x, 0.5, accuracy: 0.0001, "precondition: centred")
+
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+
+        // Horizontal only: AppKit's y axis runs the other way from SwiftUI's,
+        // and which end of the clip a vertical drag reveals is already pinned
+        // by `testTheHostIsFlippedSoTheSharedRectIsReadTopDown`. This test is
+        // about the *delta*, and one axis shows it.
+        let start = CGPoint(x: 300, y: 150)
+        window.sendEvent(Self.mouseEvent(.leftMouseDown, at: start, windowNumber: window.windowNumber))
+        for step in 1...3 {
+            let point = CGPoint(x: start.x - CGFloat(step) * 20, y: start.y)
+            window.sendEvent(Self.mouseEvent(.leftMouseDragged, at: point, windowNumber: window.windowNumber))
+        }
+        window.sendEvent(
+            Self.mouseEvent(.leftMouseUp, at: CGPoint(x: start.x - 60, y: start.y), windowNumber: window.windowNumber)
+        )
+
+        XCTAssertEqual(
+            model.zoom.center.x, 0.5375, accuracy: 0.002,
+            """
+            a 60pt drag at 4x in a 400pt pane must move the centre by \
+            60/(400*4) = 0.0375; 0.575 means each change re-applied the whole \
+            translation from the drag's start
+            """
+        )
+        XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.002, "a horizontal drag must not move the picture vertically")
+    }
+
+    /// At 1× the pan gesture is not installed at all, so it cannot swallow the
+    /// single tap that plays and pauses — the one gesture `ViewerPane` had
+    /// before zoom existed. A drag with the gesture present but the picture
+    /// unzoomed would be harmless (`VideoZoom.pan` returns early unless
+    /// `isZoomed`), but the tap would not be.
+    func testTappingTheUnzoomedPaneStillTogglesPlayback() throws {
+        let model = try Self.makeViewerModel()
+        XCTAssertFalse(model.zoom.isZoomed, "precondition: 1x")
+        XCTAssertEqual(model.player.rate, 0, "precondition: nothing is playing yet")
+
+        let pane = CGSize(width: 400, height: 300)
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+
+        let point = CGPoint(x: 200, y: 150)
+        window.sendEvent(Self.mouseEvent(.leftMouseDown, at: point, windowNumber: window.windowNumber))
+        window.sendEvent(Self.mouseEvent(.leftMouseUp, at: point, windowNumber: window.windowNumber))
+
+        XCTAssertEqual(model.player.rate, 1, "the zoom wiring must not have cost the pane its play/pause tap")
+    }
+
+    /// The other half of that arbitration, and the one that was *not* obvious:
+    /// with the pan gesture installed, a stationary click must still reach the
+    /// tap. **Measured** — `rate` goes to 1 and `center` stays exactly
+    /// `(0.5, 0.5)`, so the drag neither swallows the click nor treats it as a
+    /// zero-length pan.
+    ///
+    /// Worth its own test rather than folding into the one above: the two cover
+    /// opposite sides of `ViewerPane`'s `isZoomed` condition, and only this one
+    /// exercises a `DragGesture` and an `onTapGesture` competing for the same
+    /// click.
+    func testTappingTheZoomedPaneStillTogglesPlaybackWithoutPanning() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane)
+        XCTAssertTrue(model.zoom.isZoomed, "precondition: the pan gesture is installed")
+        XCTAssertEqual(model.player.rate, 0, "precondition: nothing is playing yet")
+
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+
+        let point = CGPoint(x: 200, y: 150)
+        window.sendEvent(Self.mouseEvent(.leftMouseDown, at: point, windowNumber: window.windowNumber))
+        window.sendEvent(Self.mouseEvent(.leftMouseUp, at: point, windowNumber: window.windowNumber))
+
+        XCTAssertEqual(model.player.rate, 1, "the pan gesture must not swallow a stationary click")
+        XCTAssertEqual(model.zoom.center.x, 0.5, accuracy: 0.0001, "a click is not a pan")
+        XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.0001, "a click is not a pan")
+    }
+
+    private static func sliders(in view: NSView) -> [NSSlider] {
+        var found: [NSSlider] = []
+        func walk(_ view: NSView) {
+            if let slider = view as? NSSlider { found.append(slider) }
+            view.subviews.forEach(walk)
+        }
+        walk(view)
+        return found
+    }
+
+    private static func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint, windowNumber: Int) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type,
+            location: point,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )!
+    }
+
+    /// A one-clip library in a temporary directory, following
+    /// `ViewerControlsWiringTests`' pattern. `VideoLibrary.scan` inspects file
+    /// extensions only and nothing here decodes anything, so a zero-byte
+    /// `run1.mp4` is enough; it reports no `presentationSize`, which is the
+    /// pre-load case `VideoZoom` falls back to the pane's rect for.
+    ///
+    /// `StubOAuthPresenter` is the target-wide stub from
+    /// `AppKitOAuthPresenterTests`, reused here as `AppKitInputToModelTests`
+    /// reuses it, rather than writing a second one.
+    private static func makeViewerModel() throws -> ViewerModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let athlete = root.appendingPathComponent("Idun", isDirectory: true)
+        try FileManager.default.createDirectory(at: athlete, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: athlete.appendingPathComponent("run1.mp4").path, contents: Data())
+
+        let model = ViewerModel(
+            input: AppKitInputSource(),
+            folderPicker: AppKitFolderPicker(),
+            oauthPresenter: StubOAuthPresenter()
+        )
+        model.openDirectory(root)
+        return model
+    }
+
     private static func buttons(in view: NSView) -> [NSButton] {
         var found: [NSButton] = []
         func walk(_ view: NSView) {
