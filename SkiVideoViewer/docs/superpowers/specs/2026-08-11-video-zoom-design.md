@@ -51,8 +51,8 @@ public struct VideoZoom: Equatable, Sendable {
 
     public var isZoomed: Bool { scale > 1 }
 
-    public mutating func setScale(_ newScale: Double)
-    public mutating func pan(by translation: CGSize, in paneSize: CGSize)
+    public mutating func setScale(_ newScale: Double, in bounds: CGSize, videoSize: CGSize)
+    public mutating func pan(by translation: CGSize, in bounds: CGSize, videoSize: CGSize)
     public mutating func reset()
 
     public func layerFrame(in bounds: CGSize, videoSize: CGSize) -> CGRect
@@ -61,15 +61,41 @@ public struct VideoZoom: Equatable, Sendable {
 
 ### The invariant
 
-**The picture may never be panned off the pane.** At scale `s` the pane shows
-`1/s` of the frame, so the visible half-extent is `1/(2s)` and
+**The picture must always cover the pane, on both axes, whenever it is large
+enough to.** Per axis, with `fitted` the aspect-fitted size of the video in the
+pane:
 
 ```
-center.x, center.y  ∈  [ 1/(2s) , 1 − 1/(2s) ]
+half   = min( bounds / (2 × fitted × s) , 0.5 )
+center ∈ [ half , 1 − half ]
 ```
 
-At `s = 1` that interval collapses to the single point `0.5`, so 1× is always
-centred by construction rather than by a separate special case.
+> **Corrected 2026-08-11, in Task 1's second review round.** This was originally
+> `[1/(2s), 1 − 1/(2s)]` — a fraction of the *video*, not of the pane. That
+> stops the picture vanishing but still allows a gap where full coverage was
+> achievable: measured, a 16:9 clip in a 500×800 pane at 4× is 1125pt tall
+> against an 800pt pane — big enough to fill it — yet at the pan bound the
+> operator sees a 259pt black band (32.4% of the pane) they cannot pan away. A
+> sweep found 25,808 such combinations. The form above closes it.
+
+Read the three regimes:
+
+- **Aspects match** — `fitted == bounds`, so `half = 1/(2s)` and this is exactly
+  the original rule. Nothing about the matched case changes.
+- **The picture is larger than the pane on an axis** — `half < 0.5`, and the
+  interval is precisely the set of centres that keep the pane covered.
+- **The picture is smaller than the pane on an axis** — `half` clamps to `0.5`
+  and the interval collapses to the single point. Bars are unavoidable there;
+  centring them is the right answer, and it is what `s = 1` does on every axis.
+
+Because the bound depends on the pane and the video, the mutators take both:
+`setScale(_:in:videoSize:)` and `pan(by:in:videoSize:)`.
+
+**`layerFrame` clamps again, defensively.** A window resize changes `bounds`
+with no mutator called, so a centre legal for the old pane can be illegal for
+the new one. The mutators keep the stored value tidy; `layerFrame` guarantees
+nothing is ever *rendered* out of bounds. Both are cheap, and the failure they
+prevent is a black band the operator cannot explain.
 
 ### What a drag means
 

@@ -19,7 +19,7 @@
 - Platforms: `.macOS(.v13)`, `.iOS(.v17)`. The iPad target is `TARGETED_DEVICE_FAMILY: "2"` — iPad only, no iPhone.
 - `SkiVideoCore` must stay platform-agnostic: `CorePurityTests` fails the build if a core source names AppKit or UIKit. `VideoZoom` imports Foundation and CoreGraphics only.
 - Access levels stay narrow: `public` marks only what the app target touches. `VideoZoom` is public (the views read it); helpers stay internal.
-- **Exact values.** Zoom range `1.0...4.0`. Pan centre normalised, clamped to `[1/(2s), 1 − 1/(2s)]` in both axes. Layer frame: `fitted` = the largest rect of the video's aspect that fits `bounds`, then `size = fitted × s`, `origin = bounds × 0.5 − center × size`. (Corrected after Task 1's review — scaling `bounds` instead of `fitted` clamps a box around the picture rather than the picture, and lets a 16:9 clip be panned entirely off a 500×800 pane at 4×.) A drag of `d` points moves the centre by `d / (paneSize × scale)`, and **dragging right decreases `center.x`**.
+- **Exact values.** Zoom range `1.0...4.0`. Pan centre normalised, clamped per axis to `[half, 1 − half]` where `half = min(bounds / (2 × fitted × s), 0.5)` and `fitted` is the video's aspect-fitted size in the pane. (Corrected in Task 1's second review round: the original `[1/(2s), 1 − 1/(2s)]` left a 259pt black band, 32.4% of the pane, unpannable on a 500×800 pane with a 16:9 clip at 4×.) Mutators therefore take `in bounds:` and `videoSize:`; `layerFrame` re-clamps defensively so a window resize cannot render a gap. Layer frame: `fitted` = the largest rect of the video's aspect that fits `bounds`, then `size = fitted × s`, `origin = bounds × 0.5 − center × size`. (Corrected after Task 1's review — scaling `bounds` instead of `fitted` clamps a box around the picture rather than the picture, and lets a 16:9 clip be panned entirely off a 500×800 pane at 4×.) A drag of `d` points moves the centre by `d / (paneSize × scale)`, and **dragging right decreases `center.x`**.
 - This codebase documents *why* heavily, with measured evidence. A load-bearing decision without its reasoning is a defect; a comment restating the code is noise.
 - Commit messages: imperative mood, no `feat:`/`fix:` prefixes. End each with:
   ```
@@ -62,7 +62,7 @@ The whole correctness question lives here, and it is testable with no media and 
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `public struct VideoZoom: Equatable, Sendable` with `public static let range: ClosedRange<Double>`, `public init()`, `public private(set) var scale: Double`, `public private(set) var center: CGPoint`, `public var isZoomed: Bool`, `public mutating func setScale(_: Double)`, `public mutating func pan(by: CGSize, in: CGSize)`, `public mutating func reset()`, `public func layerFrame(in bounds: CGSize) -> CGRect`. Every later task drives exactly these.
+- Produces: `public struct VideoZoom: Equatable, Sendable` with `public static let range: ClosedRange<Double>`, `public init()`, `public private(set) var scale: Double`, `public private(set) var center: CGPoint`, `public var isZoomed: Bool`, `public mutating func setScale(_: Double, in: CGSize, videoSize: CGSize)`, `public mutating func pan(by: CGSize, in: CGSize, videoSize: CGSize)`, `public mutating func reset()`, `public func layerFrame(in bounds: CGSize) -> CGRect`. Every later task drives exactly these.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -761,7 +761,9 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `VideoZoom` (1), `SinglePlayerView(player:zoom:)` (2), `ZoomControl` (3).
-- Produces: `ViewerModel.zoom: VideoZoom` (published, `public private(set)`), `public func setZoomScale(_: Double)`, `public func panZoom(by: CGSize, in: CGSize)`, `public func resetZoom()`.
+- Produces: `ViewerModel.zoom: VideoZoom` (published, `public private(set)`), `public func setZoomScale(_: Double, in: CGSize)`, `public func panZoom(by: CGSize, in: CGSize)`, `public func resetZoom()`.
+
+**The model supplies `videoSize` itself.** `VideoZoom`'s mutators need the video's dimensions to clamp (Task 1's second round), and the model holds the player: pass `player.currentItem?.presentationSize ?? .zero`. The pane size comes from the view's `GeometryReader`, which is why it stays in the model's signature. Do not push `videoSize` out to the views — they would have to reach through the model to the player to get it.
 
 - [ ] **Step 1: Write the failing model tests**
 
