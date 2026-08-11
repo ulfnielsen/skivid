@@ -1313,6 +1313,122 @@ final class ComparisonModelTests: XCTestCase {
 
         XCTAssertFalse(model.status.lowercased().contains("detected"))
     }
+
+    // MARK: - Zoom
+
+    /// A pane of a real size, which is all these need: the clamp arithmetic is
+    /// `VideoZoomTests`' subject, and these are about *which side* moves.
+    private static let zoomPane = CGSize(width: 800, height: 450)
+
+    func testEachSideZoomsIndependently() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+
+        model.setZoomScale(2.5, in: Self.zoomPane, side: .right)
+
+        XCTAssertEqual(model.zoom(for: .right).scale, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 1, accuracy: 0.0001,
+            "two runs shot from different distances is the whole reason zoom is per side"
+        )
+    }
+
+    func testPanningOneSideLeavesTheOtherCentred() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.setZoomScale(2, in: Self.zoomPane, side: .left)
+
+        model.panZoom(by: CGSize(width: -100, height: 0), in: Self.zoomPane, side: .left)
+
+        XCTAssertGreaterThan(model.zoom(for: .left).center.x, 0.5)
+        XCTAssertEqual(model.zoom(for: .right).center.x, 0.5, accuracy: 0.0001)
+    }
+
+    func testResettingOneSideLeavesTheOther() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.setZoomScale(3, in: Self.zoomPane, side: .left)
+        model.setZoomScale(2, in: Self.zoomPane, side: .right)
+
+        model.resetZoom(side: .left)
+
+        XCTAssertEqual(model.zoom(for: .left), VideoZoom())
+        XCTAssertEqual(model.zoom(for: .right).scale, 2, accuracy: 0.0001)
+    }
+
+    /// **Why `setZoomScale` takes a pane size at all**, which is the one place
+    /// this API departs from a sketch that had it take only a scale and a side.
+    ///
+    /// `VideoZoom.setScale` re-clamps the centre against the pane, because
+    /// zooming *out* narrows the legal interval: a centre that is legal at 4×
+    /// is not at 1.5×, and left uncorrected the picture hangs off one edge with
+    /// black down the side. Without a pane to re-clamp against, the call would
+    /// have to pass a degenerate size, which `VideoZoom` documents as the
+    /// "skip the re-clamp" case — so the correction would silently never run.
+    ///
+    /// Measured, 800×450 pane, no clip dimensions (the fixtures report none, so
+    /// `fitted` falls back to the pane): the legal half-extent is `1/(2·scale)`,
+    /// giving `[0.125, 0.875]` at 4× and `[0.333, 0.667]` at 1.5×. A pan to the
+    /// 4× bound therefore has to come back to 0.667 when the operator zooms out
+    /// — and stays at 0.875 if the pane is not passed through.
+    func testZoomingOutRecentresAPanThatIsNoLongerLegal() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        model.setZoomScale(4, in: Self.zoomPane, side: .left)
+        model.panZoom(by: CGSize(width: -2000, height: 0), in: Self.zoomPane, side: .left)
+        XCTAssertEqual(model.zoom(for: .left).center.x, 0.875, accuracy: 0.0001,
+                       "precondition: panned to 4x's bound")
+
+        model.setZoomScale(1.5, in: Self.zoomPane, side: .left)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).center.x, 2.0 / 3.0, accuracy: 0.0001,
+            "zooming out must pull the pan back inside the interval that is legal at the new scale"
+        )
+    }
+
+    /// Zoom is a view setting, not an alignment one: it must not disturb the
+    /// sync points or drop the pair out of sync.
+    func testZoomingDoesNotTouchTheSync() throws {
+        let model = try makeSyncedModel()
+        defer { model.close() }
+        let points = model.syncPoints
+        XCTAssertNotNil(points, "precondition: there are sync points to leave alone")
+
+        model.setZoomScale(3, in: Self.zoomPane, side: .left)
+        model.panZoom(by: CGSize(width: -60, height: 20), in: Self.zoomPane, side: .left)
+
+        XCTAssertTrue(model.isSynced)
+        XCTAssertEqual(model.syncPoints?.left, points?.left)
+        XCTAssertEqual(model.syncPoints?.right, points?.right)
+    }
+
+    /// **Zoom names no side for the transport**, which is why none of these
+    /// methods calls `noteTouched`. That records which side a `both` demotion
+    /// lands on, and its rule is that it may only follow a call expressing a
+    /// preference about *playback*; zooming the right pane to read a boot
+    /// buckle says nothing about which clip the transport should fall back to.
+    ///
+    /// Built to fail if one is added: `makeAlignedModel` loads left then right,
+    /// so the landing side is Right and the target is Left — a `noteTouched`
+    /// inside the zoom methods would therefore be unguarded and would steal the
+    /// landing for Left, exactly as the scrubber once did.
+    func testZoomingASideDoesNotStealTheDemotionLanding() throws {
+        let model = try makeAlignedModel()
+        defer { model.close() }
+        XCTAssertEqual(model.target, .left, "precondition: the target is not `both`, so a noteTouched would land")
+
+        model.setZoomScale(3, in: Self.zoomPane, side: .left)
+        model.panZoom(by: CGSize(width: -40, height: 0), in: Self.zoomPane, side: .left)
+        model.resetZoom(side: .left)
+        model.setSyncPoints()
+        model.removeSync()
+
+        XCTAssertEqual(
+            model.target, .right,
+            "framing a pane is not a statement about which clip the transport should fall back to"
+        )
+    }
 }
 
 /// The bounds and paired-playback tests, on **real decodable media**.

@@ -142,6 +142,20 @@ public final class ComparisonModel: ObservableObject {
         }
     }
 
+    /// How far into each clip the operator has zoomed, and where they have
+    /// panned to — **one per side, and that is the point.** The two runs are
+    /// routinely shot from different distances, and framing them to match is
+    /// exactly the work an operator does before the comparison means anything;
+    /// a single shared zoom would make that impossible rather than merely
+    /// inconvenient.
+    ///
+    /// The overlay layout is the exception, because there the two clips are
+    /// drawn into one rect and zooming them apart would break the registration
+    /// the layout exists for — see `ComparisonVideos`, which gives the stack the
+    /// left side's zoom.
+    @Published public private(set) var leftZoom = VideoZoom()
+    @Published public private(set) var rightZoom = VideoZoom()
+
     public let leftPlayer = AVPlayer()
     public let rightPlayer = AVPlayer()
     public let openLibrary: [ComparisonAthleteChoice]
@@ -851,6 +865,61 @@ public final class ComparisonModel: ObservableObject {
         leftPlayer.seek(to: leftSyncPoint, toleranceBefore: .zero, toleranceAfter: .zero)
         rightPlayer.seek(to: rightSyncPoint, toleranceBefore: .zero, toleranceAfter: .zero)
         status = "Returned to the sync points"
+    }
+
+    // MARK: - Zoom
+
+    public func zoom(for side: ComparisonSide) -> VideoZoom {
+        side == .left ? leftZoom : rightZoom
+    }
+
+    /// `paneSize` is that pane's own size, which only a view can know — it comes
+    /// from `ComparisonPane`'s `GeometryReader`, and it is *this* pane's, not
+    /// the window's: the two panes are half the width of the pair, so a shared
+    /// number would clamp both pans against a rect neither picture lives in.
+    /// `videoSize` is not a parameter, for the reason `ViewerModel.setZoomScale`
+    /// gives: this class holds the players, so a view passing it would be
+    /// reaching through the model for a value the model already has.
+    ///
+    /// Out-of-range scales arrive here routinely — `ZoomControl`'s step buttons
+    /// offer `scale ± 0.5` without checking the bounds — and are correct to pass
+    /// on: `VideoZoom.setScale` clamps to `VideoZoom.range` unconditionally, so
+    /// the range is enforced in exactly one place.
+    public func setZoomScale(_ scale: Double, in paneSize: CGSize, side: ComparisonSide) {
+        mutateZoom(side) { $0.setScale(scale, in: paneSize, videoSize: videoSize(for: side)) }
+    }
+
+    public func panZoom(by translation: CGSize, in paneSize: CGSize, side: ComparisonSide) {
+        mutateZoom(side) { $0.pan(by: translation, in: paneSize, videoSize: videoSize(for: side)) }
+    }
+
+    public func resetZoom(side: ComparisonSide) {
+        mutateZoom(side) { $0.reset() }
+    }
+
+    /// **No `noteTouched` here, deliberately, and it is the one per-side family
+    /// in this class that omits it.** That records which side a `both` demotion
+    /// should land on, and its rule — see the method itself — is that it may
+    /// only follow a call expressing a preference about *playback*. Zoom is a
+    /// view setting: zooming the right pane in to read a boot buckle says
+    /// nothing about which clip the transport should fall back to, and
+    /// recording it would relocate the operator's transport target for a reason
+    /// they would have no way to connect to what they did.
+    /// `testZoomingASideDoesNotStealTheDemotionLanding` is what pins that.
+    private func mutateZoom(_ side: ComparisonSide, _ change: (inout VideoZoom) -> Void) {
+        switch side {
+        case .left: change(&leftZoom)
+        case .right: change(&rightZoom)
+        }
+    }
+
+    /// That side's clip dimensions, or `.zero` before its tracks have loaded —
+    /// which is the value `VideoZoom` documents as "no aspect to fit yet" and
+    /// falls back to the pane's rect for. Read fresh on every call rather than
+    /// cached, exactly as `ViewerModel`'s equivalent: it arrives late, and it
+    /// changes on every clip a pane is given.
+    private func videoSize(for side: ComparisonSide) -> CGSize {
+        player(for: side).currentItem?.presentationSize ?? .zero
     }
 
     public func close() {

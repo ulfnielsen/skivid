@@ -617,11 +617,24 @@ final class ZoomWiringTests: XCTestCase {
     /// reason that file does: they are plain AppKit properties, unlike the
     /// accessibility ones, which are dead in a `swift test` host process.
     ///
-    /// The model-side half is the weaker of the two on its own — `setZoomScale`
-    /// would happily run — so the enabled-state assertions are the ones that
-    /// carry this, and the click-through afterwards is the belt-and-braces. See
-    /// the comment on that click for a measurement of just how weak the
-    /// model-side half is for the slider specifically.
+    /// **Every control on the chip is covered by state *and* by behaviour**,
+    /// which the slider was not when this was first written. The convention in
+    /// this file is now that a disabled control is proved dead by driving it,
+    /// and the drive has to be the one the user has: buttons through
+    /// `performClick`, sliders through real `NSEvent`s in a real `NSWindow`.
+    ///
+    /// **`NSSlider.sendAction(_:to:)` is what cannot be used, and that is
+    /// measured rather than assumed.** With the chip correctly disabled and
+    /// every assertion here passing, `slider.sendAction(...)` still drove
+    /// `model.zoom.scale` to 4.0 — twice, on both this pane and the comparison
+    /// one. It is a direct dispatch and not an event, so it bypasses
+    /// `isEnabled` outright; no user can reach it, and asserting on it would
+    /// pin a behaviour AppKit does not have. A synthesized *drag* on the
+    /// slider's own rect is the user's route, and it does observe `isEnabled` —
+    /// measured on the comparison chip, where the enabled control moved to 2.5×
+    /// and the disabled one stayed at 1.0×. See
+    /// `testAnEmptyComparisonPanesZoomChipIsDisabled`, which carries the
+    /// enabled control for this technique.
     func testTheZoomChipIsDisabledWithNothingLoaded() throws {
         let model = ViewerModel(
             input: AppKitInputSource(),
@@ -635,6 +648,13 @@ final class ZoomWiringTests: XCTestCase {
             rootView: ViewerPane(model: model, athleteName: "Idun")
                 .frame(width: pane.width, height: pane.height)
         )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
         host.layoutSubtreeIfNeeded()
 
         let slider = try XCTUnwrap(Self.sliders(in: host).first, "precondition: the chip renders a slider")
@@ -646,22 +666,15 @@ final class ZoomWiringTests: XCTestCase {
             XCTAssertFalse(button.isEnabled, "chip button at index \(index) must read as disabled with no clip loaded")
         }
 
-        // Belt and braces, matching the bar's test: a click through a disabled
-        // button must also do nothing to the model.
-        //
-        // Buttons only, deliberately. The slider's equivalent would be
-        // `sendAction(_:to:)`, and **that bypasses `isEnabled` entirely** —
-        // measured here: with the chip correctly disabled and every assertion
-        // above passing, `slider.sendAction(...)` still drove `model.zoom.scale`
-        // to 4.0. It is a direct dispatch, not an event, so no user can reach
-        // it; asserting on it would pin a behaviour AppKit does not have. That
-        // is precisely why the `isEnabled` assertions above are what carry this
-        // test rather than a model-side effect.
         for button in buttons {
             button.performClick(nil)
         }
+        Self.dragAcross(slider, in: window)
 
-        XCTAssertEqual(model.zoom, VideoZoom(), "a disabled zoom chip's buttons must not reach the model")
+        XCTAssertEqual(
+            model.zoom, VideoZoom(),
+            "nothing on a disabled zoom chip may reach the model: not its buttons, not a drag on its slider"
+        )
     }
 
     /// **The chip takes its own clicks, and the video does not get them.**
@@ -803,6 +816,290 @@ final class ZoomWiringTests: XCTestCase {
         XCTAssertEqual(model.player.rate, 1, "the pan gesture must not swallow a stationary click")
         XCTAssertEqual(model.zoom.center.x, 0.5, accuracy: 0.0001, "a click is not a pan")
         XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.0001, "a click is not a pan")
+    }
+
+    // MARK: - The comparison panes
+
+    /// **Mutation-check for this test: building both panes with `side: .left`
+    /// must make it fail.** Without that, a pane wired to the wrong side is
+    /// invisible — the two panes are otherwise identical, which is the same
+    /// argument `ComparisonPane.emptyChooser` records for its accessibility
+    /// label. Verified: with the chip's `side` uses replaced by a literal
+    /// `.left` it fails on both assertions — the right side stays at 1.0 where
+    /// 3.0 was asked for, and the left is driven to 3.0 from the 2.0 the
+    /// operator had framed it at.
+    ///
+    /// **The slider position is written in normalised units**, for the reason
+    /// `testDraggingTheZoomSliderReachesTheViewerModel` measured: SwiftUI keeps
+    /// the `1...4` range in its own binding and hands AppKit a 0–1 control, so
+    /// `doubleValue = 3` saturates at 1.0 and asks for 4.0 — the maximum, which
+    /// would pass an assertion about *which side moved* while proving nothing
+    /// about the value that got there.
+    func testEachComparisonPaneDrivesItsOwnSide() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        let pane = CGSize(width: 600, height: 400)
+        model.setZoomScale(2, in: pane, side: .left)
+
+        let host = NSHostingView(
+            rootView: ComparisonPane(model: model, side: .right)
+                .frame(width: pane.width, height: pane.height)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let sliders = Self.sliders(in: host)
+        XCTAssertEqual(sliders.count, 1, "precondition: one slider per pane, the zoom chip's")
+        XCTAssertEqual(
+            sliders[0].maxValue, 1.0, accuracy: 0.0001,
+            "precondition: the hosted slider is normalised, so the target below is written in its units"
+        )
+        let target = 3.0
+        let span = VideoZoom.range.upperBound - VideoZoom.range.lowerBound
+        sliders[0].doubleValue = (target - VideoZoom.range.lowerBound) / span
+        sliders[0].sendAction(sliders[0].action, to: sliders[0].target)
+
+        XCTAssertEqual(
+            model.zoom(for: .right).scale, target, accuracy: 0.0001,
+            "the right pane's chip must move the right side"
+        )
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 2, accuracy: 0.0001,
+            "and must not touch the left, which the operator framed separately"
+        )
+    }
+
+    /// The same per-side contract for the *drag*, which reaches the model by a
+    /// completely different route — a gesture rather than a control's action —
+    /// and so could be wired to the wrong side on its own.
+    ///
+    /// Mutation-checked the same way: with `panGesture`'s `side` replaced by a
+    /// literal `.left` this fails, the left picture panning under a drag on the
+    /// right pane.
+    func testDraggingAComparisonPanePansOnlyThatSide() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane, side: .right)
+        model.setZoomScale(4, in: pane, side: .left)
+        let (_, window) = try hostedComparisonPane(model: model, side: .right, pane: pane)
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -60, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom(for: .right).center.x, 0.5375, accuracy: 0.002,
+            "a 60pt drag at 4x in a 400pt pane must move that side's centre by 60/(400*4)"
+        )
+        XCTAssertEqual(
+            model.zoom(for: .left).center.x, 0.5, accuracy: 0.0001,
+            "the other pane's picture must not move under a drag it never received"
+        )
+    }
+
+    /// The control for the test below, and the per-pane equivalent of
+    /// `testTwoCleanDragsAreExactlyAdditive`: two clean drags total exactly
+    /// their two distances, so `lastDrag` is cleared *back to rest* between
+    /// gestures rather than left holding anything.
+    func testTwoCleanDragsOnAComparisonPaneAreExactlyAdditive() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane, side: .right)
+        let (_, window) = try hostedComparisonPane(model: model, side: .right, pane: pane)
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -20, releasing: true)
+        XCTAssertEqual(
+            model.zoom(for: .right).center.x, 0.5125, accuracy: 0.002,
+            "precondition: the first drag lands where one drag should"
+        )
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -20, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom(for: .right).center.x, 0.525, accuracy: 0.002,
+            "two clean 20pt drags must total 40pt of pan, not more and not less"
+        )
+    }
+
+    /// **The paired regression**, and the reason the pair exists: the defect
+    /// this guards was invisible to five hundred tests because none of them
+    /// exercised a *second* gesture after an interruption. The control above
+    /// passes under both the right and the wrong implementation.
+    ///
+    /// `panGesture` is installed only while that side `isZoomed`, so dropping
+    /// the pane to 1× removes the recognizer out from under a live drag and
+    /// `DragGesture.onEnded` never runs — reachable here from the chip's own
+    /// `−` and level buttons, and from any system drag cancellation. A `@State`
+    /// running total reset in `onEnded` therefore goes stale; `@GestureState`
+    /// reverts on cancel as well as on end.
+    ///
+    /// Measured on this harness, right pane at 4× in a 400×300 pane: a 60pt
+    /// leftward drag torn down mid-flight, then a fresh 20pt leftward drag.
+    ///
+    /// | | second drag's `center.x` |
+    /// | ------------------------------ | ------ |
+    /// | `@GestureState` (shipping)     | 0.5125 |
+    /// | `@State` + `onEnded` reset     | 0.475  |
+    ///
+    /// 0.475 is a leftward drag moving the picture 40pt to the *right* on its
+    /// first frame — the dead drag's 60pt subtracted from the new 20pt.
+    func testASecondDragOnAComparisonPaneAfterTheGestureIsTornDownStartsFromRest() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane, side: .right)
+        let (host, window) = try hostedComparisonPane(model: model, side: .right, pane: pane)
+
+        // A 60pt drag with no mouse-up: the gesture is torn down underneath it
+        // instead, which is what `onEnded` cannot see.
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -60, releasing: false)
+        XCTAssertEqual(model.zoom(for: .right).center.x, 0.5375, accuracy: 0.002, "precondition: the first drag panned")
+
+        model.resetZoom(side: .right)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(model.zoom(for: .right).isZoomed, "precondition: 1x, so the pan gesture is no longer installed")
+
+        model.setZoomScale(4, in: pane, side: .right)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(model.zoom(for: .right).center.x, 0.5, accuracy: 0.0001, "precondition: the reset recentred")
+
+        Self.drag(in: window, from: CGPoint(x: 300, y: 250), by: -20, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom(for: .right).center.x, 0.5125, accuracy: 0.002,
+            """
+            the second drag must move by its own 20pt only; 0.475 means the \
+            torn-down drag's 60pt was still being subtracted, sending a leftward \
+            drag 40pt to the right
+            """
+        )
+    }
+
+    /// **An empty pane's chip is dead**, matching
+    /// `testTheZoomChipIsDisabledWithNothingLoaded` for the viewer. The
+    /// comparison window opens with both panes empty and the operator can leave
+    /// one that way indefinitely, so this is the *ordinary* state of a
+    /// comparison pane rather than an edge case.
+    ///
+    /// **Both halves are behavioural here, which is a departure from the
+    /// viewer's test and the reason it is worth stating.** There the slider was
+    /// covered by its `isEnabled` alone, because the obvious way to drive it —
+    /// `NSSlider.sendAction(_:to:)` — bypasses `isEnabled` outright (measured:
+    /// it drove a correctly-disabled chip to 4.0×) and asserting on it would
+    /// pin a behaviour AppKit does not have. That left an asymmetry: buttons
+    /// proved dead, the slider merely *read* dead. This test closes it by
+    /// driving the slider the way a user does — real `NSEvent`s through a real
+    /// `NSWindow`, the same technique the pan-gesture tests use — for which
+    /// disabled is disabled.
+    ///
+    /// **The enabled control is not optional.** A synthesized drag that landed
+    /// on nothing would leave the model untouched too, so the identical drag on
+    /// a loaded pane's slider is what proves the technique reaches the control
+    /// when it is supposed to. Measured, pressing at the slider's midpoint and
+    /// dragging to its trailing edge: **1.0× on the empty pane, 2.5× on the
+    /// loaded one**. 2.5 rather than 4.0 because the press itself lands the
+    /// value at the midpoint and the drag that follows is not tracked further —
+    /// which is immaterial here, since what this needs is a control that moves
+    /// at all when it is enabled.
+    ///
+    /// Mutation-checked, and the slider drag carries its own weight rather than
+    /// riding on the `isEnabled` assertions: with `isEnabled: isLoaded`
+    /// replaced by `isEnabled: true` the empty pane's model ends at 2.5×, and
+    /// all of that 2.5 is the drag — the three button clicks net back to 1.0
+    /// (minus clamps, plus, then reset).
+    func testAnEmptyComparisonPanesZoomChipIsDisabled() throws {
+        let model = try Self.makeComparisonModel(load: [.left])
+        defer { model.close() }
+        XCTAssertFalse(ClipSourceMenu.isLoaded(model, .right), "precondition: the right pane is empty")
+
+        let pane = CGSize(width: 600, height: 400)
+        let (host, window) = try hostedComparisonPane(model: model, side: .right, pane: pane)
+
+        let slider = try XCTUnwrap(Self.sliders(in: host).first, "precondition: the chip renders a slider")
+        XCTAssertFalse(slider.isEnabled, "the zoom slider must read as disabled with no clip in this pane")
+        let buttons = Self.buttons(in: host)
+        XCTAssertEqual(buttons.count, 3, "precondition: the chip's minus, plus and level-as-reset")
+        for (index, button) in buttons.enumerated() {
+            XCTAssertFalse(button.isEnabled, "chip button at index \(index) must read as disabled with an empty pane")
+        }
+
+        for button in buttons {
+            button.performClick(nil)
+        }
+        Self.dragAcross(slider, in: window)
+
+        XCTAssertEqual(
+            model.zoom(for: .right), VideoZoom(),
+            "no control on a disabled chip may reach the model: neither its buttons nor a drag on its slider"
+        )
+
+        // The control. The same drag on the loaded pane's slider must move it,
+        // or the assertion above passes for the wrong reason.
+        let (loadedHost, loadedWindow) = try hostedComparisonPane(model: model, side: .left, pane: pane)
+        let loadedSlider = try XCTUnwrap(Self.sliders(in: loadedHost).first)
+        XCTAssertTrue(loadedSlider.isEnabled, "precondition: a loaded pane's chip is live")
+
+        Self.dragAcross(loadedSlider, in: loadedWindow)
+
+        XCTAssertTrue(
+            model.zoom(for: .left).isZoomed,
+            "control: the same synthesized drag on an enabled slider must reach the model"
+        )
+    }
+
+    /// A `ComparisonPane` in a real off-screen `NSWindow`, for the same reason
+    /// `hostedPane` builds one for the viewer: synthetic mouse events do not
+    /// reach SwiftUI's gesture recognition without one.
+    private func hostedComparisonPane(
+        model: ComparisonModel, side: ComparisonSide, pane: CGSize
+    ) throws -> (NSHostingView<some View>, NSWindow) {
+        let host = NSHostingView(
+            rootView: ComparisonPane(model: model, side: side)
+                .frame(width: pane.width, height: pane.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        return (host, window)
+    }
+
+    /// A real mouse drag from a slider's middle to its trailing edge, in window
+    /// coordinates. This is how a user moves a slider, and unlike
+    /// `sendAction(_:to:)` it observes `isEnabled`.
+    private static func dragAcross(_ slider: NSSlider, in window: NSWindow) {
+        let rect = slider.convert(slider.bounds, to: nil)
+        let y = rect.midY
+        window.sendEvent(mouseEvent(.leftMouseDown, at: CGPoint(x: rect.midX, y: y), windowNumber: window.windowNumber))
+        for step in 1...4 {
+            let x = rect.midX + (rect.maxX - rect.midX) * CGFloat(step) / 4
+            window.sendEvent(mouseEvent(.leftMouseDragged, at: CGPoint(x: x, y: y), windowNumber: window.windowNumber))
+        }
+        window.sendEvent(mouseEvent(.leftMouseUp, at: CGPoint(x: rect.maxX, y: y), windowNumber: window.windowNumber))
+    }
+
+    /// A comparison model with clips in the named panes. The zero-byte fixture
+    /// is enough for everything here for the same reason it is in
+    /// `ComparisonModelTests`: `AVPlayerItem` accepts any URL and reports
+    /// failure asynchronously, so the player has a `currentItem` — which is all
+    /// `ClipSourceMenu.isLoaded` asks — and reports no `presentationSize`,
+    /// which is the pre-load case `VideoZoom` falls back to the pane's rect for.
+    private static func makeComparisonModel(load sides: [ComparisonSide] = [.left, .right]) throws -> ComparisonModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = ComparisonModel()
+        for side in sides {
+            let url = root.appendingPathComponent("\(side == .left ? "left" : "right").mov")
+            FileManager.default.createFile(atPath: url.path, contents: Data())
+            model.load(url, side: side)
+        }
+        return model
     }
 
     /// A `ViewerPane` in a real off-screen `NSWindow`, which is what synthetic
