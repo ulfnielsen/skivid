@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreGraphics
 import SwiftUI
 import XCTest
 @testable import SkiVideoCore
@@ -109,6 +110,132 @@ final class ZoomWiringTests: XCTestCase {
             "the layer must be re-placed against the clip's real aspect once its size is known"
         )
         XCTAssertEqual(view.playerLayerFrame.height, 900, accuracy: 0.5)
+
+        // Let the item settle before the second half. `presentationSize` posts
+        // more than once while an asset finishes loading, and a host attached
+        // inside that window gets re-placed by a *change* — which passes
+        // whether or not `.initial` is there, and is not the case being
+        // tested. Measured directly: on an item that has been settled for
+        // three seconds, attaching a fresh `AVPlayerLayer` — even hosting it
+        // in an on-screen window — posts nothing at all, so after this wait
+        // `.initial` is the only thing that can place the layer.
+        XCTAssertNotEqual(
+            player.currentItem?.presentationSize, .zero,
+            "precondition: the size is known before the settle"
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+
+        // The *other* order, which is the one production actually runs: the
+        // models own long-lived players and load clips into them, and the
+        // SwiftUI view is built — and rebuilt on every navigation — after
+        // that. `attach` then arrives at an item whose size is already real
+        // and which will never post a change again, so the entire re-place
+        // happens on the observations' `.initial` delivery. Note there is no
+        // `layout()` call after `attach` here: that would place the layer
+        // correctly on its own and hide exactly the defect being tested.
+        let alreadyLoaded = PlayerLayerHostView()
+        alreadyLoaded.frame = NSRect(origin: .zero, size: pane)
+        alreadyLoaded.apply(zoom)
+        XCTAssertEqual(
+            alreadyLoaded.playerLayerFrame.width, 1600, accuracy: 0.5,
+            "precondition: this host has no player yet either"
+        )
+
+        alreadyLoaded.attach(player)
+
+        let initialDeadline = Date().addingTimeInterval(10)
+        while alreadyLoaded.playerLayerFrame.width > 1400, Date() < initialDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(
+            alreadyLoaded.playerLayerFrame.width, 1200, accuracy: 0.5,
+            "a view attached to an already-loaded player must place itself from the observations' initial delivery"
+        )
+    }
+
+    /// **Which end of the clip a pan reveals**, which the two platforms read
+    /// out of `layerFrame`'s single `origin.y` in opposite directions unless
+    /// the AppKit host is flipped. `layerFrame` is written top-down —
+    /// `center.y == 0` is the picture's top — because that is what `pan`'s
+    /// negation means once SwiftUI's positive-downward `DragGesture` feeds it.
+    /// A `UIView`'s layer reads it that way already; an unflipped
+    /// layer-backed `NSView` reads it from the bottom.
+    ///
+    /// Nothing on screen shows the difference at `center.y == 0.5`, where the
+    /// expression is symmetric, which is why this is pinned by a test rather
+    /// than left to be found in Task 4 as a gesture that scrolls the wrong way
+    /// on one platform and debugged in the wrong file.
+    func testTheHostIsFlippedSoTheSharedRectIsReadTopDown() {
+        XCTAssertTrue(
+            PlayerLayerHostView().isFlipped,
+            "an unflipped AppKit host inverts every vertical pan relative to iPad"
+        )
+    }
+
+    /// The same contract as above, but proved on the screen rather than by the
+    /// flag that implements it: a clip whose top quarter is white, zoomed 4x
+    /// and panned all the way down, must fill the pane with white — the
+    /// picture's *top*. Unflipped it fills with black, the picture's bottom.
+    /// Both were measured before `isFlipped` was added, and the inversion is
+    /// clean in both directions.
+    ///
+    /// This is the only test in the project that asserts on what an
+    /// `AVPlayerLayer` actually draws. It needs a real window on a real
+    /// screen, so it establishes that the environment can render and capture
+    /// one *first*, using the unzoomed pane as its own control, and skips when
+    /// it cannot — a machine that cannot capture must not fail the suite, and
+    /// an all-black capture is indistinguishable from the failure being
+    /// tested.
+    func testPanningDownRevealsTheTopOfThePicture() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let url = try makeRealVideoFile(
+            in: root, name: "banded.mov", seconds: 2, width: 640, height: 360, whiteTopQuarter: true
+        )
+
+        let pane = CGSize(width: 320, height: 180)
+        let window = NSWindow(
+            contentRect: NSRect(origin: CGPoint(x: 200, y: 200), size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isOpaque = true
+        window.backgroundColor = .black
+        let view = PlayerLayerHostView(frame: NSRect(origin: .zero, size: pane))
+        window.contentView = view
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+
+        let player = AVPlayer(url: url)
+        view.attach(player)
+        player.play()
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+
+        guard let unzoomed = capture(window),
+              let (top, bottom) = try? bands(of: unzoomed),
+              top > 150, bottom < 40
+        else {
+            throw XCTSkip("this environment cannot render or capture an on-screen AVPlayerLayer")
+        }
+
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: pane, videoSize: CGSize(width: 640, height: 360))
+        // Positive height is a downward drag. `pan` negates it, so this is
+        // `center.y`'s legal minimum for 4x — the picture pushed as far down
+        // as it goes.
+        zoom.pan(by: CGSize(width: 0, height: 270), in: pane, videoSize: CGSize(width: 640, height: 360))
+        XCTAssertEqual(zoom.center.y, 0.125, accuracy: 0.001, "precondition: panned to the bound")
+        view.apply(zoom)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+
+        let zoomed = try XCTUnwrap(capture(window), "no capture at 4x")
+        let (zoomedTop, zoomedBottom) = try bands(of: zoomed)
+        XCTAssertGreaterThan(
+            zoomedTop, 200,
+            "dragging down must reveal the picture's white top band; an unflipped host shows its black bottom"
+        )
+        XCTAssertGreaterThan(zoomedBottom, 200, "the whole pane is inside the white band at 4x")
     }
 
     /// The other half of the wiring: that `SinglePlayerView` hands the zoom it
@@ -134,8 +261,18 @@ final class ZoomWiringTests: XCTestCase {
         )
     }
 
-    /// The default keeps the call sites that predate zoom honest about not
-    /// passing one, rather than making them pass `VideoZoom()` by hand.
+    /// **Not a wiring test** — it passes with `apply` deleted from both
+    /// `makeNSView` and `updateNSView`, because the host's own initial `zoom`
+    /// is the default too. `testTheSwiftUIViewHandsItsZoomToTheHost` above is
+    /// what kills that mutant, and only it.
+    ///
+    /// What this pins instead is the four call sites that predate zoom
+    /// (`ComparisonPane`, both in `OverlayPlayerStack`, and `ClipChooserTests`)
+    /// still compiling without a zoom *and still drawing exactly what they
+    /// drew before it existed*: the layer filling the pane, which is what
+    /// `playerLayer.frame = bounds` did. A change to `VideoZoom()`'s default
+    /// scale, or to `layerFrame`'s pre-load fallback, would move every screen
+    /// in the app and this is the only test that would notice.
     func testAViewBuiltWithoutAZoomIsUnzoomed() throws {
         let host = NSHostingView(
             rootView: SinglePlayerView(player: AVPlayer()).frame(width: 800, height: 450)
@@ -145,6 +282,35 @@ final class ZoomWiringTests: XCTestCase {
         let layerHost = try XCTUnwrap(playerLayerHost(in: host))
         XCTAssertFalse(layerHost.appliedZoom.isZoomed)
         XCTAssertEqual(layerHost.playerLayerFrame.width, 800, accuracy: 0.5)
+    }
+
+    // MARK: - Reading the screen
+
+    private func capture(_ window: NSWindow) -> CGImage? {
+        CGWindowListCreateImage(
+            .null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+            [.boundsIgnoreFraming, .bestResolution]
+        )
+    }
+
+    /// Mean luminance of the capture's top third and bottom third.
+    private func bands(of image: CGImage) throws -> (top: Double, bottom: Double) {
+        let width = image.width, height = image.height
+        var buffer = [UInt8](repeating: 0, count: width * height * 4)
+        let context = try XCTUnwrap(CGContext(
+            data: &buffer, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        func mean(rows: Range<Int>) -> Double {
+            var sum = 0.0
+            for y in rows {
+                for x in 0..<width { sum += Double(buffer[(y * width + x) * 4]) }
+            }
+            return sum / Double(rows.count * width)
+        }
+        return (mean(rows: 0..<(height / 3)), mean(rows: (height * 2 / 3)..<height))
     }
 
     // MARK: - Finding the host
@@ -165,13 +331,17 @@ final class ZoomWiringTests: XCTestCase {
     /// `XCTestCase` extension scoped to a target this one does not depend on.
     /// An empty file will not do here — it never reports a `presentationSize`
     /// at all, which is exactly the value under test.
+    /// `whiteTopQuarter` swaps the frame-varying grey for a fixed white band
+    /// across the picture's top quarter, which is what makes "which end of the
+    /// clip is on screen" a number rather than a judgement.
     private func makeRealVideoFile(
         in directory: URL,
         name: String,
         seconds: Double,
         width: Int,
         height: Int,
-        fps: Int32 = 10
+        fps: Int32 = 10,
+        whiteTopQuarter: Bool = false
     ) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
@@ -206,7 +376,17 @@ final class ZoomWiringTests: XCTestCase {
             let pixels = try XCTUnwrap(buffer)
             CVPixelBufferLockBaseAddress(pixels, [])
             if let base = CVPixelBufferGetBaseAddress(pixels) {
-                memset(base, Int32(frame % 251), CVPixelBufferGetBytesPerRow(pixels) * CVPixelBufferGetHeight(pixels))
+                let stride = CVPixelBufferGetBytesPerRow(pixels)
+                if whiteTopQuarter {
+                    // Row 0 of a CVPixelBuffer is the top of the picture, so
+                    // this band is unambiguous about which end is which.
+                    let bytes = base.assumingMemoryBound(to: UInt8.self)
+                    for y in 0..<height {
+                        memset(bytes + y * stride, y < height / 4 ? 255 : 0, stride)
+                    }
+                } else {
+                    memset(base, Int32(frame % 251), stride * CVPixelBufferGetHeight(pixels))
+                }
             }
             CVPixelBufferUnlockBaseAddress(pixels, [])
             XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps)))

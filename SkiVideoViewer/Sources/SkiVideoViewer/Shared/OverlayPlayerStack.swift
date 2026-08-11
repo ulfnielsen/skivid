@@ -13,6 +13,27 @@ import SwiftUI
 /// views: the same clips rendered white, and an `.opacity(0.5)` control
 /// rendered grey. Do not "simplify" this back toward `compositingFilter`.
 ///
+/// **Re-measured after the zoom work moved the `AVPlayerLayer`.** That first
+/// measurement was taken when `SinglePlayerView`'s iOS host overrode
+/// `layerClass`, so the view's *own* layer was the `AVPlayerLayer`; it is now a
+/// sublayer of a plain `CALayer`, which is a different thing for SwiftUI to
+/// composite and could have regressed the blend silently. It did not. Same
+/// simulator, this stack driven over two solid-colour clips — red underneath,
+/// cyan on top — and read back with `simctl io screenshot`, which captures the
+/// composited framebuffer from outside the process (no in-process snapshot
+/// shows video at all; see `offset` below):
+///
+/// | mode                    | centre RGB      |
+/// | ----------------------- | --------------- |
+/// | `.difference`           | (211, 255, 251) |
+/// | `.blend`, opacity 1     | (22, 255, 253)  |
+/// | `.blend`, opacity 0.5   | (127, 128, 128) |
+///
+/// The difference row is white, not the plain cyan a no-op produces — the two
+/// are 189 apart in the red channel, and the opacity-1 row is the control that
+/// says what a no-op would have looked like. It is off-white rather than 255
+/// because H.264's YUV round-trip does not return the source's exact red.
+///
 /// **Only the region the two clips share is drawn.** Offsetting the top clip
 /// leaves a strip down one side and along one edge where only one clip has
 /// picture; in blend mode that strip is a single clip at half opacity and in

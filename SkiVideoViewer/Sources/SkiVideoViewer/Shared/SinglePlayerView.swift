@@ -100,11 +100,46 @@ final class PlayerLayerHostView: NSView {
         host.addSublayer(playerLayer)
     }
 
+    /// **The y-axis convention, and the only reason this view is flipped.**
+    ///
+    /// `layerFrame` returns one `origin.y` for both platforms, and it is
+    /// written top-down: `center.y == 0` is the *top* of the picture, which is
+    /// what `pan`'s negation means once SwiftUI's positive-downward
+    /// `DragGesture.translation.height` feeds it — dragging down pushes the
+    /// picture down and reveals its top. A `UIView`'s layer reads that rect
+    /// top-down already. An unflipped layer-backed `NSView` reads it from the
+    /// bottom, so macOS would show the opposite end of the clip from iPad at
+    /// every pan except the centred one.
+    ///
+    /// Measured on a real clip whose top quarter is white, 640x360 in a
+    /// 320x180 pane at 4x, captured off the screen — mean luminance of the
+    /// pane's top third:
+    ///
+    /// |                    | drag down (`center.y` 0.125) | drag up (0.875) |
+    /// | ------------------ | ---------------------------- | --------------- |
+    /// | unflipped          | 0 (the picture's bottom)     | 255 (its top)   |
+    /// | `isFlipped = true` | 255 (its top)                | 0 (its bottom)  |
+    ///
+    /// A clean inversion, and `isFlipped` fixes it. Two things were measured
+    /// rather than assumed alongside it: the flip moves the layer's *frame*
+    /// without turning the video content upside down (at 1x the white band
+    /// stays at the top of the pane in both variants, 191 vs 0), and
+    /// `layer.isGeometryFlipped = true` — the other obvious candidate — does
+    /// **nothing** here, giving byte-identical readings to the unflipped case,
+    /// because AppKit owns the backing layer's geometry for a layer-backed
+    /// view and overwrites it.
+    override var isFlipped: Bool { true }
+
     override func layout() {
         super.layout()
         placeLayer()
     }
 
+    /// **Ignores a zoom equal to the one already applied**, so SwiftUI's
+    /// habit of calling `updateNSView` for unrelated reasons does not re-place
+    /// the layer on every pass. This is therefore not a way to force a
+    /// refresh after something *else* changed: `bounds` changes come back
+    /// through `layout`, and the video size through `observeVideoSize`.
     func apply(_ zoom: VideoZoom) {
         guard zoom != self.zoom else { return }
         self.zoom = zoom
@@ -150,10 +185,24 @@ final class PlayerLayerHostView: NSView {
     /// Two links, because both arrive late: the player gets a `currentItem`
     /// after `attach` (and gets a new one on every clip the operator loads),
     /// and that item gets a real `presentationSize` after its tracks load.
-    /// `.initial` on each covers the case where the value is already there.
-    /// `ComparisonModel.observeDuration` is the same pattern for the same
-    /// reason, including the staleness guard: KVO can deliver for a player or
-    /// item this view has already moved on from.
+    ///
+    /// **`.initial` on each is load-bearing, not belt and braces.** The models
+    /// own long-lived players and load clips into them; the SwiftUI view is
+    /// built — and rebuilt on every navigation — afterwards, so `attach`
+    /// normally arrives at a player whose item already has a real size and
+    /// which will never post a change. Dropping either `.initial` leaves every
+    /// already-loaded clip on the pane fallback for good.
+    ///
+    /// **Neither hop reads the KVO change payload**, and that is what makes
+    /// them order-safe: `Task { @MainActor }` gives no ordering guarantee
+    /// between two notifications, so a captured value can settle stale, while
+    /// re-reading the current item and its current size makes every hop
+    /// converge on the player's present state no matter what order they run
+    /// in. `ViewerModel.startObservingRate` spells out the same rule and is
+    /// the precedent to follow if this is ever "optimised" into using
+    /// `change.newValue`. The identity guards are a separate concern — they
+    /// drop deliveries for a player or item this view has already moved on
+    /// from, which converging alone would not.
     private func observeVideoSize(of player: AVPlayer) {
         videoSizeObserver = nil
         itemObserver = player.observe(\.currentItem, options: [.initial, .new]) { [weak self, weak player] _, _ in
@@ -208,10 +257,19 @@ private struct PlayerLayerRepresentable: UIViewRepresentable {
 /// shape. It used to override `layerClass` so the `AVPlayerLayer` *was* the
 /// view's layer — which cannot be given a frame independent of the view, and
 /// so cannot be zoomed at all. It now holds a separate `AVPlayerLayer`
-/// sublayer like macOS does, so both platforms have exactly one geometry path
-/// and the comments above apply verbatim: see the macOS branch for why the
-/// layer is clipped, why the frame changes are non-animating, and why the
-/// video size has to be observed rather than read once.
+/// sublayer like macOS does. See the macOS branch for why the layer is
+/// clipped, why the frame changes are non-animating, and why the video size
+/// has to be observed rather than read once.
+///
+/// **The one thing that is not shared is the flip, and it is not shared
+/// because it does not need to be.** A `UIView`'s layer measures sublayer
+/// frames from the top left, which is the convention `layerFrame` is written
+/// in, so this branch needs nothing. The macOS host overrides `isFlipped` to
+/// reach the same convention from AppKit's bottom-left default — see the
+/// measurement recorded there. The result is one geometry *contract* on both
+/// platforms, arrived at two different ways; it was previously two opposite
+/// contracts, which nothing on screen showed because `center.y == 0.5` is the
+/// one value where the expression is symmetric.
 final class PlayerLayerHostView: UIView {
     private let playerLayer = AVPlayerLayer()
     private var zoom = VideoZoom()
@@ -247,6 +305,8 @@ final class PlayerLayerHostView: UIView {
         placeLayer()
     }
 
+    /// Ignores a zoom equal to the one already applied; see the macOS twin for
+    /// why that means this is not a way to force a refresh.
     func apply(_ zoom: VideoZoom) {
         guard zoom != self.zoom else { return }
         self.zoom = zoom
@@ -276,6 +336,8 @@ final class PlayerLayerHostView: UIView {
         CATransaction.commit()
     }
 
+    /// See the macOS twin: both `.initial` options are load-bearing, and
+    /// neither hop may be "optimised" into reading `change.newValue`.
     private func observeVideoSize(of player: AVPlayer) {
         videoSizeObserver = nil
         itemObserver = player.observe(\.currentItem, options: [.initial, .new]) { [weak self, weak player] _, _ in
