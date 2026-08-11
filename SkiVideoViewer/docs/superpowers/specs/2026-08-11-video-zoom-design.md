@@ -1,0 +1,235 @@
+# Zoom and pan for the viewer and the comparison window
+
+Date: 2026-08-11
+
+A coach reviewing a run wants to get closer than the camera did — to the hands,
+the edge angle, the ski tips. Today neither screen can. This adds a zoom
+control and drag-to-pan to both, with per-side zoom in the comparison window so
+two runs shot from different distances can be framed to match.
+
+## Behaviour
+
+| | Viewer | Comparison, side-by-side | Comparison, overlay |
+| --- | --- | --- | --- |
+| Zoom range | 1×–4× | 1×–4×, **per side** | 1×–4×, one zoom for the stack |
+| Control | slider + −/+ in the control bar | a chip on each pane | one chip on the stack |
+| 1× | whole frame, letterboxed | whole frame (unchanged) | whole frame (unchanged) |
+| Pan | drag on the video, above 1× only | same, per side | same, moves the pair |
+| Reset | double-click, or click the level | same | same |
+
+Zoom persists across clips — comparing several runs of one drill at a fixed
+magnification is the point — and resets when the library changes
+(`openDirectory`, `connectGoogleDrive`), where a stale pan would be meaningless.
+
+## 1× means the whole frame, on both screens
+
+The viewer renders through `AVPlayerView` with `.resizeAspectFill` today: it
+crops to fill the pane, so the frame edges are never visible. The comparison
+panes do the opposite. After this change both letterbox at 1×.
+
+This is not a new opinion. The iPad player already chose `.resizeAspect`, and
+recorded why (`Sources/SkiVideoViewer/iOS/NativePlayerView.swift:14-20`):
+
+> A skier leaving the visible frame defeats the point of a coaching viewer, so
+> letterbox instead of crop.
+
+macOS used fill only because its minimum window aspect (980/640 ≈ 1.53) is close
+enough to 16:9 that fill crops a sliver. Applying the iPad's rule to the Mac
+makes 1× mean one thing everywhere, which a zoom control needs.
+
+## `VideoZoom`
+
+A pure value type in `SkiVideoCore` — no AVFoundation, no UI:
+
+```swift
+public struct VideoZoom: Equatable, Sendable {
+    public static let range: ClosedRange<Double> = 1.0...4.0
+
+    public private(set) var scale: Double      // within `range`
+    public private(set) var center: CGPoint    // normalised; which point of the
+                                               // frame sits at the pane's middle
+
+    public var isZoomed: Bool { scale > 1 }
+
+    public mutating func setScale(_ newScale: Double)
+    public mutating func pan(by translation: CGSize, in paneSize: CGSize)
+    public mutating func reset()
+
+    public func layerFrame(in bounds: CGSize) -> CGRect
+}
+```
+
+### The invariant
+
+**The picture may never be panned off the pane.** At scale `s` the pane shows
+`1/s` of the frame, so the visible half-extent is `1/(2s)` and
+
+```
+center.x, center.y  ∈  [ 1/(2s) , 1 − 1/(2s) ]
+```
+
+At `s = 1` that interval collapses to the single point `0.5`, so 1× is always
+centred by construction rather than by a separate special case.
+
+### What a drag means
+
+`pan(by:in:)` takes the drag in points and the pane's size in points. A drag of
+`d` points must move the picture `d` points on screen at every scale, so the
+centre moves by `d / (paneSize × scale)` in normalised units — the `scale`
+divisor is what keeps a drag feeling the same at 4× as at 1.5×, rather than
+four times as fast.
+
+**Dragging right moves the picture right, so the centre decreases**: the operator
+is pushing the frame around, not pushing a viewport over it. Both signs are
+defensible in the abstract and only one matches every video app the operator has
+used, so it is pinned here and asserted in a test rather than left to whoever
+writes the gesture.
+
+Both mutators re-establish the invariant. `pan` clamping is obvious;
+**`setScale` clamping is the one that gets forgotten** — zooming out from a panned position widens
+nothing but shrinks the legal interval's complement, and an un-reclamped centre
+leaves the picture hanging off the edge with black down one side. That defect is
+the reason this type exists as a separate, exhaustively tested value.
+
+### `layerFrame`, and why it needs no aspect ratio
+
+`layerFrame` returns the rect to give the `AVPlayerLayer`: the pane's bounds
+scaled by `scale`, positioned so `center` lands at the pane's middle.
+
+```
+size   = bounds × s
+origin = bounds × 0.5  −  center × bounds × s
+```
+
+Read the origin as: put the layer where the normalised point `center` lands at
+the pane's middle. Check it at the corners of the range — `s = 1, center = 0.5`
+gives origin `0` and a layer exactly the size of the pane; `s = 2, center = 0.25`
+gives origin `0`, a layer twice as wide, and the frame's left quarter-point
+sitting at the pane's middle. (`(0.5 − center) × bounds × s` is the plausible
+wrong answer: it agrees at `s = 1` and drifts everywhere else.)
+
+Because `videoGravity` stays `.resizeAspect`, the layer letterboxes its picture
+inside whatever frame it is given — so scaling the *frame* scales the picture
+proportionally, and the letterbox bars scale with it. The geometry therefore
+never needs the video's dimensions, which also means it is correct before the
+asset has loaded and reports a `presentationSize`.
+
+The pane clips the overflow (`masksToBounds`).
+
+### Why not `.scaleEffect`
+
+A SwiftUI `.scaleEffect` on the player view would magnify an already-rendered
+bitmap and go soft at 4×. Enlarging the layer's frame asks `AVPlayerLayer` to
+render at the larger size instead. See Risks — this is the expected behaviour,
+not yet a measured one.
+
+## Rendering: one path for both screens
+
+`SinglePlayerView(player:zoom:)` gains the zoom and hands it to its
+`PlayerLayerHostView`, which applies `layerFrame` in `layout()` inside the same
+`CATransaction` that already disables implicit animation (a zoom that eased in
+would lag the video exactly as a resize did).
+
+The viewer moves off `NativePlayerView` onto `SinglePlayerView`. That is what
+makes 1× identical on both screens, and it retires a macOS/iPad divergence
+rather than adding a third rendering path: both `NativePlayerView` files become
+unused and are deleted. Neither used any AVKit feature beyond hiding the
+controls, which both already did.
+
+## State
+
+- `ViewerModel.zoom: VideoZoom`, published.
+- `ComparisonModel.leftZoom` / `rightZoom`, published, with `zoom(for:)` and a
+  per-side mutator following the shape `nudge`/`seek` already use.
+
+### The overlay layout uses the left clip's zoom for both
+
+`OverlayPlayerStack` positions the top clip by an alignment translation
+expressed in normalised frame widths, and masks both clips to the region they
+share (`sharedRect`). Two independent scales would invalidate both the
+registration and the mask.
+
+One zoom applied to the stack magnifies the aligned pair as a unit, so the
+translation stays correct in normalised units and the shared region scales with
+everything else. Per-side zoom stays a side-by-side feature; the overlay's job
+is comparing an aligned pair, not reframing one of them.
+
+## Controls
+
+**Viewer** — a slider with −/+ and the level in `ViewerControlBar`. That bar is
+the narrower of the two (no layout or target picker) and has room.
+
+**Comparison** — a compact chip on each pane, bottom-trailing, opposite the
+existing clip-name chip: `−`, slider, `+`, level. Per side by construction, so
+no side selector is needed, and the control bar keeps its width.
+
+The bar was the obvious home and is the wrong one. It is measured at 941pt ideal
+and wraps to two rows below that
+(`ComparisonControlBar.swift:12-19`); a slider plus a side selector would push
+that threshold up again on a screen where every iPad portrait width is already
+below it. The chips cost it nothing.
+
+In overlay layout, one chip for the stack, placed with the overlay's existing
+clip choosers.
+
+## Gestures
+
+- **Drag on the video → pan**, enabled only when `isZoomed`. At 1× the drag is
+  not installed at all, so it cannot swallow anything.
+- **Viewer tap → play/pause**, unchanged. A tap and a drag are distinct
+  gestures and compose.
+- **Double-click → reset**, and the level readout is itself a button that
+  resets.
+
+The reset button is not redundant with the double-click. Adding a double-tap
+beside an existing single-tap makes SwiftUI wait to see whether a second tap is
+coming, which can delay play/pause. The button is the route that does not depend
+on gesture arbitration — and if the delay measures perceptible, the double-click
+is dropped and the button remains.
+
+## Testing
+
+**`VideoZoomTests`** carries the weight — a pure value with no media fixtures:
+
+- `setScale` re-clamps a panned centre (zoom in to 4×, pan to a corner, zoom
+  back to 1.5×, assert the centre moved to the new legal bound).
+- `pan` stops at each of the four edges and does not overshoot on a large drag.
+- A drag moves the picture the same number of points at 1.5× and at 4× (the
+  `scale` divisor), and in the same direction as the drag (the sign convention).
+- `scale == 1` pins the centre to 0.5 whatever the pan history.
+- `layerFrame` covers the pane at every scale in the range — no gap at any edge,
+  at 1× exactly the bounds — and is correct for a non-square pane.
+- The range is enforced at both ends.
+
+**Rendering** — `layerFrame` is asserted directly; `PlayerLayerHostView` is a
+thin applier. One test that the host view's layer frame follows the zoom it is
+given, in the style of the existing `attachedPlayer` seam.
+
+**Wiring** — the models expose and mutate zoom; `ComparisonPane` passes its own
+side's zoom (mutation-check: building both panes with `.left` must fail);
+`OverlayPlayerStack` receives the left's.
+
+**Overlay** — a test with a non-zero translation at 2× confirming both clips
+stay masked to the same rect.
+
+**Bar layout** — `ViewerControlBarLayoutTests` re-measured after the slider
+lands, recording the new number rather than adjusting a control to preserve the
+old one, which is that file's stated convention.
+
+## Risks
+
+1. **Sharpness at 4×.** Enlarging the layer frame should make `AVPlayerLayer`
+   render at the larger size rather than upscale. That is how AVFoundation is
+   expected to behave, not something measured in this project. First
+   implementation step is a throwaway check on a real clip at 4×. If it does
+   upscale, the fallback is to render at native resolution and clip, at the cost
+   of more layer area.
+2. **Double-tap delaying play/pause** — measured, and the double-click dropped
+   if perceptible.
+3. **The overlay's `sharedRect` under zoom** — reasoned, not measured; the
+   overlay test above is what settles it.
+
+## Out of scope
+
+Pinch and scroll-wheel zoom; zoom presets; remembering zoom per clip; zoom in
+the secondary-screen or exported output.
