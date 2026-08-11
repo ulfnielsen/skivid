@@ -401,12 +401,27 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 2: Apply the zoom in `SinglePlayerView`
 
+> **Corrected 2026-08-11, after Task 1's review.** `layerFrame` gained a
+> `videoSize:` parameter. Task 1's original form scaled the *pane's* rect, which
+> clamps a box around the picture rather than the picture: measured, a 16:9 clip
+> in a 500×800 pane could be panned until **0% of it was visible** at 4×, with
+> the pan at its bound. It now scales the video's aspect-fitted rect, so the
+> picture and the layer coincide.
+>
+> The consequence for this task: the host view must read the item's
+> `presentationSize` and pass it, and must re-place the layer when that size
+> *arrives* — it is `.zero` until the asset loads, so a layer placed once at
+> `makeNSView` time would keep the pre-load fallback geometry forever. Observe
+> `AVPlayerItem.presentationSize` (KVO) or re-apply on the periodic time
+> observer's first non-zero reading; `ComparisonModel.observeDuration` is the
+> house pattern for "the size arrives after the item does".
+
 **Files:**
 - Modify: `Sources/SkiVideoViewer/Shared/SinglePlayerView.swift`
 - Test: `Tests/SkiVideoViewerTests/ZoomWiringTests.swift` (create)
 
 **Interfaces:**
-- Consumes: `VideoZoom.layerFrame(in:)` from Task 1.
+- Consumes: `VideoZoom.layerFrame(in:videoSize:)` from Task 1.
 - Produces: `SinglePlayerView(player:zoom:)` with `zoom` defaulting to `VideoZoom()`; `PlayerLayerHostView.apply(_ zoom: VideoZoom)` and a readable `appliedZoom`. Tasks 3–6 construct the view with a zoom.
 
 - [ ] **Step 1: Write the failing test**
@@ -535,7 +550,10 @@ On `PlayerLayerHostView`:
     private func placeLayer() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = zoom.layerFrame(in: bounds.size)
+        playerLayer.frame = zoom.layerFrame(
+            in: bounds.size,
+            videoSize: playerLayer.player?.currentItem?.presentationSize ?? .zero
+        )
         CATransaction.commit()
     }
 ```

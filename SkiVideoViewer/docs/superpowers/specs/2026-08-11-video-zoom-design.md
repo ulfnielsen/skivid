@@ -55,7 +55,7 @@ public struct VideoZoom: Equatable, Sendable {
     public mutating func pan(by translation: CGSize, in paneSize: CGSize)
     public mutating func reset()
 
-    public func layerFrame(in bounds: CGSize) -> CGRect
+    public func layerFrame(in bounds: CGSize, videoSize: CGSize) -> CGRect
 }
 ```
 
@@ -91,28 +91,49 @@ nothing but shrinks the legal interval's complement, and an un-reclamped centre
 leaves the picture hanging off the edge with black down one side. That defect is
 the reason this type exists as a separate, exhaustively tested value.
 
-### `layerFrame`, and why it needs no aspect ratio
+### `layerFrame`
 
-`layerFrame` returns the rect to give the `AVPlayerLayer`: the pane's bounds
-scaled by `scale`, positioned so `center` lands at the pane's middle.
+> **Corrected 2026-08-11, after Task 1's review.** This section originally had
+> `layerFrame` scale the *pane's* rect and claimed the geometry needed no aspect
+> ratio at all. Measured, that clamps the wrong rectangle: `.resizeAspect`
+> letterboxes the picture into a sub-rect of the layer, so when the pane's
+> aspect differs from the clip's, the picture can be panned entirely off the
+> pane while the layer still covers it. A 16:9 clip in a 500×800 pane shows 2.7%
+> of the picture at 3× and **0.0% at 4×**, with the pan at its bound and no
+> resistance to tell the operator they have gone past it. The comparison panes
+> are unconstrained in both axes with a 1000×680 window minimum, so
+> roughly-square panes are the normal case there.
+>
+> The signature is now `layerFrame(in bounds: CGSize, videoSize: CGSize)`: it
+> scales the *aspect-fitted* rect of the video within the pane, so the picture
+> rect and the layer rect coincide and the invariant below bounds what the
+> operator actually sees. `videoSize` is the item's `presentationSize`; when it
+> is zero or non-finite — which is what an item reports before it loads — the
+> pane's rect is used, which is correct rather than a fudge, because there is no
+> picture on screen yet to bound.
+
+**The rest of this section describes the corrected form.**
+
+`layerFrame` returns the rect to give the `AVPlayerLayer`: the video's fitted
+rect scaled by `scale`, positioned so `center` lands at the pane's middle.
 
 ```
-size   = bounds × s
-origin = bounds × 0.5  −  center × bounds × s
+fitted = largest rect of the video's aspect that fits bounds
+size   = fitted × s
+origin = bounds × 0.5  −  center × size
 ```
 
 Read the origin as: put the layer where the normalised point `center` lands at
-the pane's middle. Check it at the corners of the range — `s = 1, center = 0.5`
-gives origin `0` and a layer exactly the size of the pane; `s = 2, center = 0.25`
-gives origin `0`, a layer twice as wide, and the frame's left quarter-point
-sitting at the pane's middle. (`(0.5 − center) × bounds × s` is the plausible
-wrong answer: it agrees at `s = 1` and drifts everywhere else.)
+the pane's middle. Check it at the corners of the range — with a pane matching
+the clip's aspect, `s = 1, center = 0.5` gives origin `0` and a layer exactly the
+size of the pane; `s = 2, center = 0.25` gives origin `0`, a layer twice as wide,
+and the frame's left quarter-point sitting at the pane's middle.
+(`(0.5 − center) × size` is the plausible wrong answer for the origin: it agrees
+at `s = 1` and drifts everywhere else.)
 
-Because `videoGravity` stays `.resizeAspect`, the layer letterboxes its picture
-inside whatever frame it is given — so scaling the *frame* scales the picture
-proportionally, and the letterbox bars scale with it. The geometry therefore
-never needs the video's dimensions, which also means it is correct before the
-asset has loaded and reports a `presentationSize`.
+Because the fitted rect already absorbs the aspect difference, `.resizeAspect`
+has no bars left to add — the picture fills the layer exactly, which is what
+makes the clamp below bound the picture rather than a box around it.
 
 The pane clips the overflow (`masksToBounds`).
 
@@ -126,7 +147,8 @@ not yet a measured one.
 ## Rendering: one path for both screens
 
 `SinglePlayerView(player:zoom:)` gains the zoom and hands it to its
-`PlayerLayerHostView`, which applies `layerFrame` in `layout()` inside the same
+`PlayerLayerHostView`, which reads the item's `presentationSize` and applies
+`layerFrame` in `layout()` inside the same
 `CATransaction` that already disables implicit animation (a zoom that eased in
 would lag the video exactly as a resize did).
 
