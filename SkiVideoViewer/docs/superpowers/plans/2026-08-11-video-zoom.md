@@ -40,11 +40,9 @@
 - `Sources/SkiVideoCore/ViewerModel.swift` — `zoom`, its mutators, reset on library change.
 - `Sources/SkiVideoCore/ComparisonModel.swift` — `leftZoom`/`rightZoom`, `zoom(for:)`, mutators.
 - `Sources/SkiVideoViewer/Shared/ViewerPane.swift` — pass the zoom, drag to pan.
-- `Sources/SkiVideoViewer/Shared/ViewerControlBar.swift` — the zoom control.
 - `Sources/SkiVideoViewer/Shared/ComparisonPane.swift` — per-side chip and drag.
 - `Sources/SkiVideoViewer/Shared/OverlayPlayerStack.swift` — one zoom for the stack.
 - `Sources/SkiVideoViewer/Shared/ComparisonView.swift` — pass the left zoom to the stack, chip for the overlay.
-- `Tests/SkiVideoViewerTests/ViewerLayoutMeasurementTests.swift` — re-measure the bar's ideal width.
 
 **Delete:**
 - `Sources/SkiVideoViewer/macOS/NativePlayerView.swift`
@@ -752,10 +750,29 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 4: The viewer zooms
 
+> **Corrected 2026-08-11, after Task 4's first attempt.** The zoom control moves
+> **onto the video**, not into `ViewerControlBar` — a chip at bottom-trailing,
+> the same one the comparison panes carry.
+>
+> Measured: putting it in the bar pushed the bar's ideal width from 557.0pt to
+> 793.0pt (ZoomControl is 220.0pt at its cap plus 16pt of `HStack` spacing).
+> That is unchanged on an iPad Pro portrait (834pt, one row, 104pt band) but
+> wraps on an iPad mini portrait (744pt), where the band becomes 156pt — 26pt
+> taller than the ~130pt band an earlier redesign deleted. The human partner
+> chose the chip.
+>
+> Consequences for this task:
+> - `ViewerControlBar` is **not modified at all**; its measured 557.0pt constant
+>   and `ViewerLayoutMeasurementTests` stay as they are.
+> - No pane-size plumbing through `ContentView`. `ViewerPane` already has the
+>   pane size from the `GeometryReader` the drag needs, so the chip, the drag
+>   and the model call all read it from one place.
+> - `ViewerControlsWiringTests`' button-count assertions stay at their original
+>   numbers, because no button is added to the bar.
+
 **Files:**
 - Modify: `Sources/SkiVideoCore/ViewerModel.swift`
 - Modify: `Sources/SkiVideoViewer/Shared/ViewerPane.swift`
-- Modify: `Sources/SkiVideoViewer/Shared/ViewerControlBar.swift`
 - Delete: `Sources/SkiVideoViewer/macOS/NativePlayerView.swift`, `Sources/SkiVideoViewer/iOS/NativePlayerView.swift`
 - Test: `Tests/SkiVideoCoreTests/ViewerModelIntentTests.swift`, `Tests/SkiVideoViewerTests/ZoomWiringTests.swift`, `Tests/SkiVideoViewerTests/ViewerLayoutMeasurementTests.swift`
 

@@ -12,7 +12,7 @@ two runs shot from different distances can be framed to match.
 | | Viewer | Comparison, side-by-side | Comparison, overlay |
 | --- | --- | --- | --- |
 | Zoom range | 1×–4× | 1×–4×, **per side** | 1×–4×, one zoom for the stack |
-| Control | slider + −/+ in the control bar | a chip on each pane | one chip on the stack |
+| Control | a chip on the video | a chip on each pane | one chip on the stack |
 | 1× | whole frame, letterboxed | whole frame (unchanged) | whole frame (unchanged) |
 | Pan | drag on the video, above 1× only | same, per side | same, moves the pair |
 | Reset | double-click, or click the level | same | same |
@@ -204,8 +204,21 @@ is comparing an aligned pair, not reframing one of them.
 
 ## Controls
 
-**Viewer** — a slider with −/+ and the level in `ViewerControlBar`. That bar is
-the narrower of the two (no layout or target picker) and has room.
+**Viewer** — a chip on the video, bottom-trailing, the same control the
+comparison panes carry.
+
+> **Corrected 2026-08-11, after Task 4.** This was originally a slider in
+> `ViewerControlBar`. Measured, that pushed the bar's ideal width from 557.0pt
+> to 793.0pt: unchanged on an iPad Pro portrait (834pt, still one row at 104pt)
+> but wrapping on an iPad mini portrait (744pt), where the band grows to 156pt —
+> 26pt taller than the ~130pt control band an earlier redesign deleted. Spending
+> that on the smallest screen, where video area is scarcest, is the wrong trade.
+>
+> On the video it costs no layout height at all, the bar returns to 557.0pt and
+> one row everywhere, and both screens gain the same interaction. It also
+> removes a plumbing seam: the bar is the video's *sibling* and had no pane
+> size, so wiring it required reporting the pane's size up through `ContentView`;
+> `ViewerPane` already has that size from its own `GeometryReader`.
 
 **Comparison** — a compact chip on each pane, bottom-trailing, opposite the
 existing clip-name chip: `−`, slider, `+`, level. Per side by construction, so
