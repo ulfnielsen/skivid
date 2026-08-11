@@ -30,10 +30,15 @@ import CoreGraphics
 ///
 /// At `scale == 1` with matched aspect that interval collapses to the single
 /// point `0.5`, so 1x is centred by construction rather than by a special
-/// case. Both mutators re-establish this — see `setScale`, where forgetting
-/// to is the defect this type exists to prevent — and `layerFrame` enforces
-/// it defensively too, because a window resize changes `bounds` without
-/// running either mutator.
+/// case. Both mutators re-establish this whenever they are given real
+/// geometry to re-establish it against — see `setScale`, where forgetting to
+/// is the defect this type exists to prevent, and where skipping the
+/// re-clamp for a *degenerate* `bounds` is instead the correct call (a
+/// pre-layout `GeometryReader` reporting `.zero` must not force `center` to
+/// the middle and silently discard a pan). `layerFrame` enforces the
+/// invariant defensively too, against whatever real geometry it is actually
+/// given, because a window resize changes `bounds` without running either
+/// mutator.
 public struct VideoZoom: Equatable, Sendable {
     /// 4x on a 1080p clip is roughly a 270p crop blown up to the pane, which is
     /// about as far as the source holds up. Below 1x the picture would shrink
@@ -63,9 +68,28 @@ public struct VideoZoom: Equatable, Sendable {
     /// propagate NaN instead of absorbing it, so clamping a NaN leaves `scale`
     /// itself NaN, which breaks the type's headline promise that `scale`
     /// always lives in `range`.
+    ///
+    /// A degenerate `bounds` — zero, negative, or non-finite in a dimension,
+    /// which is what a `GeometryReader`-sourced pane reports before its first
+    /// layout pass — skips the re-clamp entirely rather than running it
+    /// through `clamped`: `half` cannot compute a real interval against a
+    /// pane that isn't one, and falls back to `0.5`, which would silently
+    /// recentre the operator's pan (measured: a 4x pan sitting at `(0.875,
+    /// 0.875)` was forced to `(0.5, 0.5)` by a single `setScale` call during
+    /// that window — indistinguishable on screen from the drag being
+    /// discarded, with nothing to explain why). The scale itself still
+    /// applies; only the clamp is skipped, and only for this call — `center`
+    /// is left exactly as it was, to be re-clamped against real geometry the
+    /// next time this or `pan` runs with one. That is safe rather than lazy
+    /// because `layerFrame` re-clamps its own rendering-only copy of `center`
+    /// against whatever `bounds` it is actually given, so nothing is ever
+    /// rendered out of bounds in the meantime even though the stored value
+    /// is temporarily unclamped for the geometry that was current when this
+    /// was called.
     public mutating func setScale(_ newScale: Double, in bounds: CGSize, videoSize: CGSize) {
         guard newScale.isFinite else { return }
         scale = min(max(newScale, Self.range.lowerBound), Self.range.upperBound)
+        guard bounds.width.isFinite, bounds.height.isFinite, bounds.width > 0, bounds.height > 0 else { return }
         center = Self.clamped(center, bounds: bounds, videoSize: videoSize, scale: scale)
     }
 
@@ -185,9 +209,19 @@ public struct VideoZoom: Equatable, Sendable {
     /// so centring the unavoidable letterbox bars is the right answer.
     ///
     /// `fitted <= 0` only when `bounds` itself is degenerate (see
-    /// `fitted(_:in:)`); there is no meaningful pane to bound against, so
-    /// this collapses to the centre point the same as everywhere else that
-    /// falls back on a degenerate geometry.
+    /// `fitted(_:in:)`). Both mutators now guard against a degenerate
+    /// `bounds` before ever calling `clamped` — `pan` always has, and
+    /// `setScale` was fixed to match after a regression let it reach this
+    /// branch and force `center` to `(0.5, 0.5)` mid-pan. So in practice this
+    /// branch is reached only from `layerFrame`'s defensive re-clamp, where a
+    /// degenerate `bounds` already forces `size` — and so the whole rendered
+    /// rect — to be degenerate too; the returned frame is meaningless
+    /// regardless of which centre was used to compute it. This is *not* "the
+    /// same as everywhere else that falls back on a degenerate geometry":
+    /// `fitted(_:in:)`'s own fallback returns `bounds` unchanged, and a
+    /// guard-rejected `pan` leaves `center` unchanged entirely — neither of
+    /// those recentres anything. This one does, and may, only because by the
+    /// time it runs there is no meaningful frame left to protect.
     private static func half(bounds: CGFloat, fitted: CGFloat, scale: Double) -> CGFloat {
         guard fitted > 0 else { return 0.5 }
         return min(bounds / (2 * fitted * scale), 0.5)

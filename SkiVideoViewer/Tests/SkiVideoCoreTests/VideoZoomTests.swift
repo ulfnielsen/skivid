@@ -205,6 +205,48 @@ final class VideoZoomTests: XCTestCase {
         XCTAssertEqual(zoom.center.x, 0.5 + 0.05, accuracy: 0.0001, "pan must still work after a rejected setScale")
     }
 
+    // MARK: - Degenerate bounds
+
+    /// Regression introduced by the axis-aware clamp: `setScale` gained a
+    /// `bounds` parameter but not a guard on it, so a degenerate `bounds` —
+    /// `.zero`, which is exactly what a `GeometryReader`-sourced pane reports
+    /// before its first layout pass — reached `half`, which cannot compute a
+    /// real interval against a pane that isn't one and falls back to `0.5`.
+    /// That silently recentred a pan that had nothing wrong with it. Measured
+    /// before this fix, starting from a 4x pan sitting at the `(0.875,
+    /// 0.875)` bound: `setScale(3, in: .zero, ...)` forced the centre to
+    /// `(0.5, 0.5)` instead of leaving it at 3x's own bound `(0.8333,
+    /// 0.8333)` — indistinguishable on screen from the drag being silently
+    /// discarded, during exactly the window a `GeometryReader`-sourced pane
+    /// can be `.zero`. `pan` was never affected: it has always guarded
+    /// `paneSize` before ever calling `clamped`.
+    func testSetScaleIgnoresTheClampForADegenerateBounds() {
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: pane, videoSize: pane)
+        zoom.pan(by: CGSize(width: -10_000, height: -10_000), in: pane, videoSize: pane)
+        XCTAssertEqual(zoom.center.x, 0.875, accuracy: 1e-9, "precondition: panned to the 4x bound")
+        XCTAssertEqual(zoom.center.y, 0.875, accuracy: 1e-9, "precondition: panned to the 4x bound")
+
+        for degenerateBounds in [
+            CGSize.zero,
+            CGSize(width: 0, height: 450),
+            CGSize(width: CGFloat.nan, height: CGFloat.nan),
+        ] {
+            var degenerate = zoom
+            degenerate.setScale(3, in: degenerateBounds, videoSize: pane)
+
+            XCTAssertEqual(degenerate.scale, 3, "bounds \(degenerateBounds): the scale itself must still apply")
+            XCTAssertEqual(
+                degenerate.center.x, zoom.center.x, accuracy: 1e-9,
+                "bounds \(degenerateBounds): a degenerate pane must not recentre an untouched, legal centre"
+            )
+            XCTAssertEqual(
+                degenerate.center.y, zoom.center.y, accuracy: 1e-9,
+                "bounds \(degenerateBounds): a degenerate pane must not recentre an untouched, legal centre"
+            )
+        }
+    }
+
     // MARK: - The range
 
     func testTheScaleIsClampedToItsRange() {
@@ -348,52 +390,6 @@ final class VideoZoomTests: XCTestCase {
     }
 
     // MARK: - Aspect fitting
-
-    /// This is the case the first version of `layerFrame` got wrong: it
-    /// scaled the pane's own (mismatched) aspect instead of the video's, so
-    /// `.resizeAspect` could letterbox the real picture completely off the
-    /// pane while the layer still nominally "covered" it. Measured there:
-    /// a 500x800 pane with a 16:9 clip at 4x sent the picture to
-    /// y=[1038, 2162] against a pane of [0, 800] — 0% visible, at the exact
-    /// moment the operator has hit a pan bound and most needs to see the
-    /// edge they hit.
-    ///
-    /// This is deliberately the weaker of two claims about this scenario: it
-    /// only asserts the picture is a substantial fraction of the pane, not
-    /// that it fully covers it. `testAPortraitPaneWithASixteenByNineClipCoversCompletelyAtFourX`
-    /// below asserts the stronger, now-true claim for this exact geometry.
-    /// Both are kept: this one is a general "never vanishes" regression
-    /// guard that does not depend on the axis-aware clamp fix being correct
-    /// in every detail.
-    func testThePictureNeverLeavesANonSquarePaneEntirely() {
-        let portraitPane = CGSize(width: 500, height: 800)
-        let sixteenByNine = CGSize(width: 1920, height: 1080)
-        let paneRect = CGRect(origin: .zero, size: portraitPane)
-
-        for (drag, description) in [
-            (CGSize(width: -10_000, height: 0), "left bound"),
-            (CGSize(width: 10_000, height: 0), "right bound"),
-            (CGSize(width: 0, height: -10_000), "bottom bound"),
-            (CGSize(width: 0, height: 10_000), "top bound"),
-        ] {
-            var zoom = VideoZoom()
-            zoom.setScale(4, in: portraitPane, videoSize: sixteenByNine)
-            zoom.pan(by: drag, in: portraitPane, videoSize: sixteenByNine)
-
-            let frame = zoom.layerFrame(in: portraitPane, videoSize: sixteenByNine)
-            let overlap = frame.intersection(paneRect)
-
-            XCTAssertFalse(overlap.isEmpty, "\(description): the picture must not vanish off the pane, got \(frame)")
-            XCTAssertGreaterThan(
-                overlap.width * overlap.height,
-                portraitPane.width * portraitPane.height * 0.25,
-                "\(description): the visible picture must be a substantial fraction of the pane, got \(frame)"
-            )
-            // The pane's own aspect (width-constrained here) is unaffected by
-            // the letterboxing on the other axis and must still be exact.
-            XCTAssertEqual(overlap.width, portraitPane.width, accuracy: 0.0001, description)
-        }
-    }
 
     /// A degenerate `videoSize` (zero, negative, or non-finite in either
     /// dimension) cannot describe a real aspect ratio, so this falls back to
