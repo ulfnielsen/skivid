@@ -407,9 +407,14 @@ final class ZoomWiringTests: XCTestCase {
 
     // MARK: - The viewer
 
-    /// The bar's slider must reach the model, not merely compile against it.
-    /// `ZoomControl`'s own tests drive a closure; this one drives the real
-    /// `NSSlider` the bar renders, through the real `ViewerModel`.
+    /// The zoom chip's slider must reach the model, not merely compile against
+    /// it. `ZoomControl`'s own tests drive a closure; this one drives the real
+    /// `NSSlider` that `ViewerPane` renders over the video, through the real
+    /// `ViewerModel`.
+    ///
+    /// The chip is the pane's *only* slider, which is what makes finding it by
+    /// type safe here: `TimelineScrubber` is a sibling in `ContentView`, not
+    /// part of this view.
     ///
     /// **The hosted `NSSlider` is normalised, not scaled — measured, because
     /// the obvious spelling silently passes the wrong number.** Printing the
@@ -426,12 +431,13 @@ final class ZoomWiringTests: XCTestCase {
         model.setZoomScale(2, in: pane)
 
         let host = NSHostingView(
-            rootView: ViewerControlBar(model: model, videoPaneSize: pane).frame(width: 900, height: 200)
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
         )
         host.layoutSubtreeIfNeeded()
 
         let sliders = Self.sliders(in: host)
-        XCTAssertEqual(sliders.count, 1, "precondition: the bar carries exactly one slider")
+        XCTAssertEqual(sliders.count, 1, "precondition: the pane carries exactly one slider, the zoom chip's")
         XCTAssertEqual(
             sliders[0].maxValue, 1.0, accuracy: 0.0001,
             "precondition: the hosted slider is normalised; a 1...4 slider would make the line below ask for 1.83"
@@ -514,6 +520,77 @@ final class ZoomWiringTests: XCTestCase {
             """
         )
         XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.002, "a horizontal drag must not move the picture vertically")
+    }
+
+    /// **The chip takes its own clicks, and the video does not get them.**
+    ///
+    /// This is the rule the caption and the status chip meet by carrying
+    /// `.allowsHitTesting(false)`: anything floating over `ViewerPane`'s video
+    /// must not swallow the play/pause tap. The zoom chip cannot take that
+    /// route — it is a control and needs its clicks — so it meets the rule by
+    /// position instead, and that is a claim about hit-testing rather than
+    /// about a modifier, so it is measured here rather than asserted.
+    ///
+    /// **The second click is the control, and it is not optional.** A click
+    /// that landed on nothing at all would leave `rate` at 0 too, so the first
+    /// assertion on its own would pass for the wrong reason — including if this
+    /// test's arithmetic put the point outside the window. Clicking the pane's
+    /// centre with the identical technique immediately afterwards proves the
+    /// technique reaches the tap when it is *supposed* to.
+    ///
+    /// The chip's frame is read off the hosted `NSSlider` rather than computed
+    /// from `ZoomControl`'s paddings: the control's ideal width (224pt) exceeds
+    /// the 220pt cap `ViewerPane` gives it, so something inside is compressed
+    /// by 4pt and the arithmetic would be guesswork.
+    func testClickingTheZoomChipDoesNotAlsoToggleThePlaybackUnderneath() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 800, height: 450)
+        XCTAssertEqual(model.player.rate, 0, "precondition: nothing is playing yet")
+
+        let host = NSHostingView(
+            rootView: ViewerPane(model: model, athleteName: "Idun")
+                .frame(width: pane.width, height: pane.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: pane),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+
+        let slider = try XCTUnwrap(Self.sliders(in: host).first, "precondition: the chip renders a slider")
+        let inWindow = slider.convert(slider.bounds, to: nil)
+        XCTAssertTrue(
+            NSRect(origin: .zero, size: pane).contains(inWindow),
+            "precondition: the chip must be inside the pane; measured \(inWindow)"
+        )
+        let onTheChip = CGPoint(x: inWindow.midX, y: inWindow.midY)
+        window.sendEvent(Self.mouseEvent(.leftMouseDown, at: onTheChip, windowNumber: window.windowNumber))
+        window.sendEvent(Self.mouseEvent(.leftMouseUp, at: onTheChip, windowNumber: window.windowNumber))
+
+        XCTAssertEqual(
+            model.player.rate, 0,
+            """
+            a click on the zoom chip must not fall through to the video's \
+            play/pause tap; the chip sits above the gestures for exactly this \
+            reason
+            """
+        )
+
+        let onTheVideo = CGPoint(x: pane.width / 2, y: pane.height / 2)
+        XCTAssertFalse(
+            inWindow.contains(onTheVideo),
+            "precondition: the pane's centre must be clear of the chip, or the control below proves nothing"
+        )
+        window.sendEvent(Self.mouseEvent(.leftMouseDown, at: onTheVideo, windowNumber: window.windowNumber))
+        window.sendEvent(Self.mouseEvent(.leftMouseUp, at: onTheVideo, windowNumber: window.windowNumber))
+
+        XCTAssertEqual(
+            model.player.rate, 1,
+            "control: the same technique on the video itself must toggle playback, or the assertion above is vacuous"
+        )
     }
 
     /// At 1× the pan gesture is not installed at all, so it cannot swallow the

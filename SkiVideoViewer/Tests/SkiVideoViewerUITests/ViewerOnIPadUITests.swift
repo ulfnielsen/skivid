@@ -253,15 +253,6 @@ final class ViewerOnIPadUITests: XCTestCase {
     /// 11-inch and 863pt on a mini, both comfortably above the bar's ideal
     /// width, so transport, time readout and clip stepping share one row and the
     /// band measures the claimed 104pt.
-    ///
-    /// **NOT RE-MEASURED SINCE THE ZOOM CONTROL LANDED.** The measurement above
-    /// predates it, and the control moved the bar's ideal width by 236.0pt —
-    /// 557.0 to 793.0 on macOS metrics, per `ViewerControlBarLayoutTests`. iPad
-    /// metrics run wider still (a `.callout` is 16pt there against 13pt here),
-    /// so the iPad ideal is above 793 by some amount nobody has measured. 940pt
-    /// clears that comfortably; **863pt on a mini may not**. Whoever next runs
-    /// this suite on a mini should treat a failure here as the expected
-    /// discovery and record the number, not as a regression to patch.
     func testTheControlBarFitsOneRowInLandscape() {
         let app = launchAndOpenTheFixtureFolder()
         rotate(app, to: .landscapeLeft)
@@ -360,15 +351,6 @@ final class ViewerOnIPadUITests: XCTestCase {
     /// So the spec's arithmetic about the bar was correct: it does fit one row
     /// at 834pt and at 744pt. What it missed is that the viewer's bar is never
     /// offered those widths in portrait.
-    ///
-    /// **NOT RE-MEASURED SINCE THE ZOOM CONTROL LANDED, and this is the test
-    /// most likely to have changed.** The bar's ideal width moved from 557.0pt
-    /// to 793.0pt on macOS metrics (`ViewerControlBarLayoutTests`), and 744pt is
-    /// now below it there. iPad metrics are wider again, so on a mini this test
-    /// should now be expected to *fail* — 744pt no longer buys the one-row bar
-    /// back. On an 11-inch, 834pt is 41pt above the macOS ideal, which is the
-    /// margin the iPad's wider `.callout` eats into. Run it and record what it
-    /// says; do not shrink a control to make it green.
     func testHidingTheSidebarInPortraitRestoresTheOneRowBar() {
         let app = launchAndOpenTheFixtureFolder()
         rotate(app, to: .portrait)

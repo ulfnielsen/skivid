@@ -1,23 +1,17 @@
 import SkiVideoCore
 import SwiftUI
 
-/// The video, its caption and the one touch gesture.
+/// The video, its caption, its zoom chip and the two touch gestures.
 ///
 /// The athlete name and clip description used to be two rows of the control
 /// band. Over the letterbox they cost nothing: the comparison screen's
 /// equivalent caption measured 29.0pt minimum height, identical to a plain
-/// `Text`, because the letterbox area already exists.
+/// `Text`, because the letterbox area already exists. The zoom chip is here
+/// for the same reason and on the strength of the same argument, measured a
+/// second time — see `zoomChip(in:)`.
 struct ViewerPane: View {
     @ObservedObject var model: ViewerModel
     let athleteName: String
-    /// The pane's measured size, reported upward on every layout.
-    ///
-    /// `ContentView` holds it and hands it to `ViewerControlBar`, which is
-    /// where the zoom control lives: the bar is this pane's *sibling* and has
-    /// no geometry that describes the video, but `setZoomScale` re-clamps the
-    /// pan against the pane. Defaulted so the wiring tests that host this pane
-    /// on its own stay honest about not consuming the size.
-    var onPaneSizeChange: (CGSize) -> Void = { _ in }
 
     /// Where the current drag had reached at its previous change.
     ///
@@ -26,6 +20,13 @@ struct ViewerPane: View {
     /// See `panGesture`.
     @State private var lastDrag: CGSize = .zero
 
+    /// **One `GeometryReader`, three consumers.** The drag, the zoom chip's
+    /// slider and the model call underneath both of them all need the pane's
+    /// size — `VideoZoom` clamps the pan against it — and reading it in one
+    /// place here is what keeps that size out of `ContentView` and out of the
+    /// control bar. An earlier round relayed it to `ViewerControlBar` through
+    /// `ContentView` because the control lived in the bar; moving the control
+    /// onto the video removed the relay along with the layout cost.
     var body: some View {
         GeometryReader { proxy in
             SinglePlayerView(player: model.player, zoom: model.zoom)
@@ -39,12 +40,58 @@ struct ViewerPane: View {
                 // Only installed while zoomed, so at 1x it cannot swallow
                 // anything meant for the tap above.
                 .gesture(model.zoom.isZoomed ? panGesture(in: proxy.size) : nil)
-                .onAppear { onPaneSizeChange(proxy.size) }
-                .onChange(of: proxy.size) { onPaneSizeChange($0) }
+                // After the gestures, so the chip is layered above them and
+                // takes its own clicks rather than the video's play/pause —
+                // measured in `ZoomWiringTests`, both directions.
+                .overlay(alignment: .bottomTrailing) { zoomChip(in: proxy.size) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottomLeading) { caption }
         .overlay(alignment: .topTrailing) { statusChip }
+    }
+
+    /// The zoom control, over the letterbox rather than in the control bar.
+    ///
+    /// **It was in `ViewerControlBar` first, and a measurement is why it
+    /// moved.** There it pushed the bar's ideal width from 557.0pt to 793.0pt,
+    /// which is above the 744pt iPad mini portrait width: the bar took its
+    /// `ViewThatFits` fallback and the scrubber-plus-bar band grew from 104pt
+    /// to 156pt — taller than the ~130pt control band an earlier redesign
+    /// deleted, and spent on the smallest screen, where video area is
+    /// scarcest. Over the letterbox it costs no layout height at all. Same
+    /// reasoning, and the same `.thinMaterial` capsule, as `ClipSourceMenu`'s
+    /// chip on the comparison panes.
+    ///
+    /// **Hit-testable, unlike the caption and the status chip beside it.**
+    /// Those two carry `.allowsHitTesting(false)` because they are decoration
+    /// floating over the play/pause tap, and a chip that claimed hits would eat
+    /// it. This one is a control: it has to receive its own clicks, so it keeps
+    /// the tap safe by *position* rather than by declining hits — it occupies
+    /// one corner and the video's tap target is everything else. Both halves
+    /// are measured in `ZoomWiringTests`: a click on the chip leaves
+    /// `player.rate` at 0, and a click on the pane's centre still toggles it.
+    ///
+    /// Bottom-trailing specifically, because the other two corners in use are
+    /// bottom-leading (the caption) and top-trailing (the status chip).
+    ///
+    /// `.frame(maxWidth: 220)` for the same reason the status chip is capped:
+    /// unbounded, the control's own ideal width is 224pt and it would grow into
+    /// the caption on a narrow pane.
+    private func zoomChip(in paneSize: CGSize) -> some View {
+        ZoomControl(
+            zoom: model.zoom,
+            isEnabled: model.currentPlaybackURL != nil,
+            // Out-of-range requests — the minus button at 1.0x, the plus button
+            // at 4.0x — reach the model unfiltered on purpose: `setScale` clamps
+            // to `VideoZoom.range` unconditionally, so the range is enforced in
+            // exactly one place and no call site restates it.
+            onScale: { model.setZoomScale($0, in: paneSize) },
+            onReset: { model.resetZoom() }
+        )
+        .frame(maxWidth: 220)
+        .padding(.horizontal, 8)
+        .background(.thinMaterial, in: Capsule())
+        .padding(12)
     }
 
     /// A drag pans, and each step is relative to the previous one — SwiftUI

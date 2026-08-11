@@ -46,15 +46,18 @@ final class ViewerControlsWiringTests: XCTestCase {
 
     // MARK: - ViewerControlBar
 
-    /// **Measured** by counting what `transportButtons` finds: six transport
-    /// buttons, then `ZoomControl`'s minus, plus and level-as-reset, then
-    /// Previous and Next clip. It was 8 before the zoom control; the three it
-    /// added sit *between* the transport and the clip stepping, which is why
-    /// the indices below are written against this rather than against
-    /// `TransportAction.allCases.count` alone.
-    private static let zoomButtonCount = 3
-    private static let barButtonCount = TransportAction.allCases.count + zoomButtonCount + 2
-    private static let previousClipIndex = TransportAction.allCases.count + zoomButtonCount
+    /// The bar's buttons, in the order `transportButtons` walks them: the six
+    /// `TransportControls` buttons, then `clipStepping`'s Previous and Next.
+    /// Named rather than spelled `8` and `TransportAction.allCases.count` at
+    /// each use site — the lookup below is positional, so what each index
+    /// *means* is the thing worth writing down.
+    ///
+    /// Task 4 briefly had three `ZoomControl` buttons sitting between the two
+    /// groups, which broke every index here. The zoom control now lives on the
+    /// video instead of in the bar, so the counts are back to what they were —
+    /// but the naming survived that round and is kept.
+    private static let barButtonCount = TransportAction.allCases.count + 2
+    private static let previousClipIndex = TransportAction.allCases.count
 
     /// Kills the mutation of replacing `model.applyTransport(action)` with
     /// `_ = action` inside `ViewerControlBar.transport`. An empty fixture is
@@ -72,7 +75,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+            "precondition: six transport buttons plus Previous/Next clip"
         )
 
         let playPauseIndex = try XCTUnwrap(TransportAction.allCases.firstIndex(of: .playPause))
@@ -91,9 +94,8 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// that only checked "the clip changed" could not tell a sign flip on
     /// the `Next` button's offset from a correct one.
     ///
-    /// **Buttons are located by a named offset built from
-    /// `TransportAction.allCases.count` and `zoomButtonCount`, not a bare
-    /// literal, but this is still positional, not label-based.** Review
+    /// **Buttons are located by the named offsets above, not a bare literal
+    /// `7`, but this is still positional, not label-based.** Review
     /// asked for lookup by `accessibilityLabel`/title, matching how
     /// `SharedControlsWiringTests` locates `playPauseIndex` — and how
     /// `ComparisonControlBar`'s anchor button is found by trailing position
@@ -115,18 +117,15 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// `NSWindow`; this one needs the process itself to be a real app, which
     /// `swift test` cannot provide). Reading `NSButton.isEnabled` directly
     /// (below) works because that is a plain AppKit property, not routed
-    /// through Accessibility. Pinning "Previous clip"/"Next clip" text to its
-    /// button is done on the iPad XCUITest runner instead, whose
-    /// `XCUIElement` queries read a UIKit accessibility tree that is actually
-    /// populated — `ViewerOnIPadUITests.testNextClipAdvancesAndPreviousClipGoesBack`.
+    /// through Accessibility. Pinning "Previous clip"/"Next clip" text to
+    /// its button is Task 4's job, on the iPad XCUITest runner, whose
+    /// `XCUIElement` queries read a UIKit accessibility tree that is
+    /// actually populated.
     ///
     /// `transportButtons` walks the AppKit tree in declaration order — the
-    /// six transport buttons first, then `ZoomControl`'s minus/plus/level,
-    /// then `clipStepping`'s Previous, then Next — confirmed the same way
-    /// `SharedControlsWiringTests` confirms `ComparisonControlBar`'s
-    /// seven-button order. The order is the same in both `ViewThatFits`
-    /// branches, and only one branch is ever realised, so these indices do not
-    /// depend on the 600pt width the host is given.
+    /// six transport buttons first, then `clipStepping`'s Previous, then
+    /// Next — confirmed the same way `SharedControlsWiringTests` confirms
+    /// `ComparisonControlBar`'s seven-button order.
     func testClickingNextClipInViewerControlBarMovesTheModel() throws {
         let model = try makeModel(videoNames: ["run1.mp4", "run2.mp4", "run3.mp4"])
         XCTAssertEqual(model.currentVideo?.lastPathComponent, "run1.mp4", "precondition")
@@ -137,7 +136,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+            "precondition: six transport buttons plus Previous/Next clip"
         )
 
         buttons[Self.previousClipIndex + 1].performClick(nil)
@@ -163,7 +162,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+            "precondition: six transport buttons plus Previous/Next clip"
         )
 
         buttons[Self.previousClipIndex].performClick(nil)
@@ -181,8 +180,8 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// own.
     ///
     /// Asserts the real `NSButton.isEnabled`, not a model-side effect.
-    /// Review caught that the model-side version of this test — clicking every
-    /// button and asserting `player.rate == 0` /
+    /// Review caught that the model-side version of this test — clicking all
+    /// eight buttons and asserting `player.rate == 0` /
     /// `currentVideo == nil` — cannot fail: `ViewerModel.togglePlayback`
     /// already guards on `currentVideo != nil` and `changeVideo(by:)` already
     /// guards on `currentAthlete`, so those two assertions hold whether or
@@ -206,7 +205,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons, three zoom buttons, then Previous/Next clip"
+            "precondition: six transport buttons plus Previous/Next clip"
         )
 
         for (index, button) in buttons.enumerated() {
@@ -394,10 +393,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         )
         host.layoutSubtreeIfNeeded()
 
-        let slider = try XCTUnwrap(
-            nsSlider(in: host),
-            "expected to find the viewer timeline's real NSSlider in the hosted ContentView"
-        )
+        let slider = try viewerTimelineSlider(in: host)
         XCTAssertTrue(slider.isEnabled, "precondition: a real duration must enable the scrubber")
         slider.doubleValue = 0.5
         _ = slider.sendAction(slider.action, to: slider.target)
@@ -427,15 +423,46 @@ final class ViewerControlsWiringTests: XCTestCase {
         return found
     }
 
+    /// **A hosted `ContentView` contains two sliders, and the first one the
+    /// tree walk reaches is the wrong one.** `ViewerPane`'s zoom chip is
+    /// declared before `TimelineScrubber` in `detail`'s `VStack`, so a
+    /// first-match walk returns the zoom slider — measured, and it is what
+    /// broke `testDraggingTheViewerTimelineInContentViewMovesTheRealModel`
+    /// when the chip landed: the seek assertion failed at 0.0 because the
+    /// drag had gone to the zoom instead.
+    ///
+    /// Width is the discriminator, because the obvious ones do not work here.
+    /// Measured in a 1400pt host: the zoom slider is **80.0pt** wide (it is
+    /// capped inside a 220pt chip over the video) and the viewer timeline is
+    /// **1108.0pt** (it spans the detail column). Both report `minValue 0.0,
+    /// maxValue 1.0`, so value range cannot tell them apart, and
+    /// `accessibilityIdentifier()` comes back **empty on both** despite
+    /// `ContentView` setting one on the scrubber — the same dead
+    /// Accessibility tree this file documents at length above.
+    ///
+    /// Asserting the count first is what keeps this honest: a third slider
+    /// appearing anywhere in the viewer should stop this test rather than
+    /// silently re-point it.
+    private func viewerTimelineSlider(in view: NSView) throws -> NSSlider {
+        let sliders = allSliders(in: view)
+        XCTAssertEqual(
+            sliders.count, 2,
+            "expected exactly two sliders in a hosted ContentView: the zoom chip's and the viewer timeline's"
+        )
+        return try XCTUnwrap(
+            sliders.max(by: { $0.bounds.width < $1.bounds.width }),
+            "expected to find the viewer timeline's real NSSlider in the hosted ContentView"
+        )
+    }
+
     /// Duplicated from `SharedControlsWiringTests`: the slider renders
     /// several layers deep as a private AppKit class, but a plain
     /// `as? NSSlider` downcast on it succeeds, confirmed empirically there.
-    private func nsSlider(in view: NSView) -> NSSlider? {
-        if let slider = view as? NSSlider { return slider }
-        for sub in view.subviews {
-            if let found = nsSlider(in: sub) { return found }
-        }
-        return nil
+    private func allSliders(in view: NSView) -> [NSSlider] {
+        var found: [NSSlider] = []
+        if let slider = view as? NSSlider { found.append(slider) }
+        for sub in view.subviews { found.append(contentsOf: allSliders(in: sub)) }
+        return found
     }
 
     /// A synthetic left-click event at a point in window coordinates,

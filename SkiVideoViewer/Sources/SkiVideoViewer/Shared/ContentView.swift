@@ -6,11 +6,6 @@ struct ContentView: View {
     let initialDirectory: URL?
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
-    /// The video pane's measured size, relayed from `ViewerPane` to
-    /// `ViewerControlBar`. The two are siblings in `detail`, so the zoom
-    /// control in the bar has no other route to the geometry `setZoomScale`
-    /// clamps the pan against.
-    @State private var viewerPaneSize: CGSize = .zero
     /// The platform's Compare and Sort presentation. macOS opens windows; iPad
     /// uses a full-screen cover for Compare only. Each screen is gated by its
     /// own flag, so a platform that cannot present one hides just that button
@@ -220,11 +215,7 @@ struct ContentView: View {
     private var detail: some View {
         VStack(spacing: 0) {
             if let athlete = model.currentAthlete {
-                ViewerPane(
-                    model: model,
-                    athleteName: athlete.name,
-                    onPaneSizeChange: { viewerPaneSize = $0 }
-                )
+                ViewerPane(model: model, athleteName: athlete.name)
 
                 VStack(spacing: 0) {
                     TimelineScrubber(
@@ -235,7 +226,7 @@ struct ContentView: View {
                     .accessibilityIdentifier("Viewer timeline")
                     .padding(.horizontal, 12)
 
-                    ViewerControlBar(model: model, videoPaneSize: viewerPaneSize)
+                    ViewerControlBar(model: model)
                 }
                 .background(.bar)
             } else {
