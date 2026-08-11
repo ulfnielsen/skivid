@@ -367,6 +367,54 @@ final class ZoomWiringTests: XCTestCase {
         XCTAssertEqual(layerHost.playerLayerFrame.width, 800, accuracy: 0.5)
     }
 
+    // MARK: - The control
+
+    func testTheZoomLabelReadsAsAMultiplier() {
+        XCTAssertEqual(ZoomControl.label(for: 1), "1.0×")
+        XCTAssertEqual(ZoomControl.label(for: 2.5), "2.5×")
+        XCTAssertEqual(ZoomControl.label(for: 4), "4.0×")
+    }
+
+    func testTheMinusButtonStepsDownAndThePlusButtonStepsUp() {
+        var requested: [Double] = []
+        var zoom = VideoZoom()
+        zoom.setScale(2, in: CGSize(width: 400, height: 60), videoSize: .zero)
+        let control = ZoomControl(zoom: zoom, isEnabled: true, onScale: { requested.append($0) }, onReset: {})
+
+        let host = NSHostingView(rootView: control.frame(width: 400, height: 60))
+        host.layoutSubtreeIfNeeded()
+        let buttons = Self.buttons(in: host)
+        XCTAssertEqual(buttons.count, 3, "precondition: minus, plus and the resettable level")
+
+        buttons[0].performClick(nil)
+        buttons[1].performClick(nil)
+
+        XCTAssertEqual(requested, [1.5, 2.5], "each press must step by 0.5 from the current scale")
+    }
+
+    func testTheLevelReadoutResets() {
+        var didReset = false
+        var zoom = VideoZoom()
+        zoom.setScale(3, in: CGSize(width: 400, height: 60), videoSize: .zero)
+        let control = ZoomControl(zoom: zoom, isEnabled: true, onScale: { _ in }, onReset: { didReset = true })
+
+        let host = NSHostingView(rootView: control.frame(width: 400, height: 60))
+        host.layoutSubtreeIfNeeded()
+        Self.buttons(in: host)[2].performClick(nil)
+
+        XCTAssertTrue(didReset, "the level is the route to 1x that does not depend on gesture arbitration")
+    }
+
+    private static func buttons(in view: NSView) -> [NSButton] {
+        var found: [NSButton] = []
+        func walk(_ view: NSView) {
+            if let button = view as? NSButton { found.append(button) }
+            view.subviews.forEach(walk)
+        }
+        walk(view)
+        return found
+    }
+
     // MARK: - Reading the screen
 
     private func capture(_ window: NSWindow) -> CGImage? {
