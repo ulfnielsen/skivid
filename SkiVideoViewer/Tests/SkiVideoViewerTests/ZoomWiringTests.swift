@@ -860,8 +860,15 @@ final class ZoomWiringTests: XCTestCase {
 
     /// Double-click resets *this* side, and does it while the pan gesture is
     /// installed — 4× is the only state anyone would double-click in, and a
-    /// `DragGesture` sharing the video can swallow taps. It does not: 10pt of
-    /// `minimumDistance` is why.
+    /// `DragGesture` sharing the video can swallow taps. It does not.
+    ///
+    /// **Not because of `minimumDistance`**, which is the obvious explanation
+    /// and is not the one: with `ComparisonPane`'s drag mutated to
+    /// `minimumDistance: 0` this test and
+    /// `testASingleClickOnAComparisonPaneLeavesTheZoomAlone` both still pass.
+    /// The tap wins arbitration for a sequence that never moves, at a threshold
+    /// of 0 as well as at the default 10pt — which is what this test measures
+    /// and all it should be read as claiming.
     ///
     /// The left side is zoomed separately and asserted untouched, because
     /// `resetZoom(side:)` taking the wrong side — or ignoring it — is exactly

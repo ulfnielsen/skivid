@@ -71,10 +71,22 @@ struct ComparisonPane: View {
                 // tap to hold up, so the gesture is free here. The asymmetry is
                 // the measurement's — see the comment on `ViewerPane.body`.
                 //
+                // **And it is free in the other direction too**: the `count: 2`
+                // tap costs `panGesture` nothing, though the two share this
+                // view. Measured mouse-down to the pan actually moving, ten
+                // drags each — 7.6 ms with the tap installed, 6.1 ms with it
+                // deleted. Noise, not arbitration.
+                //
                 // Ahead of the drag because a double-click while zoomed is
                 // exactly when this is wanted, and it survives that: measured
                 // at 4× with `panGesture` installed, the drag does not swallow
-                // it (`DragGesture`'s 10pt `minimumDistance` is why).
+                // the double-click. **The reason is not `minimumDistance`**,
+                // which is the obvious guess and is wrong — with the drag set
+                // to `minimumDistance: 0` both double-click tests still pass.
+                // What was measured is simply that the tap wins arbitration for
+                // a sequence with no movement in it, at a threshold of 0 as
+                // well as at the default 10pt. So a finer pan is free to lower
+                // that threshold without taking the reset with it.
                 .onTapGesture(count: 2) { model.resetZoom(side: side) }
                 // Only installed while this side is zoomed. Unlike the viewer's
                 // pane there is no *single*-tap gesture here for it to compete
