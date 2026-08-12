@@ -224,15 +224,21 @@ struct OverlayPlayerStack: View {
     /// | 0.10  | 720pt | 640pt | 480pt          |
     /// | 0.30  | 560pt | 320pt | 0 — all black  |
     ///
-    /// A gate-passing alignment at the far end of its range can therefore black
-    /// the overlay out at 4×. That is honest — it says "there is nothing here
-    /// both clips can be compared on", the same thing the letterbox says at 1× —
-    /// but it is a limitation and not a design. It comes entirely from the clip
+    /// A gate-passing alignment at the far end of its range would therefore have
+    /// blacked the overlay out at 4×. **`maximumScale` is why it cannot**: the
+    /// chip will not hand the model a scale past the point where this region
+    /// stops being worth looking at, so the bottom-right cell above is now
+    /// unreachable rather than merely documented.
+    ///
+    /// The shrinking itself is still real and still comes entirely from the clip
     /// happening before the offset: moving the shift into the layer's own frame,
     /// inside the host, would clip only content that is off-screen anyway and
-    /// remove the strip loss at every scale. That is a change to
-    /// `SinglePlayerView`, which the viewer and both comparison panes also
-    /// draw through, so it is left as its own piece of work.
+    /// remove the strip loss at every scale **above 1×** — at 1× the picture
+    /// stops at the video rect and there is no off-screen content to bring in,
+    /// so the loss there is unavoidable and the `(s − 1)/2s` it would recover is
+    /// zero. That is a change to `SinglePlayerView`, which the viewer and both
+    /// comparison panes also draw through, so it is left as its own piece of
+    /// work — deferred rather than rejected, and it would let the cap go.
     ///
     /// Static and taking explicit sizes for the same reason `offset` is: this
     /// is the geometry that has to be *asserted*, and the four ways this
@@ -253,6 +259,74 @@ struct OverlayPlayerStack: View {
         // answers that with the null rect, whose origin is infinite; a mask
         // wants an empty one.
         return shared.isNull ? .zero : shared
+    }
+
+    /// The least of the stack the two clips may be left sharing, as a fraction
+    /// of the axis the shift binds on.
+    ///
+    /// **Not zero, which is the whole point.** The scale at which the shared
+    /// region reaches *exactly* nothing is `1 / max(a, b)` below, and capping
+    /// there would put a black screen at the top of the slider — the failure the
+    /// cap exists to make impossible, moved rather than removed. It is not a
+    /// corner case either: it is what the round numbers land on, `dx 0.25` at
+    /// 4.0× and `dx 0.5` at 2.0× both giving a region exactly 0pt wide.
+    ///
+    /// A tenth is the smallest strip that is still a comparison rather than a
+    /// sliver, and it costs the operator very little: it moves the cap by 10%,
+    /// so a pair well enough aligned to reach 4× at all still reaches it —
+    /// everything out to `dx 0.225` — and only pairs already near the gate's own
+    /// floor give anything up.
+    private static let minimumSharedFraction: Double = 0.1
+
+    /// The largest scale the overlay may be zoomed to before the two clips stop
+    /// sharing enough picture to compare, for the translation in force now.
+    ///
+    /// **Why there has to be a cap at all** is on `sharedRect`: the strip the
+    /// alignment shift opens is a fixed fraction of the *picture*, so it grows
+    /// with the scale while the container does not, and far enough in it eats
+    /// the frame. Rather than let that happen and explain it, the chip declines
+    /// to ask for it.
+    ///
+    /// **The arithmetic.** The shift eats `a = |dx| · renderedVideoWidth /
+    /// container.width` of the stack horizontally per unit of scale and
+    /// `b = |dy| · renderedVideoWidth / container.height` vertically — both by
+    /// the rendered *width*, because that is the ruler `offset` normalises by;
+    /// see it for why `dy` does not get its own. The region survives while
+    /// `max(a, b) · scale` stays below 1, so the cap is
+    /// `(1 − minimumSharedFraction) / max(a, b)`, clamped into `VideoZoom.range`
+    /// at both ends.
+    ///
+    /// **`renderedVideoWidth`, not the container's width.** The shorthand
+    /// `1 / max(|dx|, |dy| · videoWidth/videoHeight)` is the same number
+    /// whenever the clip fills the container's width, which covers the
+    /// aspect-matched case, the letterboxed case and the not-yet-loaded
+    /// fallback. It is not the same number for a *pillarboxed* clip — a 16:9
+    /// clip in the Compare window's 2:1 video area draws 888.9pt wide inside
+    /// 1000pt, so its shift eats 11.1% less of the stack than the shorthand
+    /// thinks and the cap comes out 12.5% higher: measured at `dx 0.35`, 2.89×
+    /// against the shorthand's 2.57×, with 100pt of picture left either way.
+    /// Using the
+    /// same ruler `offset` does keeps the two from disagreeing about what a
+    /// normalised width is worth, which is the mistake `renderedVideoWidth`'s
+    /// own doc comment exists to prevent.
+    ///
+    /// **No cap at all when there is nothing to lose.** An identity translation
+    /// leaves `sharedRect` the whole container at every scale, so `max(a, b)` is
+    /// zero and this returns the range's own maximum — including for a clip
+    /// whose size has not arrived and for a stack that has not been laid out.
+    ///
+    /// **Applied where the operator asks, not to what they already have.** See
+    /// `ComparisonVideos.overlayZoomCap`: a zoom that was set legally and is
+    /// later overtaken by the gate engaging is left where the operator put it.
+    static func maximumScale(for translation: CGVector, in container: CGSize, videoSize: CGSize) -> Double {
+        guard container.width > 0, container.height > 0 else { return VideoZoom.range.upperBound }
+        let width = renderedVideoWidth(container: container, videoSize: videoSize)
+        let horizontal = abs(translation.dx) * width / container.width
+        let vertical = abs(translation.dy) * width / container.height
+        let binding = max(horizontal, vertical)
+        guard binding > 0 else { return VideoZoom.range.upperBound }
+        let cap = (1 - minimumSharedFraction) / binding
+        return min(max(cap, VideoZoom.range.lowerBound), VideoZoom.range.upperBound)
     }
 
     /// Where the video actually lands inside `container`: the aspect-fit rect,

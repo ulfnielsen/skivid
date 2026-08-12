@@ -252,6 +252,40 @@ final class ClipChooserTests: XCTestCase {
             right.contains(ClipSourceMenu.chooseTitle),
             "the empty right side's chooser must invite a choice: \(right)"
         )
+
+        // **And the row's third chip is live on one clip.** This half-loaded
+        // overlay is exactly the state the zoom chip's enable rule turns on, and
+        // it is a product decision rather than an incidental: with one clip
+        // there *is* a picture to magnify, so requiring both would leave a dead
+        // control over it. Nothing else in the suite distinguishes the two rules
+        // — flipping the `||` in `overlayChoosers` to `&&` passes every zoom
+        // test — and this view is already built here.
+        let zoom = try XCTUnwrap(
+            zoomControls(in: ComparisonVideos(model: model)).first,
+            "the overlay row must carry a zoom control"
+        )
+        XCTAssertTrue(
+            zoom.isEnabled,
+            "the overlay's zoom chip must be live with one clip loaded; there is a picture to magnify"
+        )
+    }
+
+    /// The zoom control in a view's tree, found the same way and for the same
+    /// reason as `clipSourceMenus`: what has to be pinned is the value the
+    /// *shipped* composition builds, and this process has no accessibility tree
+    /// to ask instead.
+    private func zoomControls(in view: some View) -> [ZoomControl] {
+        var found: [ZoomControl] = []
+        var depth = 0
+        func walk(_ value: Any) {
+            guard depth < 32 else { return }
+            if let control = value as? ZoomControl { found.append(control) }
+            depth += 1
+            for child in Mirror(reflecting: value).children { walk(child.value) }
+            depth -= 1
+        }
+        walk(view.body)
+        return found
     }
 
     // MARK: - The views, with the chooser taken out

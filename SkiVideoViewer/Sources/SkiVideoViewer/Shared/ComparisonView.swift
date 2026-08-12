@@ -817,6 +817,44 @@ struct ComparisonVideos: View {
         }
     }
 
+    /// How far the operator may zoom the overlay in right now, given how far
+    /// apart the alignment is currently holding the two clips.
+    ///
+    /// `OverlayPlayerStack.maximumScale` carries the arithmetic and the reason
+    /// there is a bound at all. Three things about *this* end of it:
+    ///
+    /// **The top clip's presentation size, matching the stack.**
+    /// `OverlayPlayerStack.body` takes one video size for the whole geometry and
+    /// takes it from `topPlayer`; the cap has to be computed against the same
+    /// one or it would bound a picture nobody is drawing. The pair being two
+    /// cameras at one resolution is the assumption underneath both.
+    ///
+    /// **Clamped on the way in rather than shown in the slider.** The chip
+    /// should not offer a level it will not honour, and the honest fix is a
+    /// range on `ZoomControl` — but that type is settled, shared with the viewer
+    /// and both panes, and has no parameter for it, so this clamps the request
+    /// instead. What the operator sees: dragging the slider past the cap moves
+    /// the thumb and the level readout snaps back to the cap. Acceptable, and
+    /// worse than a short slider would be.
+    ///
+    /// **Only what is asked for now, never what is already set.** A zoom set
+    /// legally at 3× while the gate said identity is left at 3× when the gate
+    /// engages and drops the cap under it, and left at 3× again when it
+    /// disengages and the cap lifts. The alternative — re-clamping the stored
+    /// zoom whenever `translation` changes — would take the operator's framing
+    /// away mid-run, at a moment they did nothing to cause and while they are
+    /// watching the picture rather than the chip. The cost is that the collapse
+    /// is unreachable *through the chip* rather than unreachable outright; see
+    /// the report's concern about a gate engaging under a zoom that was already
+    /// high.
+    private var overlayZoomCap: Double {
+        OverlayPlayerStack.maximumScale(
+            for: translation,
+            in: stackSize,
+            videoSize: model.rightPlayer.currentItem?.presentationSize ?? .zero
+        )
+    }
+
     /// Records the video area's size into `stackSize`. Behind the stack rather
     /// than around it; see `stackSize`.
     private var stackMeasure: some View {
@@ -922,11 +960,13 @@ struct ComparisonVideos: View {
             ZoomControl(
                 zoom: model.zoom(for: .left),
                 isEnabled: ClipSourceMenu.isLoaded(model, .left) || ClipSourceMenu.isLoaded(model, .right),
-                // Out-of-range requests — the minus button at 1.0×, the plus
-                // button at 4.0× — reach the model unfiltered on purpose:
+                // Out-of-*range* requests — the minus button at 1.0×, the plus
+                // button at 4.0× — still reach the model unfiltered on purpose:
                 // `setScale` clamps to `VideoZoom.range` unconditionally, so the
-                // range is enforced in exactly one place.
-                onScale: { model.setZoomScale($0, in: stackSize, side: .left) },
+                // range is enforced in exactly one place. The alignment cap is a
+                // different bound and cannot be enforced there, because
+                // `VideoZoom` knows nothing about the pair it is one half of.
+                onScale: { model.setZoomScale(min($0, overlayZoomCap), in: stackSize, side: .left) },
                 onReset: { model.resetZoom(side: .left) }
             )
             .frame(maxWidth: 220)

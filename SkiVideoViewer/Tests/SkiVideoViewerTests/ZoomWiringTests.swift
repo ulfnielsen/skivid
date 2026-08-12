@@ -1260,6 +1260,187 @@ final class ZoomWiringTests: XCTestCase {
             hosts[0].playerLayerFrame, hosts[1].playerLayerFrame,
             "both clips must be panned by the same amount, or the pair comes apart"
         )
+        // Equal frames alone are satisfied by *neither* clip moving: with the
+        // zoom stripped from both `SinglePlayerView`s the two are the unzoomed
+        // pane rect and identical. The width says they are the zoomed one.
+        XCTAssertEqual(
+            hosts[0].playerLayerFrame.width, 1600, accuracy: 0.5,
+            "the shared frame must be the 4× one, not two matching unzoomed rects"
+        )
+    }
+
+    // MARK: - The overlay's zoom cap
+
+    /// **A shift large enough to eat the frame caps how far the overlay may be
+    /// zoomed**, so the shared region can never collapse to nothing rather than
+    /// merely being documented as able to. `OverlayPlayerStack.sharedRect`
+    /// carries the geometry; the number here is
+    /// `(1 − 0.1) / 0.35 = 2.571`.
+    ///
+    /// Driven through the real hosted `NSSlider` rather than by calling
+    /// `maximumScale`, because the cap being right and the chip applying it are
+    /// different failures in different files — and this is the one that decides
+    /// what the operator can reach. The position is written in normalised units
+    /// for the reason `testDraggingTheZoomSliderReachesTheViewerModel` measured.
+    ///
+    /// Mutation-checked by deleting the `min($0, overlayZoomCap)` clamp from
+    /// `overlayChoosers`, which lands on 4.0 — where the shared region is
+    /// `800 − 0.35 × 800 × 4 = −320`, i.e. nothing at all.
+    func testALargeAlignmentShiftCapsHowFarTheOverlayZooms() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 800, height: 450)
+        let (host, _) = try hostedComparisonVideos(
+            model: model, stack: stack, translation: CGVector(dx: 0.35, dy: 0)
+        )
+
+        try driveZoomSlider(in: host, to: VideoZoom.range.upperBound)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 2.571, accuracy: 0.01,
+            "the chip must not hand the model a scale that blacks the overlay out"
+        )
+    }
+
+    /// The other side of it, and the reason the cap is acceptable at all: a pair
+    /// aligned well enough to be worth overlaying never feels it. `dx 0.05`
+    /// caps at 18×, far outside `VideoZoom.range`, so the operator still reaches
+    /// 4× — as they do for everything out to `dx 0.225`.
+    func testASmallAlignmentShiftDoesNotCapTheOverlayAtAll() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 800, height: 450)
+        let (host, _) = try hostedComparisonVideos(
+            model: model, stack: stack, translation: CGVector(dx: 0.05, dy: 0)
+        )
+
+        try driveZoomSlider(in: host, to: VideoZoom.range.upperBound)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 4, accuracy: 0.0001,
+            "a well-aligned pair must still reach the full 4×"
+        )
+    }
+
+    /// And with no alignment in force there is nothing to cap: `sharedRect`
+    /// returns the whole container at every scale, so the bound is the range's
+    /// own. This is most of a run, and it is also the state the overlay is in
+    /// whenever Align is off or no track has been computed.
+    func testAnIdentityTranslationLiftsTheOverlaysZoomCapEntirely() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 800, height: 450)
+        let (host, _) = try hostedComparisonVideos(model: model, stack: stack)
+
+        try driveZoomSlider(in: host, to: VideoZoom.range.upperBound)
+
+        XCTAssertEqual(model.zoom(for: .left).scale, 4, accuracy: 0.0001)
+        XCTAssertEqual(
+            OverlayPlayerStack.maximumScale(for: .zero, in: stack, videoSize: .zero),
+            VideoZoom.range.upperBound,
+            "an identity translation must not bound the zoom at all"
+        )
+    }
+
+    /// **The property the cap exists for: at the capped maximum there is still
+    /// picture on screen.** Asserted across the shifts that matter rather than
+    /// at one point, because the round numbers are exactly where the naive
+    /// bound — the scale at which the region reaches zero — lands *on* zero:
+    /// `dx 0.25` at 4.0× and `dx 0.5` at 2.0× both give a region 0pt wide, and
+    /// both would put a black screen at the top of the slider. Every row below
+    /// fails at exactly 0 with `1 / max(a, b)` in place of
+    /// `0.9 / max(a, b)`.
+    ///
+    /// The vertical rows are not decoration: `dy` is scaled by the rendered
+    /// *width* and inset from the container's *height*, so an axis mix-up in
+    /// `maximumScale` survives every horizontal case.
+    func testTheSharedRegionIsNeverEmptyAtTheCappedMaximum() {
+        let square = CGSize(width: 800, height: 450)
+        let wide = CGSize(width: 1000, height: 500)
+        let cases: [(CGVector, CGSize, CGSize)] = [
+            (CGVector(dx: 0.05, dy: 0), square, .zero),
+            (CGVector(dx: 0.25, dy: 0), square, .zero),
+            (CGVector(dx: 0.35, dy: 0), square, .zero),
+            (CGVector(dx: 0.5, dy: 0), square, .zero),
+            (CGVector(dx: 0.9, dy: 0), square, .zero),
+            (CGVector(dx: 0, dy: 0.2), square, .zero),
+            (CGVector(dx: 0, dy: -0.4), square, .zero),
+            (CGVector(dx: 0.2, dy: 0.2), square, .zero),
+            // A pillarboxed clip: 16:9 in the Compare window's 2:1 video area
+            // draws 888.9pt wide inside 1000, so its shift eats 11.1% less of
+            // the stack and the cap comes out 12.5% higher — 2.89× where the
+            // container's own width would have said 2.57×.
+            (CGVector(dx: 0.35, dy: 0), wide, CGSize(width: 1920, height: 1080)),
+        ]
+
+        for (translation, container, videoSize) in cases {
+            let cap = OverlayPlayerStack.maximumScale(
+                for: translation, in: container, videoSize: videoSize
+            )
+            var zoom = VideoZoom()
+            zoom.setScale(cap, in: container, videoSize: videoSize)
+            let shared = OverlayPlayerStack.sharedRect(
+                for: translation, in: container, videoSize: videoSize, zoom: zoom
+            )
+
+            XCTAssertGreaterThan(
+                shared.width, 0,
+                "\(translation) at its cap of \(cap)× leaves no picture across"
+            )
+            XCTAssertGreaterThan(
+                shared.height, 0,
+                "\(translation) at its cap of \(cap)× leaves no picture down"
+            )
+        }
+    }
+
+    /// **The cap bounds what is asked for; it never moves what is already
+    /// set.** The gate engages and disengages during a run, so `translation` —
+    /// and with it the cap — changes under a zoom the operator set earlier.
+    /// Re-clamping the stored value would take their framing away mid-run at a
+    /// moment they did nothing to cause; this leaves it, and the lifted cap
+    /// simply lets them ask for more.
+    func testLiftingTheCapLeavesTheZoomTheOperatorAlreadySet() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 800, height: 450)
+        let (aligned, _) = try hostedComparisonVideos(
+            model: model, stack: stack, translation: CGVector(dx: 0.35, dy: 0)
+        )
+        try driveZoomSlider(in: aligned, to: VideoZoom.range.upperBound)
+        XCTAssertEqual(model.zoom(for: .left).scale, 2.571, accuracy: 0.01, "precondition: capped")
+
+        // The gate disengages: the same model, now drawn with no translation.
+        let (identity, _) = try hostedComparisonVideos(model: model, stack: stack)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 2.571, accuracy: 0.01,
+            "the cap lifting must not move the picture the operator is looking at"
+        )
+
+        try driveZoomSlider(in: identity, to: VideoZoom.range.upperBound)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 4, accuracy: 0.0001,
+            "...but it must let them ask for the rest of the range"
+        )
+    }
+
+    /// Drives the overlay chip's real `NSSlider` to `scale`. The hosted slider
+    /// is normalised whatever range SwiftUI was given — measured, see
+    /// `testDraggingTheZoomSliderReachesTheViewerModel` — so the target is
+    /// converted here.
+    private func driveZoomSlider(in host: NSView, to scale: Double) throws {
+        let sliders = Self.sliders(in: host)
+        XCTAssertEqual(sliders.count, 1, "precondition: the overlay carries exactly one slider, the zoom chip's")
+        let slider = try XCTUnwrap(sliders.first)
+        let span = VideoZoom.range.upperBound - VideoZoom.range.lowerBound
+        slider.doubleValue = (scale - VideoZoom.range.lowerBound) / span
+        slider.sendAction(slider.action, to: slider.target)
     }
 
     /// The control for the regression below, and the overlay's version of
@@ -1349,10 +1530,10 @@ final class ZoomWiringTests: XCTestCase {
     /// reason `hostedComparisonPane` builds one: synthetic mouse events do not
     /// reach SwiftUI's gesture recognition without one.
     private func hostedComparisonVideos(
-        model: ComparisonModel, stack: CGSize
+        model: ComparisonModel, stack: CGSize, translation: CGVector = .zero
     ) throws -> (NSHostingView<some View>, NSWindow) {
         let host = NSHostingView(
-            rootView: ComparisonVideos(model: model)
+            rootView: ComparisonVideos(model: model, translation: translation)
                 .frame(width: stack.width, height: stack.height)
         )
         let window = NSWindow(
