@@ -98,17 +98,22 @@ struct OverlayPlayerStack: View {
             // shared region needs both rects, not this one twice — and so does
             // the zoom, which is applied to both clips from this one value.
             let videoSize = topPlayer.currentItem?.presentationSize ?? .zero
-            let shared = Self.sharedRect(for: translation, in: proxy.size, videoSize: videoSize, zoom: zoom)
+            // **The scale actually drawn, which is not always the one asked
+            // for.** See `drawnZoom`: the chip's cap is computed against the
+            // translation in force when the operator touched it, and the
+            // translation changes every frame.
+            let drawn = Self.drawnZoom(zoom, for: translation, in: proxy.size, videoSize: videoSize)
+            let shared = Self.sharedRect(for: translation, in: proxy.size, videoSize: videoSize, zoom: drawn)
             ZStack {
                 Color.black
-                SinglePlayerView(player: bottomPlayer, zoom: zoom)
+                SinglePlayerView(player: bottomPlayer, zoom: drawn)
                     // The stationary clip is masked too, and to the *same*
                     // rect. Masking only the moved one leaves the reference
                     // showing through the strip where the other clip has no
                     // picture at all, which is the artefact this removes.
                     .mask { Self.sharedRegion(shared) }
-                SinglePlayerView(player: topPlayer, zoom: zoom)
-                    .offset(Self.offset(for: translation, in: proxy.size, videoSize: videoSize, zoom: zoom))
+                SinglePlayerView(player: topPlayer, zoom: drawn)
+                    .offset(Self.offset(for: translation, in: proxy.size, videoSize: videoSize, zoom: drawn))
                     // After `.offset`, deliberately. `.offset` is a render-time
                     // effect and does not move the layout frame a mask is
                     // placed against, so this rect stays put in the container
@@ -304,8 +309,10 @@ struct OverlayPlayerStack: View {
     /// clip in the Compare window's 2:1 video area draws 888.9pt wide inside
     /// 1000pt, so its shift eats 11.1% less of the stack than the shorthand
     /// thinks and the cap comes out 12.5% higher: measured at `dx 0.35`, 2.89×
-    /// against the shorthand's 2.57×, with 100pt of picture left either way.
-    /// Using the
+    /// against the shorthand's 2.57×, and it is the looser one that hits the
+    /// intended floor exactly — 100pt of the 1000pt stack at 2.89×, where the
+    /// shorthand overshoots to 200pt and charges the operator a stop of zoom
+    /// for it. The shorthand is never *unsafe*, only conservative. Using the
     /// same ruler `offset` does keeps the two from disagreeing about what a
     /// normalised width is worth, which is the mistake `renderedVideoWidth`'s
     /// own doc comment exists to prevent.
@@ -315,9 +322,21 @@ struct OverlayPlayerStack: View {
     /// zero and this returns the range's own maximum — including for a clip
     /// whose size has not arrived and for a stack that has not been laid out.
     ///
-    /// **Applied where the operator asks, not to what they already have.** See
-    /// `ComparisonVideos.overlayZoomCap`: a zoom that was set legally and is
-    /// later overtaken by the gate engaging is left where the operator put it.
+    /// **Applied twice, at two different moments, and it needs to be both.**
+    /// `ComparisonVideos.overlayZoomCap` bounds what the chip may *ask* for,
+    /// which is what stops the operator setting a scale that is wrong the
+    /// instant they let go and what keeps the slider honest. `drawnZoom` bounds
+    /// what is actually *painted*, against the translation being painted with
+    /// it. Only the second makes "the region cannot collapse" true rather than
+    /// usually-true; see `drawnZoom` for the measured run that gets past the
+    /// first.
+    ///
+    /// **`|dx| ≥ 0.9` clamps to the range's 1.0× floor, and the region is then
+    /// whatever the shift leaves unzoomed** — 80pt of an 800pt stack at 0.9,
+    /// and nothing at all at 1.0, where the two clips genuinely do not overlap.
+    /// No cap can rescue that: it is not a zoom problem, it is a pair with
+    /// nothing in common, and `AlignmentGate` refuses it long before this is
+    /// consulted (its floor is 0.65 overlap, which `dx 0.35` already fails).
     static func maximumScale(for translation: CGVector, in container: CGSize, videoSize: CGSize) -> Double {
         guard container.width > 0, container.height > 0 else { return VideoZoom.range.upperBound }
         let width = renderedVideoWidth(container: container, videoSize: videoSize)
@@ -327,6 +346,55 @@ struct OverlayPlayerStack: View {
         guard binding > 0 else { return VideoZoom.range.upperBound }
         let cap = (1 - minimumSharedFraction) / binding
         return min(max(cap, VideoZoom.range.lowerBound), VideoZoom.range.upperBound)
+    }
+
+    /// The zoom this frame is drawn at: the one asked for, unless the
+    /// translation being drawn with it has outgrown `maximumScale` since.
+    ///
+    /// **The chip's cap alone does not close the collapse, and the gap is
+    /// reachable on this repo's own fixtures.** The cap is computed from the
+    /// translation in force when the operator moved the slider;
+    /// `ComparisonView.alignmentTranslation` is resampled per playhead, so it
+    /// changes every frame. The margins are thin — a legal 4× at `dx 0.225`
+    /// collapses at `dx 0.25`, 3.6× at 0.25 collapses at 0.278, 2.571× at 0.35
+    /// collapses at 0.389 — an 11.1% growth in shift magnitude, every time.
+    ///
+    /// And the translation is not smoothed. Read `AlignmentGate.translation`:
+    /// inside an engaged run it returns the raw interpolated *measured*
+    /// translation with no magnitude bound at all — only the engage/disengage
+    /// **decision** is median-filtered, and the filter exists precisely because
+    /// this project's two measured tracks flip between adjacent samples from
+    /// `dy ≈ −0.04` (overlap 0.79) to `dy ≈ −0.42` (overlap 0.23). At `dy
+    /// −0.42` the region collapses from `s ≥ 1.34`, while the cap computed at
+    /// the neighbouring quiet sample is the full 4×. So a legal 4× set on a
+    /// calm stretch produces black frames on the documented flicker samples of
+    /// the fixtures this feature was built against. That is not a corner case,
+    /// and it is why this exists.
+    ///
+    /// **What the operator sees instead of black: the picture zooms out for
+    /// those frames and comes back.** That is a real cost and worth naming —
+    /// `sharedRect` argues elsewhere that a picture which jumps scale mid-run is
+    /// worse than one that loses a border, and this is a scale jump. It is the
+    /// lesser of the two here only because the alternative is not a border but
+    /// the whole frame: a black stack says nothing, while a briefly smaller one
+    /// still shows the comparison. If the flicker proves distracting in the
+    /// running app, the fix is to smooth this bound over time rather than to
+    /// remove it.
+    ///
+    /// **Still a pure function of values**, which is what lets it live in the
+    /// renderer at all: it takes the same three numbers the rest of this
+    /// geometry does and consults no track, gate or model.
+    ///
+    /// `setScale` rather than a bare scale swap, so the centre is re-clamped
+    /// against the narrower legal interval the lower scale brings with it.
+    static func drawnZoom(
+        _ zoom: VideoZoom, for translation: CGVector, in container: CGSize, videoSize: CGSize
+    ) -> VideoZoom {
+        let cap = maximumScale(for: translation, in: container, videoSize: videoSize)
+        guard zoom.scale > cap else { return zoom }
+        var drawn = zoom
+        drawn.setScale(cap, in: container, videoSize: videoSize)
+        return drawn
     }
 
     /// Where the video actually lands inside `container`: the aspect-fit rect,

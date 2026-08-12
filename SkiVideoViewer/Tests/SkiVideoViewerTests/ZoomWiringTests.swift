@@ -1372,7 +1372,9 @@ final class ZoomWiringTests: XCTestCase {
             // A pillarboxed clip: 16:9 in the Compare window's 2:1 video area
             // draws 888.9pt wide inside 1000, so its shift eats 11.1% less of
             // the stack and the cap comes out 12.5% higher — 2.89× where the
-            // container's own width would have said 2.57×.
+            // container's own width would have said 2.57×. The looser one is
+            // also the accurate one: it leaves exactly the 10% floor, 100pt of
+            // 1000, where the shorthand overshoots to 200pt.
             (CGVector(dx: 0.35, dy: 0), wide, CGSize(width: 1920, height: 1080)),
         ]
 
@@ -1428,6 +1430,113 @@ final class ZoomWiringTests: XCTestCase {
             model.zoom(for: .left).scale, 4, accuracy: 0.0001,
             "...but it must let them ask for the rest of the range"
         )
+    }
+
+    /// **The chip's cap is not enough on its own, and this is the run that gets
+    /// past it.**
+    ///
+    /// The cap is computed from the translation in force when the operator moved
+    /// the slider, and `ComparisonView.alignmentTranslation` is resampled per
+    /// playhead. `AlignmentGate.translation` returns the **raw measured**
+    /// translation inside an engaged run — verified in its source: "Only the
+    /// overlap used for the decision is filtered. The translation returned is
+    /// always the measured one" — and the gate's own doc records this project's
+    /// two measured tracks flipping between *adjacent* samples from `dy ≈ −0.04`
+    /// (overlap 0.79) to `dy ≈ −0.42` (overlap 0.23), with the median filter
+    /// there precisely to hold "engaged" across the flip.
+    ///
+    /// So: 4× is legal at the quiet sample (its cap is the full 4×), the next
+    /// sample arrives at `dy −0.42`, and without a render-time bound the stack
+    /// draws a shared region of nothing — black frames, mid-run, on the
+    /// fixtures this feature was built against.
+    ///
+    /// Asserted on the hosted AppKit tree rather than on the arithmetic, because
+    /// the arithmetic is already pinned by
+    /// `testTheSharedRegionIsNeverEmptyAtTheCappedMaximum` and what is in
+    /// question here is whether `body` *applies* it.
+    ///
+    /// **Mutation-checked by drawing with `zoom` instead of `drawn`, and the
+    /// result is worse than "a smaller picture".** The hosted tree comes back
+    /// with **zero** `PlayerLayerHostView`s: masked to an empty rect, SwiftUI
+    /// does not instantiate the representables at all. So the unclamped stack is
+    /// not a clip drawn too large behind a thin mask — it is two clips that are
+    /// not on screen in any sense, which is as complete a black frame as this
+    /// project can measure without a renderer that draws video.
+    func testAZoomThatWasLegalWhenSetIsClampedWhenTheAlignmentGrowsUnderIt() throws {
+        let container = CGSize(width: 800, height: 450)
+        let quiet = CGVector(dx: 0, dy: -0.04)
+        let flicker = CGVector(dx: 0, dy: -0.42)
+        XCTAssertEqual(
+            OverlayPlayerStack.maximumScale(for: quiet, in: container, videoSize: .zero),
+            4, accuracy: 0.0001,
+            "precondition: 4× is legal at the neighbouring sample, so the operator could set it"
+        )
+
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: container, videoSize: .zero)
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+
+        let host = NSHostingView(
+            rootView: OverlayPlayerStack(
+                bottomPlayer: model.leftPlayer,
+                topPlayer: model.rightPlayer,
+                topOpacity: model.topLayerOpacity,
+                blend: model.blend,
+                translation: flicker,
+                zoom: zoom
+            )
+            .frame(width: container.width, height: container.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: container),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        let hosts = Self.playerHosts(in: host)
+        XCTAssertEqual(
+            hosts.count, 2,
+            """
+            expected two players; zero is the failure this test exists for — \
+            masked to an empty shared region SwiftUI drops both representables \
+            outright, which is the black frame
+            """
+        )
+        for player in hosts {
+            XCTAssertEqual(
+                player.playerLayerFrame.height, 542.4, accuracy: 1,
+                "the picture must be drawn at the capped 1.205×, not the 4× that is no longer legal"
+            )
+        }
+
+        // What is actually left on screen. The mask becomes a real clipping
+        // `NSView` around each hosted player — the probe
+        // `OverlayAlignmentWiringTests.testBothPlayersAreMaskedToTheSameSharedRegion`
+        // rests on — so its frame is the shared region.
+        for player in hosts {
+            let clip = try XCTUnwrap(Self.clipRect(of: player, in: host), "no clipping ancestor")
+            XCTAssertEqual(
+                clip.height, 45, accuracy: 1,
+                "the shared region must be the 10% floor — 45pt of 450 — and not the 0 a 4× draw leaves"
+            )
+            XCTAssertGreaterThan(clip.width, 0)
+        }
+    }
+
+    /// The frame of the nearest clipping ancestor of `view`, in `root`'s
+    /// coordinates: the rect SwiftUI's `.mask` is enforcing around it.
+    private static func clipRect(of view: NSView, in root: NSView) -> CGRect? {
+        var ancestor = view.superview
+        while let current = ancestor {
+            if current.clipsToBounds { return current.convert(current.bounds, to: root) }
+            ancestor = current.superview
+        }
+        return nil
     }
 
     /// Drives the overlay chip's real `NSSlider` to `scale`. The hosted slider
