@@ -1183,6 +1183,26 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 6: The overlay layout zooms as one
 
+> **Corrected 2026-08-12, during Task 6.** This task shipped one thing it does
+> not describe below, and a reader of the plan alone would be surprised by it:
+> the overlay's zoom is **capped**, at
+> `min(4×, 0.9 / max(|dx|·Wr/width, |dy|·Wr/height))`, and clamped a *second*
+> time at draw time in `OverlayPlayerStack.drawnZoom`.
+>
+> Zooming shrinks the region the two clips share — measured on an 800pt stack at
+> 4×, `dx 0.25` leaves exactly 0pt across, and `dx 0.25` is an overlap of 0.75,
+> exactly `AlignmentGate.defaultEngageAbove` — so an uncapped range blacks the
+> overlay out at the top of the slider for a pair sitting on the gate's own
+> threshold. The `0.9` keeps a tenth of the container rather than capping at
+> `1/max(a, b)`, which is precisely where the region reaches zero. The
+> draw-time clamp is needed because the chip's cap is computed against the
+> translation in force when the slider moved, while `AlignmentGate` returns the
+> raw measured translation inside an engaged run.
+>
+> `Sources/SkiVideoViewer/Shared/OverlayPlayerStack.swift` carries the full
+> arithmetic and the measurements; the design spec's overlay section carries the
+> ruling and the accepted trade.
+
 **Files:**
 - Modify: `Sources/SkiVideoViewer/Shared/OverlayPlayerStack.swift`
 - Modify: `Sources/SkiVideoViewer/Shared/ComparisonView.swift`

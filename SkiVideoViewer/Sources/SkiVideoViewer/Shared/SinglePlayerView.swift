@@ -4,7 +4,8 @@ import SwiftUI
 
 /// One `AVPlayer` rendered by an `AVPlayerLayer`, with no transport controls.
 /// Every screen in the app draws video through this: the overlay stacks two of
-/// them, and the viewer and sorting sheet each use one. It began as the
+/// them, the two comparison panes take one each, and the viewer and the sorting
+/// sheet use one apiece. It began as the
 /// overlay's own view, because stacking needs a bare layer rather than the full
 /// AVKit player controller the other screens used at the time; that controller
 /// then turned out to be un-zoomable — its layer cannot be given a frame
@@ -373,8 +374,22 @@ final class PlayerLayerHostView: UIView {
         CATransaction.commit()
     }
 
-    /// See the macOS twin: both `.initial` options are load-bearing, and
-    /// neither hop may be "optimised" into reading `change.newValue`.
+    /// See the macOS twin for the whole argument. The two claims that matter
+    /// here, stated at the strength they were measured at:
+    ///
+    /// - The **outer** `.initial`, on `\.currentItem`, is load-bearing and
+    ///   measured — on macOS, by mutation:
+    ///   `testTheLayerIsRePlacedWhenThePresentationSizeArrives` fails without
+    ///   it. The iPad has no test of its own, so this branch inherits the
+    ///   reasoning rather than the measurement.
+    /// - The **inner** `.initial`, on `\.presentationSize`, is **not pinned by
+    ///   any test on either platform**; it is kept on the argument set out on
+    ///   the macOS twin, not on evidence that it fires. Do not delete it on the
+    ///   grounds that the suite still passes — that is the documented starting
+    ///   point, not new information.
+    ///
+    /// Neither hop may be "optimised" into reading `change.newValue`; the twin
+    /// says why that is what makes them order-safe.
     private func observeVideoSize(of player: AVPlayer) {
         videoSizeObserver = nil
         itemObserver = player.observe(\.currentItem, options: [.initial, .new]) { [weak self, weak player] _, _ in

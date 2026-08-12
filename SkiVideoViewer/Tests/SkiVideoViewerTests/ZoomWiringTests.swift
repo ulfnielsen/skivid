@@ -1628,6 +1628,193 @@ final class ZoomWiringTests: XCTestCase {
         }
     }
 
+    /// **What the draw-time clamp does to a picture that is not centred**, which
+    /// is the half of `drawnZoom` the other two tests cannot see: both of them
+    /// start from a centred `VideoZoom()`, where the centre has nowhere to move
+    /// and only the scale changes.
+    ///
+    /// `drawnZoom` reaches the lower scale through `setScale`, deliberately — a
+    /// bare scale swap would leave the centre in the *wider* interval the higher
+    /// scale allowed and hang the picture off an edge. The consequence, which is
+    /// a real cost rather than a free correction: at 4× the legal interval is
+    /// `[0.125, 0.875]` and at the capped 1.205× it is `[0.415, 0.585]`, so an
+    /// operator panned into the corner does not merely see the picture shrink on
+    /// a flicker sample — they see it slide most of the way back to the middle
+    /// and out again when the translation settles.
+    ///
+    /// Measured, 800×450, no clip size yet, the `dy −0.42` flicker sample the
+    /// test above uses:
+    ///
+    /// | translation | scale drawn | centre drawn |
+    /// | ------------------- | ----------- | ---------------- |
+    /// | quiet, `dy −0.04`   | 4.0×        | 0.875 (as set)   |
+    /// | flicker, `dy −0.42` | 1.205×      | 0.585            |
+    ///
+    /// The picture still covers the stack at the clamped scale — that is the
+    /// invariant `setScale` is re-establishing — and the stored zoom is
+    /// untouched, so the next quiet sample restores the framing exactly.
+    /// `OverlayPlayerStack.drawnZoom`'s doc records the ruling: if this proves
+    /// distracting in the running app, the bound gets smoothed over time rather
+    /// than removed.
+    func testTheDrawTimeClampPullsAnOffCentrePanBackTowardTheMiddle() {
+        let container = CGSize(width: 800, height: 450)
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: container, videoSize: .zero)
+        zoom.pan(by: CGSize(width: -10_000, height: -10_000), in: container, videoSize: .zero)
+        XCTAssertEqual(
+            zoom.center.y, 0.875, accuracy: 0.0001,
+            "precondition: panned to 4×'s own bound, 1 − 1/(2·4)"
+        )
+
+        let drawn = OverlayPlayerStack.drawnZoom(
+            zoom, for: CGVector(dx: 0, dy: -0.42), in: container, videoSize: .zero
+        )
+
+        XCTAssertEqual(drawn.scale, 1.2054, accuracy: 0.001, "0.9 / (0.42 · 800/450)")
+        XCTAssertEqual(
+            drawn.center.y, 0.5852, accuracy: 0.001,
+            "the clamp re-clamps the centre too: 1 − 1/(2·1.2054), not the 0.875 that was legal at 4×"
+        )
+        XCTAssertEqual(drawn.center.x, 0.5852, accuracy: 0.001, "and on both axes, from the same corner pan")
+
+        // The point of doing it: the smaller picture still covers the stack.
+        // Leaving the centre at 0.875 would have put the layer's trailing edge
+        // at 400 − 0.875 × 964.3 + 964.3 = 520.6pt of an 800pt stack.
+        let frame = drawn.layerFrame(in: container, videoSize: .zero)
+        XCTAssertLessThanOrEqual(frame.minX, 0.01)
+        XCTAssertLessThanOrEqual(frame.minY, 0.01)
+        XCTAssertGreaterThanOrEqual(frame.maxX, container.width - 0.01)
+        XCTAssertGreaterThanOrEqual(frame.maxY, container.height - 0.01)
+
+        // And it is a *drawing* decision, not a mutation: the next quiet sample
+        // gets the operator's framing back untouched, which is what makes the
+        // jump transient rather than a lost pan.
+        let quiet = OverlayPlayerStack.drawnZoom(
+            zoom, for: CGVector(dx: 0, dy: -0.04), in: container, videoSize: .zero
+        )
+        XCTAssertEqual(quiet, zoom, "a translation inside the cap must return the zoom exactly as set")
+    }
+
+    // MARK: - Switching between the two comparison layouts
+
+    /// **`leftZoom` is one value with two different meanings, and switching
+    /// layout is where that shows.** The overlay draws it against the whole
+    /// video area; the left side-by-side pane draws it against a half-width
+    /// pane. Nothing re-computes it at the switch, so a zoom framed in one
+    /// layout is not the picture the operator gets back in the other. This test
+    /// pins what actually happens rather than arguing it should be otherwise —
+    /// making the two agree means a second stored zoom, or re-clamping the
+    /// operator's framing under them at a layout change, and neither is
+    /// obviously better than the jump.
+    ///
+    /// Measured, an 800×450 video area, a 16:9 clip in both sides, the overlay
+    /// zoomed to 2.5× and panned to its bottom bound (`centre.y` 0.8):
+    ///
+    /// | | left pane | right pane |
+    /// | ---------------- | ---------------- | ---------------- |
+    /// | pane bounds      | 398.5 × 450      | 398.5 × 450      |
+    /// | fitted picture   | 398.5 × 224.2    | 398.5 × 224.2    |
+    /// | layer drawn      | 996.3 × 560.4    | 398.5 × 224.2    |
+    ///
+    /// **Two consequences, both asserted below.** The panes come back at
+    /// *different* magnifications — 2.5× against 1× — because only the left
+    /// side's zoom was ever touched. And `centre.y` 0.8 is legal in the overlay,
+    /// where the clip fills the 16:9 area and the interval is `[0.2, 0.8]`, but
+    /// illegal in the pane, where the same clip is letterboxed to 224.2pt of a
+    /// 450pt pane and the interval narrows to `[0.402, 0.598]`.
+    ///
+    /// **No black band comes of it**: `layerFrame` re-clamps its render copy, so
+    /// the pane draws at 0.598 and stays covered. Left unclamped it would have
+    /// put the picture's bottom edge at 337.1pt and left a 112.9pt black band
+    /// down the pane. The stored value keeps the 0.8 — the operator's framing is
+    /// not silently rewritten — which is exactly why the two can disagree.
+    ///
+    /// A real clip rather than the zero-byte fixture the rest of this file uses:
+    /// with no `presentationSize` the fitted rect *is* the pane on both
+    /// screens, the two intervals coincide, and the case under test disappears.
+    func testSwitchingBackFromTheOverlayLeavesTheTwoPanesFramedDifferently() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let model = ComparisonModel()
+        defer { model.close() }
+        for side in [ComparisonSide.left, .right] {
+            let url = try makeRealVideoFile(
+                in: root, name: "\(side == .left ? "left" : "right").mov",
+                seconds: 1, width: 320, height: 180
+            )
+            model.load(url, side: side)
+        }
+        // The size arrives asynchronously, as everywhere else in this project.
+        let deadline = Date().addingTimeInterval(10)
+        while model.leftPlayer.currentItem?.presentationSize == CGSize.zero
+            || model.rightPlayer.currentItem?.presentationSize == CGSize.zero,
+            Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(
+            model.leftPlayer.currentItem?.presentationSize, CGSize(width: 320, height: 180),
+            "precondition: the clip's aspect is what makes the two intervals differ"
+        )
+
+        model.layout = .overlay
+        let area = CGSize(width: 800, height: 450)
+        let (host, _) = try hostedComparisonVideos(model: model, stack: area)
+        model.setZoomScale(2.5, in: area, side: .left)
+        model.panZoom(by: CGSize(width: 0, height: -10_000), in: area, side: .left)
+        XCTAssertEqual(
+            model.zoom(for: .left).center.y, 0.8, accuracy: 0.0001,
+            "precondition: the overlay's own bound, 1 − 1/(2·2.5), with the clip filling the 16:9 area"
+        )
+
+        model.layout = .sideBySide
+        settle(host)
+
+        let hosts = Self.playerHosts(in: host)
+        XCTAssertEqual(hosts.count, 2, "precondition: two panes")
+        let left = try XCTUnwrap(
+            hosts.first { $0.attachedPlayer === model.leftPlayer }, "no pane drawing the left clip"
+        )
+        let right = try XCTUnwrap(
+            hosts.first { $0.attachedPlayer === model.rightPlayer }, "no pane drawing the right clip"
+        )
+
+        XCTAssertEqual(left.playerLayerFrame.height, 560.4, accuracy: 1)
+        XCTAssertEqual(
+            right.playerLayerFrame.height, 224.2, accuracy: 1,
+            "the pair comes back at different magnifications: the overlay only ever moved the left side's zoom"
+        )
+        XCTAssertEqual(
+            model.zoom(for: .left).center.y, 0.8, accuracy: 0.0001,
+            "and the stored centre is not rewritten by the switch, legal in the new pane or not"
+        )
+
+        // What is drawn, against what is stored. `layerFrame`'s defensive clamp
+        // is the only thing standing between the two, and it is what keeps the
+        // pane covered.
+        let fitted = right.playerLayerFrame.height
+        let drawnCentre = (left.bounds.height * 0.5 - left.playerLayerFrame.minY) / (fitted * 2.5)
+        XCTAssertEqual(
+            drawnCentre, 0.598, accuracy: 0.005,
+            "the pane draws at its own bound, 1 − 450/(2 × 224.2 × 2.5), not at the 0.8 the model holds"
+        )
+        XCTAssertLessThanOrEqual(left.playerLayerFrame.minY, 0.01)
+        XCTAssertGreaterThanOrEqual(
+            left.playerLayerFrame.maxY, left.bounds.height - 0.01,
+            "no black band: the re-clamp is what stops 0.8 leaving 112.9pt of black down the pane"
+        )
+    }
+
+    /// Lets SwiftUI apply a model change to an already-hosted tree. A published
+    /// change is delivered on the next main-loop turn, so `layoutSubtreeIfNeeded`
+    /// alone sees the old body.
+    private func settle(_ host: NSView) {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        host.layoutSubtreeIfNeeded()
+    }
+
     /// The frame of the nearest clipping ancestor of `view`, in `root`'s
     /// coordinates: the rect SwiftUI's `.mask` is enforcing around it.
     private static func clipRect(of view: NSView, in root: NSView) -> CGRect? {

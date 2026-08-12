@@ -11,11 +11,32 @@ two runs shot from different distances can be framed to match.
 
 | | Viewer | Comparison, side-by-side | Comparison, overlay |
 | --- | --- | --- | --- |
-| Zoom range | 1×–4× | 1×–4×, **per side** | 1×–4×, one zoom for the stack |
+| Zoom range | 1×–4× | 1×–4×, **per side** | 1×–4×, one zoom for the stack, **capped by the alignment shift** — see the correction below |
 | Control | a chip on the video | a chip on each pane | one chip on the stack |
 | 1× | whole frame, letterboxed | whole frame (unchanged) | whole frame (unchanged) |
 | Pan | drag on the video, above 1× only | same, per side | same, moves the pair |
-| Reset | double-click, or click the level | same | same |
+| Reset | click the level | double-click, or click the level | click the level |
+
+> **Corrected 2026-08-12, after Tasks 6 and 7.** The Reset row originally read
+> "double-click, or click the level" on all three screens. Only the
+> side-by-side panes shipped both.
+>
+> **The viewer has no double-click, and the absence is a measurement.** A
+> `count: 2` tap makes SwiftUI hold *every* single tap until the double-click
+> window closes, whether or not a second click ever comes — and the viewer's
+> single tap is play/pause. Measured on `ViewerPane` hosted in a real window,
+> five synthetic single clicks per configuration, mouse-down to `player.rate`
+> changing: **1.2 ms median** (3.6 ms worst) with the single tap alone, against
+> **358 ms median** (363 ms worst) with a `count: 2` tap beside it — 2.4× the
+> 150 ms this document's Risk 2 called perceptible, paid on the app's most-used
+> gesture whether or not anyone ever double-clicks. Declaration order does not
+> buy it back (357 ms / 358 ms either way). The full note, including what 358 ms
+> is *not*, is on `ViewerPane` beside the gap where the gesture would go.
+>
+> **The overlay has no double-click either**, which was never a decision so much
+> as an omission — `ComparisonVideos`' overlay branch has no tap gesture at all.
+> It is left that way: the stack's chip carries the level readout, and the two
+> panes are where a coach reaches for a double-click.
 
 Zoom persists across clips — comparing several runs of one drill at a fixed
 magnification is the point — and resets when the library changes
@@ -201,6 +222,73 @@ One zoom applied to the stack magnifies the aligned pair as a unit, so the
 translation stays correct in normalised units and the shared region scales with
 everything else. Per-side zoom stays a side-by-side feature; the overlay's job
 is comparing an aligned pair, not reframing one of them.
+
+> **Corrected 2026-08-12, after Task 6.** This section, and the Behaviour table
+> above it, both said the overlay's range is plainly 1×–4×. It is not: the
+> overlay's zoom is **capped**, and the cap is the largest design change in the
+> feature. It is applied twice, and both applications are load-bearing.
+>
+> **The cap.** `OverlayPlayerStack.maximumScale` bounds the scale at
+>
+> ```
+> min( 4× , 0.9 / max(a, b) )      a = |dx|·Wr/container.width
+>                                  b = |dy|·Wr/container.height
+> ```
+>
+> with `Wr` the video's *rendered* width in the container — the same ruler
+> `offset` normalises by, which is why `dy` is scaled by a width. (`max(|dx|,
+> |dy|·Wv/Hv)` is the shorthand, and it is only the same number when the clip
+> fills the container's width; for a pillarboxed clip it is conservative by a
+> stop — measured, 2.57× against the accurate 2.89× at `dx 0.35` in a 1000×500
+> area.)
+>
+> **Why there is a cap at all.** The strip the alignment shift opens between the
+> two clips is a fixed fraction of the *picture*, so it grows with the scale
+> while the container does not: zooming in shrinks the region the pair shares,
+> and far enough in it eats the frame entirely. Measured on an 800pt stack at
+> 4×, shared region across: `dx 0.20` → 160pt, `dx 0.225` → 80pt, **`dx 0.25` →
+> exactly 0pt**, `dx 0.30` → nothing at all. `dx 0.25` is not an extreme: a pure
+> horizontal shift of a quarter frame is an overlap of 0.75, which is exactly
+> `AlignmentGate.defaultEngageAbove`. So without the cap, a pair sitting on the
+> gate's own engage threshold blacks the overlay out at the top of the slider.
+>
+> **The `0.9` is deliberate, and it is not a fudge factor.** `1/max(a, b)` is
+> precisely where the shared region reaches zero, so capping *there* would put
+> the black screen at the top of the slider — the failure moved rather than
+> removed. Measured across the nine cases of
+> `testTheSharedRegionIsNeverEmptyAtTheCappedMaximum`: under `1/max(a, b)`,
+> **eight of nine leave exactly 0.0pt** on the binding axis (the ninth is `dx
+> 0.05`, whose bound clamps to the range's own 4× long before it binds).
+> `0.9/max(a, b)` lands every one of those eight on exactly 10.00% of the
+> container. A tenth is the smallest strip that is still a comparison rather
+> than a sliver, and it costs a well-aligned pair nothing: everything out to `dx
+> 0.225` still reaches the full 4×.
+>
+> **A second clamp at draw time, `OverlayPlayerStack.drawnZoom`.** The chip's
+> cap is computed from the translation in force when the operator moves the
+> slider; `AlignmentGate` returns the **raw measured** translation inside an
+> engaged run, with no magnitude bound — only the engage/disengage *decision* is
+> median-filtered. This repo's own two fixtures flip between *adjacent* samples
+> from `dy ≈ −0.04` (overlap 0.79) to `dy ≈ −0.42` (overlap 0.23). At `dy −0.42`
+> the region collapses from 1.34×, while the cap computed at the neighbouring
+> quiet sample is the full 4×. So a 4× that was legal when it was set draws
+> black frames a sample later, on the fixtures this feature was built against.
+> `drawnZoom` bounds what is *painted* against the translation it is painted
+> with; without it the chip's cap makes "the region cannot collapse" only
+> usually-true.
+>
+> **The trade, accepted rather than discovered later.** The draw-time clamp
+> swaps a black frame for a transient scale-*and-position* jump on flicker
+> frames: the picture zooms out for those frames and comes back, and because
+> `setScale` re-clamps the centre into the narrower interval a lower scale
+> brings, an off-centre pan snaps toward the middle and back out with it —
+> measured, an overlay panned to its 4× corner (centre 0.875) draws at 1.205×
+> and centre 0.585 on a `dy −0.42` sample, then returns to 4× / 0.875 on the
+> next quiet one. `sharedRect` argues elsewhere that a picture jumping scale
+> mid-run is worse than one losing a border, and this *is* a scale jump; it is
+> the lesser evil only because the alternative is not a border but the whole
+> frame. **If the flicker proves distracting in the running app, the fix is to
+> smooth this bound over time — not to remove it.**
 
 ## Controls
 
