@@ -100,14 +100,23 @@ struct ViewerPane: View {
     /// Bottom-trailing specifically, because the other two corners in use are
     /// bottom-leading (the caption) and top-trailing (the status chip).
     ///
-    /// `.frame(maxWidth: 220)` for the same reason the status chip is capped:
-    /// unbounded, the control's own ideal width is 224pt.
+    /// **`.frame(maxWidth: 220)` for the same reason the status chip is capped,
+    /// and it binds — but not at 220.** `ZoomControl`'s slider is greedy, so
+    /// unbounded the chip stretches to whatever it is offered: measured in an
+    /// 800pt pane, a 768pt control in a 784pt capsule without the cap, against
+    /// 224pt in a 240pt capsule with it. What
+    /// the cap does is hold the control at its intrinsic minimum of 224pt
+    /// (3 × 44pt buttons + 80pt slider + 3 × 4pt spacing), which it cannot go
+    /// under — so 224 is the rendered width, and the 4pt overshoot is why the
+    /// hit-testing test below reads the chip's frame off the hosted `NSSlider`
+    /// rather than computing it.
     ///
     /// **It shares the pane's bottom edge with the caption, and the overlap
-    /// point is arithmetic rather than a mystery.** The chip occupies 260pt of
-    /// trailing width — the 220pt cap, plus 8pt of inner padding and 12pt of
-    /// outer padding on each side — so a caption longer than
-    /// `paneWidth − 260` runs under it. That is left alone deliberately: the
+    /// point is arithmetic rather than a mystery.** The chip occupies 264pt of
+    /// trailing width — the capsule measures 240pt (the control's 224pt
+    /// intrinsic width, not the 220pt asked for, plus 8pt of inner padding on
+    /// each side) inside 12pt of outer padding on each side — so a caption
+    /// longer than `paneWidth − 264` runs under it. That is left alone deliberately: the
     /// caption draws *over* the chip and carries `.allowsHitTesting(false)`, so
     /// the chip still receives every click, and the cost is cosmetic on a pane
     /// narrow enough to reach it.

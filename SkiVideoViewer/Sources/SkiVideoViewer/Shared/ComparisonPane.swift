@@ -76,10 +76,10 @@ struct ComparisonPane: View {
     /// chips leave free.
     ///
     /// Bottom-*trailing* specifically: `loadedName` is bottom-leading and the
-    /// empty pane's chooser is centred, so this is the corner that is free on a
-    /// pane of any usual width — see the arithmetic below for the narrow ones,
-    /// where it and the filename menu do meet. The 8pt inset is `loadedName`'s,
-    /// for the same reason —
+    /// empty pane's chooser is centred, so this is the furthest corner from
+    /// both — though it does reach the filename menu across the bottom edge
+    /// once a name is long enough, which is measured and accounted for below.
+    /// The 8pt inset is `loadedName`'s, for the same reason —
     /// placement is the pane's decision, not the chip's — and it is the
     /// comparison screen's spacing rather than the viewer's 12pt, which is
     /// insetting from a window edge instead of from a pane boundary.
@@ -90,30 +90,64 @@ struct ComparisonPane: View {
     /// comparison window *opens* in that state on both sides, so it is the
     /// ordinary case here rather than an edge one.
     ///
-    /// `.frame(maxWidth: 220)` as in `ViewerPane`: the control's own ideal
-    /// width is 224pt, and a pane is half a window wide.
+    /// **`.frame(maxWidth: 220)` is load-bearing, and not because 220 is a
+    /// width anything ends up being.** `ZoomControl`'s slider is greedy, so
+    /// without a cap the chip stretches across the whole pane — measured, an
+    /// 800pt pane: a 768pt control in a 784pt capsule with the cap removed,
+    /// against 224pt in a 240pt capsule with it.
+    /// The cap cannot squeeze *below* the control's intrinsic 224pt
+    /// (3 × 44pt buttons + 80pt slider + 3 × 4pt spacing), so what it actually
+    /// does is pin the control to that minimum, and 224 — not 220 — is what
+    /// renders. `ViewerPane` carries the same modifier for the same reason.
     ///
-    /// **It shares the pane's bottom edge with the filename menu, and unlike
-    /// the viewer's caption that menu is a control — so where they meet is
-    /// arithmetic worth stating rather than a cosmetic detail.** Measured on a
-    /// hosted pane with a long filename: `ClipSourceMenu`'s `overlayChip` is a
-    /// constant 297pt wide (the same at 400, 600 and 800pt panes, so it is
-    /// capped rather than growing with the name) and so occupies 305pt of
-    /// leading width with its 8pt inset; this chip's capsule occupies 246pt of
-    /// trailing width. They therefore meet only on a pane narrower than
-    /// **551pt** — a comparison window under about 1100pt. At 400pt they
-    /// overlap by 151pt and this chip, being the later view, takes the clicks
-    /// in the shared strip; the menu keeps its leading 146pt, which is still
-    /// more than the 44pt tap target it was given, so the route to swapping a
-    /// clip narrows but does not close. Neither of the pane's other corners is
-    /// free to move to: `ComparisonView` puts its status chip over the panes'
-    /// top-trailing and its close button over their top-leading.
+    /// **It shares the pane's bottom edge with the filename menu, which unlike
+    /// the viewer's caption is a *control*. The two do overlap, and that was
+    /// accepted deliberately on the numbers below rather than overlooked — do
+    /// not "fix" it by moving the chip.**
     ///
-    /// **VoiceOver hears "Zoom" from both panes with nothing to tell them
-    /// apart**, where `ClipSourceMenu.spokenLabel` deliberately names the side
-    /// for the choosers. Naming it here would mean a label parameter on
-    /// `ZoomControl`, which is shared with the viewer where there is no side to
-    /// name; it is left for whoever adds one rather than guessed at here.
+    /// `ClipSourceMenu`'s `overlayChip` grows with the filename (measured:
+    /// 76pt at 5 characters, 94pt at 8, 257pt at 33, 388pt at 55), so there is
+    /// no single width at which the two meet — the question is how much of the
+    /// menu stays live. This chip's capsule takes 245.5pt of trailing width
+    /// (224pt control, 8pt of inner padding each side, a 5.5pt outer margin)
+    /// and the menu starts 8.5pt from the leading edge, so the menu always
+    /// keeps its **leading 244.5pt** and it is the tail of a long name that
+    /// goes behind the glass. Measured on a 498.5pt pane — what the panes are
+    /// at the macOS 1000pt window floor, once the split's 1pt `Divider` and the
+    /// `HStack`'s two 1pt gaps come off:
+    ///
+    /// | filename chip | covered | still live |
+    /// | ------------------ | ------- | ------ |
+    /// | 33 chars (257pt)   | 12.5pt  | 244.5pt |
+    /// | 55 chars (388pt)   | 143.5pt | 244.5pt |
+    /// | empty pane         | none    | — the prominent chooser centres vertically, clear of this chip's [8, 52] band |
+    ///
+    /// Overlap therefore begins at about a 31-character name, and 244.5pt is
+    /// **5.5× the 44pt minimum target**. Full occlusion would need a pane of
+    /// 254pt or less — a window of about 511pt, below the 1000pt floor
+    /// `ComparisonView` enforces on macOS. iPadOS has no floor and its narrow
+    /// case is an 11-inch iPad in portrait: 834pt gives 415.5pt panes and
+    /// 161.5pt of live menu, still 3.7× the minimum. So the route to swapping a
+    /// clip never closes at any shipped size, which is what made the overlap
+    /// acceptable.
+    ///
+    /// The covered strip is genuinely dead rather than merely obscured — the
+    /// `.thinMaterial` capsule takes hits across its whole extent, not only
+    /// where its controls are. Measured: a click 4pt inside the capsule's
+    /// leading edge, in its padding and clear of every button and the slider,
+    /// reached the menu 0 times; the same click at x = 20 reached it once.
+    ///
+    /// Neither of the pane's other corners is free to move to in any case:
+    /// `ComparisonView` overlays its status chip on the panes' top-trailing and
+    /// its close button on their top-leading.
+    ///
+    /// **VoiceOver hears two identical sets of "Zoom out / Zoom / Zoom in /
+    /// Reset zoom, currently 1.0×"** on this screen, with nothing naming the
+    /// side — the gap `ClipSourceMenu.spokenLabel` closes for the choosers.
+    /// Confined to side-by-side: the overlay layout draws one stack with one
+    /// zoom, so it has no second control to be confused with. The fix is a
+    /// `label: String?` on `ZoomControl`, which is shared with the viewer where
+    /// there is no side to name, so it is left for whoever adds one.
     private func zoomChip(in paneSize: CGSize) -> some View {
         ZoomControl(
             zoom: model.zoom(for: side),

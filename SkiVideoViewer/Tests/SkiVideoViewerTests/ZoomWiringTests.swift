@@ -694,9 +694,11 @@ final class ZoomWiringTests: XCTestCase {
     /// technique reaches the tap when it is *supposed* to.
     ///
     /// The chip's frame is read off the hosted `NSSlider` rather than computed
-    /// from `ZoomControl`'s paddings: the control's ideal width (224pt) exceeds
-    /// the 220pt cap `ViewerPane` gives it, so something inside is compressed
-    /// by 4pt and the arithmetic would be guesswork.
+    /// from `ZoomControl`'s paddings and the 220pt cap `ViewerPane` gives it:
+    /// that arithmetic would come out 4pt narrow. The cap cannot squeeze the
+    /// control below its intrinsic 224pt, and nothing inside gives way to it —
+    /// measured, the slider sits at exactly its 80pt minimum under the cap, so
+    /// 224 is what renders. See `ViewerPane.zoomChip`.
     func testClickingTheZoomChipDoesNotAlsoToggleThePlaybackUnderneath() throws {
         let model = try Self.makeViewerModel()
         let pane = CGSize(width: 800, height: 450)
@@ -874,7 +876,11 @@ final class ZoomWiringTests: XCTestCase {
     ///
     /// Mutation-checked the same way: with `panGesture`'s `side` replaced by a
     /// literal `.left` this fails, the left picture panning under a drag on the
-    /// right pane.
+    /// right pane — `0.5` where `0.5375` was asked for on the right, and
+    /// `0.5375` on the left, which was to stay at `0.5`. All three of the
+    /// comparison drag tests fail under that mutation, since each of them
+    /// asserts on the side it dragged; this is the one that also pins the
+    /// *other* side staying put.
     func testDraggingAComparisonPanePansOnlyThatSide() throws {
         let model = try Self.makeComparisonModel()
         defer { model.close() }

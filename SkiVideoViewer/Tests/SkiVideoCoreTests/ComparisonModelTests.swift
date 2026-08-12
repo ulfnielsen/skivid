@@ -1398,6 +1398,9 @@ final class ComparisonModelTests: XCTestCase {
         model.setZoomScale(3, in: Self.zoomPane, side: .left)
         model.panZoom(by: CGSize(width: -60, height: 20), in: Self.zoomPane, side: .left)
 
+        XCTAssertEqual(model.zoom(for: .left).scale, 3, accuracy: 0.0001,
+                       "precondition: the zoom must have taken, or this passes with the mutators gutted")
+        XCTAssertGreaterThan(model.zoom(for: .left).center.x, 0.5, "precondition: and so must the pan")
         XCTAssertTrue(model.isSynced)
         XCTAssertEqual(model.syncPoints?.left, points?.left)
         XCTAssertEqual(model.syncPoints?.right, points?.right)
@@ -1420,6 +1423,9 @@ final class ComparisonModelTests: XCTestCase {
 
         model.setZoomScale(3, in: Self.zoomPane, side: .left)
         model.panZoom(by: CGSize(width: -40, height: 0), in: Self.zoomPane, side: .left)
+        XCTAssertEqual(model.zoom(for: .left).scale, 3, accuracy: 0.0001,
+                       "precondition: the zoom must have taken, or this passes with the mutators gutted")
+        XCTAssertGreaterThan(model.zoom(for: .left).center.x, 0.5, "precondition: and so must the pan")
         model.resetZoom(side: .left)
         model.setSyncPoints()
         model.removeSync()
