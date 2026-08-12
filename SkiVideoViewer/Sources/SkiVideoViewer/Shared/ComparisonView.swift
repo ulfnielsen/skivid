@@ -727,6 +727,52 @@ struct ComparisonVideos: View {
     /// nothing to anything.
     var translation: CGVector = .zero
 
+    /// Where the overlay's current drag had reached at its previous change, so
+    /// that `DragGesture`'s translation-from-the-start becomes a per-change
+    /// delta.
+    ///
+    /// **`@GestureState` rather than `@State` with an `onEnded` reset, which is
+    /// a measured bug and not a style preference** — see `ViewerPane.lastDrag`
+    /// and `ComparisonPane.lastDrag`, which carry the measurement.
+    /// `@GestureState` reverts when the gesture ends *or is cancelled*, and only
+    /// the second covers `overlayPan` being removed out from under a live drag,
+    /// which happens here whenever the stack drops to 1×. Re-measured for this
+    /// gesture rather than taken on trust: 4× in a 400×300 stack, a 60pt
+    /// leftward drag torn down mid-flight then a fresh 20pt one, gives 0.5125
+    /// as written and 0.475 with `@State` and an `onEnded` reset — a leftward
+    /// drag moving the picture 40pt to the right.
+    ///
+    /// Unused by the side-by-side branch — each `ComparisonPane` is its own
+    /// `View` value with its own — but it lives on this type because the
+    /// overlay's gesture has to, and for the reason `overlayChoosers` gives:
+    /// `OverlayPlayerStack` is a pure renderer and nothing that needs the model
+    /// may move into it.
+    @GestureState private var lastOverlayDrag: CGSize = .zero
+
+    /// How large the overlay's video area is, which the drag and the zoom chip
+    /// both need — `VideoZoom` clamps the pan against it — and which only a
+    /// `GeometryReader` can say. The whole video area here rather than half of
+    /// it, which is precisely why it cannot be a pane's number.
+    ///
+    /// **Measured into state through a `.background` rather than read from a
+    /// `GeometryReader` wrapped round the branch, and that is a test's
+    /// constraint rather than a preference.** `ClipChooserTests` reflects the
+    /// *shipped* composition — that is the whole point of `ComparisonVideos`
+    /// being its own internal view — and reflection cannot see inside a
+    /// `GeometryReader`'s content closure, which is stored unevaluated. Wrapping
+    /// this branch in one hid both overlay choosers from
+    /// `testEachOverlayChipNamesItsSide`, which found zero where it wanted two.
+    /// A `.background` closure is built eagerly and holds nothing but
+    /// `Color.clear`, so the choosers stay where a walk of the view tree can
+    /// reach them.
+    ///
+    /// `.zero` for the first pass, before any layout has happened. Both readers
+    /// tolerate it by construction: `VideoZoom.pan` refuses a degenerate pane
+    /// outright, and `setScale` applies the scale while skipping the re-clamp —
+    /// both documented on `VideoZoom` as the pre-layout case rather than as an
+    /// edge one.
+    @State private var stackSize: CGSize = .zero
+
     @ViewBuilder
     var body: some View {
         switch model.layout {
@@ -750,11 +796,63 @@ struct ComparisonVideos: View {
                 // The right clip is the floating one — the pass registers it
                 // onto the left — and it is the one on top here, so the
                 // translation goes to `topPlayer`.
-                translation: translation
+                translation: translation,
+                // **The left side's, and only the left side's.** The stack
+                // draws both clips into one rect and registers them with a
+                // translation in normalised frame widths; two scales would
+                // invalidate that registration and the shared-region mask
+                // together. `OverlayPlayerStack.zoom` carries the whole
+                // argument. Left because the pass makes the left clip the
+                // reference, so it is the one the operator is framing.
+                zoom: model.zoom(for: .left)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background { stackMeasure }
+            // Only installed while the stack is zoomed, matching
+            // `ComparisonPane`: at 1× there is nothing to pan, and an
+            // always-live drag recognizer over the video would be one more
+            // thing between the operator and the chooser chips.
+            .gesture(model.zoom(for: .left).isZoomed ? overlayPan : nil)
             .overlay(alignment: .bottomLeading) { overlayChoosers }
         }
+    }
+
+    /// Records the video area's size into `stackSize`. Behind the stack rather
+    /// than around it; see `stackSize`.
+    private var stackMeasure: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { stackSize = proxy.size }
+                .onChange(of: proxy.size) { stackSize = $0 }
+        }
+    }
+
+    /// A drag pans the whole stack, each step relative to the previous one:
+    /// SwiftUI reports the translation from where the drag *began*, so feeding
+    /// it straight to `panZoom` would re-apply the whole distance on every
+    /// change and run away.
+    ///
+    /// **One drag for both clips, which is the same argument as one zoom.** The
+    /// two are drawn into one rect and registered by a translation the pan does
+    /// not touch; moving them by different amounts would take the pair apart.
+    /// Panning the left side's zoom moves both by construction, because that is
+    /// the single value the stack draws both clips with — there is no second
+    /// mutation to keep in step. An operator who can reach 4× and not pan is
+    /// stuck looking at the middle of the frame, which is the same dead end the
+    /// viewer and the panes each have a drag for.
+    ///
+    /// `updating`, not `onChanged` with an `onEnded` reset; see
+    /// `lastOverlayDrag`.
+    private var overlayPan: some Gesture {
+        DragGesture()
+            .updating($lastOverlayDrag) { value, lastDrag, _ in
+                let delta = CGSize(
+                    width: value.translation.width - lastDrag.width,
+                    height: value.translation.height - lastDrag.height
+                )
+                lastDrag = value.translation
+                model.panZoom(by: delta, in: stackSize, side: .left)
+            }
     }
 
     /// The overlay layout's clip choosers, which it had none of.
@@ -781,6 +879,32 @@ struct ComparisonVideos: View {
     /// Both clips are drawn into the same rect here, so unlike a pane chip
     /// neither has anything around it to say which clip it swaps — hence
     /// `sidedTitle`, which puts the side in the visible title too.
+    ///
+    /// **The zoom control is the third chip in this row, not a fourth corner.**
+    /// A pane puts its zoom chip bottom-*trailing* because its filename menu
+    /// already holds bottom-leading; here the choosers are the only thing on
+    /// this edge, so the control joins them and the operator's clip controls
+    /// stay in one place. The stack's other corners are not free in any case —
+    /// `ComparisonView` overlays the status chip top-trailing and the iPad close
+    /// button top-leading.
+    ///
+    /// One control, because there is one zoom: the whole reason
+    /// `OverlayPlayerStack` takes a single `zoom` is that two would break the
+    /// registration. That also disposes of the VoiceOver ambiguity
+    /// `ComparisonPane.zoomChip` records for side-by-side, where two identical
+    /// unnamed sets of zoom controls are audible; there is only one here.
+    ///
+    /// **`.frame(maxWidth: 220)` is load-bearing for the same reason it is on a
+    /// pane's chip**: `ZoomControl`'s slider is greedy and would otherwise take
+    /// the whole row and squeeze the two choosers out of it. The cap cannot
+    /// squeeze below the control's intrinsic 224pt, so 224 is what renders.
+    ///
+    /// **Enabled as soon as *either* clip is loaded**, which is the faithful
+    /// translation of a pane chip's rule — there, "a clip in this pane to
+    /// magnify"; here, "a clip in this stack". Requiring both would leave a dead
+    /// control over a picture that is plainly on screen, and the comparison
+    /// window opens with both sides empty, so the disabled state is the ordinary
+    /// one rather than an edge case.
     private var overlayChoosers: some View {
         HStack(spacing: 8) {
             ClipSourceMenu(
@@ -795,6 +919,19 @@ struct ComparisonVideos: View {
                 appearance: .overlayChip,
                 title: ClipSourceMenu.sidedTitle(model, .right)
             )
+            ZoomControl(
+                zoom: model.zoom(for: .left),
+                isEnabled: ClipSourceMenu.isLoaded(model, .left) || ClipSourceMenu.isLoaded(model, .right),
+                // Out-of-range requests — the minus button at 1.0×, the plus
+                // button at 4.0× — reach the model unfiltered on purpose:
+                // `setScale` clamps to `VideoZoom.range` unconditionally, so the
+                // range is enforced in exactly one place.
+                onScale: { model.setZoomScale($0, in: stackSize, side: .left) },
+                onReset: { model.resetZoom(side: .left) }
+            )
+            .frame(maxWidth: 220)
+            .padding(.horizontal, 8)
+            .background(.thinMaterial, in: Capsule())
         }
         .padding(8)
     }

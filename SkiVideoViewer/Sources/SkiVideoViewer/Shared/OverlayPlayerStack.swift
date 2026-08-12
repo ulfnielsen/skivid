@@ -71,25 +71,44 @@ struct OverlayPlayerStack: View {
     /// Defaulted so the pure-renderer call sites in the tests, which have no
     /// track, stay honest about not passing one.
     var translation: CGVector = .zero
+    /// **One zoom for the pair, not one each.**
+    ///
+    /// `translation` is in normalised frame widths and both clips are masked to
+    /// the region they share, so magnifying the two by different amounts would
+    /// invalidate the registration and the mask at once. Scaling them together
+    /// leaves both correct — but not for free, and not by leaving the geometry
+    /// alone: a normalised frame width is `renderedVideoWidth` points on screen
+    /// at 1× and `renderedVideoWidth × scale` at any other scale, so both
+    /// `offset` and `sharedRect` take this and scale by it. See `offset` for the
+    /// measurement of what ignoring it costs.
+    ///
+    /// `ComparisonVideos` hands this the **left** side's zoom and drives it from
+    /// one chip; `ComparisonModel.leftZoom` records why the two sides otherwise
+    /// zoom independently.
+    ///
+    /// Defaulted so the pure-renderer call sites in the tests stay honest about
+    /// not passing one.
+    var zoom: VideoZoom = VideoZoom()
 
     var body: some View {
         GeometryReader { proxy in
             // One video size for the whole geometry — the floating clip's, the
             // same one `offset` has always scaled by. The pair is two cameras
             // on one hill at one resolution; if that ever stops holding, the
-            // shared region needs both rects, not this one twice.
+            // shared region needs both rects, not this one twice — and so does
+            // the zoom, which is applied to both clips from this one value.
             let videoSize = topPlayer.currentItem?.presentationSize ?? .zero
-            let shared = Self.sharedRect(for: translation, in: proxy.size, videoSize: videoSize)
+            let shared = Self.sharedRect(for: translation, in: proxy.size, videoSize: videoSize, zoom: zoom)
             ZStack {
                 Color.black
-                SinglePlayerView(player: bottomPlayer)
+                SinglePlayerView(player: bottomPlayer, zoom: zoom)
                     // The stationary clip is masked too, and to the *same*
                     // rect. Masking only the moved one leaves the reference
                     // showing through the strip where the other clip has no
                     // picture at all, which is the artefact this removes.
                     .mask { Self.sharedRegion(shared) }
-                SinglePlayerView(player: topPlayer)
-                    .offset(Self.offset(for: translation, in: proxy.size, videoSize: videoSize))
+                SinglePlayerView(player: topPlayer, zoom: zoom)
+                    .offset(Self.offset(for: translation, in: proxy.size, videoSize: videoSize, zoom: zoom))
                     // After `.offset`, deliberately. `.offset` is a render-time
                     // effect and does not move the layout frame a mask is
                     // placed against, so this rect stays put in the container
@@ -134,14 +153,29 @@ struct OverlayPlayerStack: View {
     /// different divisors here would skew every alignment on any clip that is
     /// not square.
     ///
+    /// **And by the zoom, which is the part that is not obvious.** The plan for
+    /// the zoom said to leave this alone, on the grounds that "the translation
+    /// stays normalised". The translation does; its conversion to points does
+    /// not. `VideoZoom.layerFrame` draws the fitted picture at `scale` times its
+    /// size, so one normalised frame width is `renderedVideoWidth × scale`
+    /// points on screen. Ignoring that under-moves the top clip by
+    /// `(scale − 1) × dx × renderedVideoWidth` and takes the pair apart —
+    /// measured, an 800pt stack at `dx 0.1`: the feature at normalised 0.6 in
+    /// the reference lands at 560pt and its partner at 480pt, an 80pt gap at 2×
+    /// and 240pt at 4×, on the one screen whose entire job is alignment.
+    /// `ZoomWiringTests.testTheAlignmentOffsetScalesWithTheZoomSoTheClipsStayRegistered`
+    /// pins the invariant rather than this formula.
+    ///
     /// Static and taking explicit sizes so the arithmetic is testable. The
     /// alternative — reading it back out of a rendered `NSHostingView` — is the
     /// measurement this project has repeatedly found says nothing: a view-tree
     /// search finds no `NSControl` for controls that plainly render, and
     /// `ImageRenderer` draws `SinglePlayerView` as a placeholder rather than as
     /// video.
-    static func offset(for translation: CGVector, in container: CGSize, videoSize: CGSize) -> CGSize {
-        let width = renderedVideoWidth(container: container, videoSize: videoSize)
+    static func offset(
+        for translation: CGVector, in container: CGSize, videoSize: CGSize, zoom: VideoZoom = VideoZoom()
+    ) -> CGSize {
+        let width = renderedVideoWidth(container: container, videoSize: videoSize) * zoom.scale
         return CGSize(width: translation.dx * width, height: translation.dy * width)
     }
 
@@ -167,16 +201,52 @@ struct OverlayPlayerStack: View {
     /// the letterbox bars, which are black either way, so the step at
     /// `translation == .zero` is arithmetic rather than anything visible.
     ///
+    /// **Zoomed, the picture each clip paints is bounded by the container, and
+    /// that is not a shortcut.** `PlayerLayerHostView` masks its
+    /// `AVPlayerLayer` to its own bounds — see `configure`, pinned by
+    /// `ZoomWiringTests.testTheHostViewClipsItsLayer` — and SwiftUI's `.offset`
+    /// moves that already-clipped host, as `OverlayAlignmentWiringTests`
+    /// probed. So the strip the shift opens at the leading edge has no top-clip
+    /// picture in it at *any* scale, even where the magnified picture would
+    /// have had content to put there, and the mask has to keep covering it.
+    /// Taking the two rects unclipped instead would leave 320pt of a 800pt
+    /// stack showing one clip alone at 4× and `dx 0.1` — half-opacity in blend
+    /// mode, differenced against black in difference mode, which is the artefact
+    /// this exists to remove.
+    ///
+    /// **What that costs, stated rather than discovered later.** The shared
+    /// region shrinks as the operator zooms in, because the shift it is inset by
+    /// grows with the scale while the container does not. On an 800pt stack:
+    ///
+    /// | `dx`  | 1×    | 2×    | 4×             |
+    /// | ----- | ----- | ----- | -------------- |
+    /// | 0.05  | 760pt | 720pt | 640pt          |
+    /// | 0.10  | 720pt | 640pt | 480pt          |
+    /// | 0.30  | 560pt | 320pt | 0 — all black  |
+    ///
+    /// A gate-passing alignment at the far end of its range can therefore black
+    /// the overlay out at 4×. That is honest — it says "there is nothing here
+    /// both clips can be compared on", the same thing the letterbox says at 1× —
+    /// but it is a limitation and not a design. It comes entirely from the clip
+    /// happening before the offset: moving the shift into the layer's own frame,
+    /// inside the host, would clip only content that is off-screen anyway and
+    /// remove the strip loss at every scale. That is a change to
+    /// `SinglePlayerView`, which the viewer and both comparison panes also
+    /// draw through, so it is left as its own piece of work.
+    ///
     /// Static and taking explicit sizes for the same reason `offset` is: this
     /// is the geometry that has to be *asserted*, and the four ways this
     /// project has measured an offscreen render lying about a SwiftUI view are
     /// listed on `offset` below.
-    static func sharedRect(for translation: CGVector, in container: CGSize, videoSize: CGSize) -> CGRect {
+    static func sharedRect(
+        for translation: CGVector, in container: CGSize, videoSize: CGSize, zoom: VideoZoom = VideoZoom()
+    ) -> CGRect {
         let full = CGRect(origin: .zero, size: container)
         guard translation != .zero else { return full }
 
-        let video = videoRect(container: container, videoSize: videoSize)
-        let shift = offset(for: translation, in: container, videoSize: videoSize)
+        let video = videoRect(container: container, videoSize: videoSize, zoom: zoom).intersection(full)
+        guard !video.isNull else { return .zero }
+        let shift = offset(for: translation, in: container, videoSize: videoSize, zoom: zoom)
         let moved = video.offsetBy(dx: shift.width, dy: shift.height)
         let shared = video.intersection(moved)
         // A shift of a whole frame or more shares nothing. `intersection`
@@ -185,17 +255,21 @@ struct OverlayPlayerStack: View {
         return shared.isNull ? .zero : shared
     }
 
-    /// Where the aspect-fit video actually lands inside `container`, centred,
-    /// with the letterbox or pillarbox bars outside it.
-    static func videoRect(container: CGSize, videoSize: CGSize) -> CGRect {
-        let width = renderedVideoWidth(container: container, videoSize: videoSize)
-        let height = renderedVideoHeight(container: container, videoSize: videoSize)
-        return CGRect(
-            x: (container.width - width) / 2,
-            y: (container.height - height) / 2,
-            width: width,
-            height: height
-        )
+    /// Where the video actually lands inside `container`: the aspect-fit rect,
+    /// centred, with the letterbox or pillarbox bars outside it — magnified and
+    /// re-placed by `zoom` once the operator has zoomed in.
+    ///
+    /// **That is `VideoZoom.layerFrame`, and delegating to it is the point.**
+    /// The host gives its `AVPlayerLayer` exactly that rect, so any second
+    /// arithmetic for the same thing here would be a copy free to drift from
+    /// what is on screen — and it would have to reproduce the pan as well as the
+    /// scale, since a panned picture is not centred. At `VideoZoom()` it is
+    /// bit-for-bit the centred aspect-fit rect this returned before the zoom
+    /// existed: `layerFrame` falls back to the container for a video size that
+    /// cannot describe an aspect, exactly as `renderedVideoWidth` does, and at
+    /// scale 1 its centre clamp collapses to the container's own middle.
+    static func videoRect(container: CGSize, videoSize: CGSize, zoom: VideoZoom = VideoZoom()) -> CGRect {
+        zoom.layerFrame(in: container, videoSize: videoSize)
     }
 
     /// The mask the two players are drawn through: opaque inside `rect`,
@@ -228,12 +302,21 @@ struct OverlayPlayerStack: View {
         return videoSize.width * scale
     }
 
-    /// The other side of the same aspect fit, needed only by `videoRect` —
-    /// where the picture *starts and stops* vertically, which is not something
-    /// a normalised translation ever needed to know.
+    /// The other side of the same aspect fit — where the picture *starts and
+    /// stops* vertically, which is not something a normalised translation ever
+    /// needed to know.
     ///
     /// This is not a second ruler for `dy`. Both components of a translation
     /// still scale by the rendered **width**; see `offset`.
+    ///
+    /// **Nothing in this file reads it since `videoRect` began delegating to
+    /// `VideoZoom.layerFrame`, and it stays anyway.** It is what
+    /// `OverlayAlignmentWiringTests` measures the vertical crop against, and a
+    /// ruler derived from the code under test would prove nothing there — the
+    /// three `XCTAssertNotEqual`s in
+    /// `testAPositiveDXAndANegativeDYCropFromTheLeftAndTheBottom` exist to catch
+    /// exactly the mistake of scaling `dy` by this, and they need it spelled out
+    /// to say so.
     static func renderedVideoHeight(container: CGSize, videoSize: CGSize) -> CGFloat {
         guard container.width > 0, container.height > 0,
               videoSize.width > 0, videoSize.height > 0

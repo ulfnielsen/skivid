@@ -1054,6 +1054,328 @@ final class ZoomWiringTests: XCTestCase {
         )
     }
 
+    // MARK: - The overlay layout
+
+    /// Both clips get the *same* zoom, and the alignment translation survives
+    /// it. Per-side zoom cannot work here: the translation is expressed in
+    /// normalised frame widths and both clips are masked to the region they
+    /// share, so two independent scales would invalidate the registration and
+    /// the mask together.
+    ///
+    /// The brief's version of this called `setZoomScale(_:side:)`; there is no
+    /// such method — every zoom mutator on `ComparisonModel` takes the pane it
+    /// is clamped against — so the pane is passed here.
+    func testTheOverlayStackZoomsBothClipsTogether() throws {
+        let model = ComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 800, height: 450)
+        model.setZoomScale(2, in: stack, side: .left)
+        model.setZoomScale(4, in: stack, side: .right)
+
+        let host = NSHostingView(
+            rootView: ComparisonVideos(model: model, translation: CGVector(dx: 0.1, dy: 0))
+                .frame(width: stack.width, height: stack.height)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let hosts = Self.playerHosts(in: host)
+        XCTAssertEqual(hosts.count, 2, "precondition: the stack draws two players")
+        XCTAssertEqual(
+            hosts[0].playerLayerFrame.width, hosts[1].playerLayerFrame.width, accuracy: 0.5,
+            "the stack must magnify the aligned pair as a unit, not per side"
+        )
+        XCTAssertEqual(
+            hosts[0].playerLayerFrame.width, 1600, accuracy: 0.5,
+            "and at the left side's scale, which is the one the stack follows"
+        )
+
+        // ...and the alignment still holds, in the shipped view rather than in
+        // the arithmetic `testTheAlignmentOffsetScalesWithTheZoomSoTheClipsStayRegistered`
+        // pins. The body has to hand the zoom to `offset` as well as to the two
+        // players; passing it to the players alone compiles, renders, and takes
+        // the pair apart by 80pt here.
+        //
+        // The two frames are compared to *each other* rather than to the host's
+        // origin: this `NSHostingView` was made with no frame and never put in a
+        // window, so SwiftUI centres the 800 × 450 root in a zero-sized host and
+        // both views sit at −400. The gap between them is the whole assertion,
+        // and it is the quantity the alignment actually is.
+        let bottom = try XCTUnwrap(hosts.first { $0.attachedPlayer === model.leftPlayer })
+        let top = try XCTUnwrap(hosts.first { $0.attachedPlayer === model.rightPlayer })
+        let gap = top.convert(top.bounds, to: host).minX - bottom.convert(bottom.bounds, to: host).minX
+        XCTAssertEqual(
+            gap, 160, accuracy: 0.5,
+            "the floating clip must be offset by 0.1 × 800 × 2; 80 means the offset ignored the zoom"
+        )
+    }
+
+    /// **The registration has to survive the zoom, and it does not for free.**
+    ///
+    /// The brief said to leave `offset` untouched, on the grounds that "the
+    /// translation stays normalised". The translation does; its *conversion to
+    /// points* does not. A normalised frame width is `renderedVideoWidth` points
+    /// on screen at 1× and `renderedVideoWidth × scale` at any other scale,
+    /// because `VideoZoom.layerFrame` scales the fitted picture rect. An offset
+    /// that ignores the scale therefore under-moves the top clip by
+    /// `(scale − 1) × dx × renderedVideoWidth` — 80pt of an 800pt frame at 2×
+    /// and 0.1, 240pt at 4× — on the one screen whose entire job is alignment.
+    ///
+    /// Asserted as the invariant rather than as the formula: a feature at
+    /// normalised `u` in the left clip corresponds to `u − dx` in the right, and
+    /// the two must land on the same point of the stack. Mutation-checked by
+    /// dropping the `× zoom.scale` from `offset`, which fails this at 480
+    /// against 560 — an 80pt gap at 2×, 240pt at 4×.
+    func testTheAlignmentOffsetScalesWithTheZoomSoTheClipsStayRegistered() {
+        let container = CGSize(width: 800, height: 450)
+        let video = CGSize(width: 1600, height: 900)
+        let dx = 0.1
+        var zoom = VideoZoom()
+        zoom.setScale(2, in: container, videoSize: video)
+
+        let picture = zoom.layerFrame(in: container, videoSize: video)
+        let shift = OverlayPlayerStack.offset(
+            for: CGVector(dx: dx, dy: 0), in: container, videoSize: video, zoom: zoom
+        )
+
+        // The same physical feature, in each clip's own normalised coordinates.
+        let u = 0.6
+        let bottom = picture.minX + picture.width * u
+        let top = picture.minX + picture.width * (u - dx) + shift.width
+
+        XCTAssertEqual(
+            top, bottom, accuracy: 0.5,
+            "the aligned pair came apart under zoom: the offset did not scale with the picture"
+        )
+        XCTAssertEqual(shift.width, 160, accuracy: 0.5, "0.1 × 800 × 2, not 0.1 × 800")
+    }
+
+    /// The mask has to follow the same picture the offset does.
+    ///
+    /// At 1× the shared region is the aspect-fit video rect intersected with its
+    /// own shifted copy, which is what it has always been. Zoomed, the picture
+    /// over-covers the stack, so the region both clips have picture in is the
+    /// stack itself inset by the *scaled* shift — and the inset is scaled
+    /// because that is where the top clip's picture actually stops: the layer is
+    /// clipped to its host's bounds (`PlayerLayerHostView.configure`, pinned by
+    /// `testTheHostViewClipsItsLayer`) *before* SwiftUI's `.offset` moves the
+    /// host, so the strip the shift opens up at the leading edge has no top-clip
+    /// picture in it at any scale.
+    ///
+    /// Leaving `sharedRect` on the unzoomed numbers would under-mask by exactly
+    /// the difference — 80pt of single-clip picture at 2×, which in difference
+    /// mode is a clip differenced against black and is the artefact the mask
+    /// exists to remove.
+    func testTheSharedRegionIsTakenFromTheZoomedPicture() {
+        let container = CGSize(width: 800, height: 450)
+        var zoom = VideoZoom()
+        zoom.setScale(2, in: container, videoSize: .zero)
+        let translation = CGVector(dx: 0.1, dy: 0)
+
+        let zoomed = OverlayPlayerStack.sharedRect(
+            for: translation, in: container, videoSize: .zero, zoom: zoom
+        )
+
+        XCTAssertEqual(
+            zoomed, CGRect(x: 160, y: 0, width: 640, height: 450),
+            "the shared region must be inset by the scaled shift, 0.1 × 800 × 2"
+        )
+        XCTAssertNotEqual(
+            zoomed,
+            OverlayPlayerStack.sharedRect(for: translation, in: container, videoSize: .zero),
+            "the unzoomed answer insets by 80pt and would leave 80pt of one clip alone on screen"
+        )
+    }
+
+    /// The chip in the overlay's chooser row drives the **left** side, which is
+    /// the zoom the stack follows, and leaves the right side's own framing
+    /// alone — the operator's side-by-side pan on the right clip is not the
+    /// overlay's to overwrite.
+    ///
+    /// The slider position is written in normalised units for the reason
+    /// `testDraggingTheZoomSliderReachesTheViewerModel` measured: SwiftUI keeps
+    /// the `1...4` range in its own binding and hands AppKit a 0–1 control.
+    func testTheOverlayZoomChipDrivesTheLeftSide() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 800, height: 450)
+
+        let host = NSHostingView(
+            rootView: ComparisonVideos(model: model)
+                .frame(width: stack.width, height: stack.height)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let sliders = Self.sliders(in: host)
+        XCTAssertEqual(sliders.count, 1, "precondition: the overlay carries exactly one slider, the zoom chip's")
+        let target = 3.0
+        let span = VideoZoom.range.upperBound - VideoZoom.range.lowerBound
+        sliders[0].doubleValue = (target - VideoZoom.range.lowerBound) / span
+        sliders[0].sendAction(sliders[0].action, to: sliders[0].target)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, target, accuracy: 0.0001,
+            "the overlay's chip must move the zoom the stack follows"
+        )
+        XCTAssertEqual(
+            model.zoom(for: .right).scale, 1, accuracy: 0.0001,
+            "and must not touch the right side's own framing, which side-by-side still uses"
+        )
+    }
+
+    /// **A drag over the overlay pans both clips, because there is only one
+    /// picture to pan.** Zooming to 4× with no way to pan leaves the operator
+    /// looking at the middle of the frame with no route to the edges, which is
+    /// the same dead end the viewer and the panes both have a drag for.
+    ///
+    /// It moves the left side's zoom — the one the stack renders both clips
+    /// with — so the two move together by construction rather than by two
+    /// mutations staying in step. The assertion checks both halves: the value
+    /// the model holds, and that the two hosted layers still sit on exactly the
+    /// same rect afterwards.
+    func testDraggingTheOverlayPansBothClipsTogether() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: stack, side: .left)
+        let (host, window) = try hostedComparisonVideos(model: model, stack: stack)
+
+        Self.drag(in: window, from: CGPoint(x: 200, y: 250), by: -60, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).center.x, 0.5375, accuracy: 0.002,
+            "a 60pt drag at 4x in a 400pt stack must move the centre by 60/(400*4)"
+        )
+        XCTAssertEqual(
+            model.zoom(for: .right).center, CGPoint(x: 0.5, y: 0.5),
+            "the right side's own framing is not the overlay's to move"
+        )
+
+        host.layoutSubtreeIfNeeded()
+        let hosts = Self.playerHosts(in: host)
+        XCTAssertEqual(hosts.count, 2, "precondition: two players")
+        XCTAssertEqual(
+            hosts[0].playerLayerFrame, hosts[1].playerLayerFrame,
+            "both clips must be panned by the same amount, or the pair comes apart"
+        )
+    }
+
+    /// The control for the regression below, and the overlay's version of
+    /// `testTwoCleanDragsOnAComparisonPaneAreExactlyAdditive`: two clean drags
+    /// total exactly their two distances, so the running total is cleared *back
+    /// to rest* between gestures rather than left holding anything.
+    func testTwoCleanDragsOnTheOverlayAreExactlyAdditive() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: stack, side: .left)
+        let (_, window) = try hostedComparisonVideos(model: model, stack: stack)
+
+        Self.drag(in: window, from: CGPoint(x: 200, y: 250), by: -20, releasing: true)
+        XCTAssertEqual(
+            model.zoom(for: .left).center.x, 0.5125, accuracy: 0.002,
+            "precondition: the first drag lands where one drag should"
+        )
+
+        Self.drag(in: window, from: CGPoint(x: 200, y: 250), by: -20, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).center.x, 0.525, accuracy: 0.002,
+            "two clean 20pt drags must total 40pt of pan, not more and not less"
+        )
+    }
+
+    /// **The paired regression.** The overlay's pan gesture is installed only
+    /// while the left zoom `isZoomed`, so dropping to 1× removes the recognizer
+    /// out from under a live drag and `DragGesture.onEnded` never runs —
+    /// reachable from the chip's own `−` and level buttons, and from any system
+    /// drag cancellation. `@GestureState` reverts on cancel as well as on end;
+    /// a `@State` running total reset in `onEnded` goes stale and sends the next
+    /// drag the wrong way. That defect was invisible to five hundred tests
+    /// because none of them exercised a *second* gesture after an interruption,
+    /// and the control above passes under both implementations.
+    ///
+    /// Mutation-checked on this harness, the stack at 4× in 400×300: a 60pt
+    /// leftward drag torn down mid-flight, then a fresh 20pt leftward drag.
+    ///
+    /// | | second drag's `center.x` |
+    /// | ------------------------------ | ------ |
+    /// | `@GestureState` (shipping)     | 0.5125 |
+    /// | `@State` + `onEnded` reset     | 0.475  |
+    ///
+    /// 0.475 is a leftward drag moving the picture 40pt to the *right* on its
+    /// first frame — the dead drag's 60pt subtracted from the new 20pt. Under
+    /// that mutation this test failed at exactly 0.475 and
+    /// `testTwoCleanDragsOnTheOverlayAreExactlyAdditive` still passed.
+    func testASecondDragOnTheOverlayAfterTheGestureIsTornDownStartsFromRest() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        model.layout = .overlay
+        let stack = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: stack, side: .left)
+        let (host, window) = try hostedComparisonVideos(model: model, stack: stack)
+
+        // A 60pt drag with no mouse-up: the gesture is torn down underneath it
+        // instead, which is what `onEnded` cannot see.
+        Self.drag(in: window, from: CGPoint(x: 200, y: 250), by: -60, releasing: false)
+        XCTAssertEqual(model.zoom(for: .left).center.x, 0.5375, accuracy: 0.002, "precondition: the first drag panned")
+
+        model.resetZoom(side: .left)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(model.zoom(for: .left).isZoomed, "precondition: 1x, so the pan gesture is no longer installed")
+
+        model.setZoomScale(4, in: stack, side: .left)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertEqual(model.zoom(for: .left).center.x, 0.5, accuracy: 0.0001, "precondition: the reset recentred")
+
+        Self.drag(in: window, from: CGPoint(x: 200, y: 250), by: -20, releasing: true)
+
+        XCTAssertEqual(
+            model.zoom(for: .left).center.x, 0.5125, accuracy: 0.002,
+            """
+            the second drag must move by its own 20pt only; 0.475 means the \
+            torn-down drag's 60pt was still being subtracted, sending a leftward \
+            drag 40pt to the right
+            """
+        )
+    }
+
+    /// The overlay's video area in a real off-screen `NSWindow`, for the same
+    /// reason `hostedComparisonPane` builds one: synthetic mouse events do not
+    /// reach SwiftUI's gesture recognition without one.
+    private func hostedComparisonVideos(
+        model: ComparisonModel, stack: CGSize
+    ) throws -> (NSHostingView<some View>, NSWindow) {
+        let host = NSHostingView(
+            rootView: ComparisonVideos(model: model)
+                .frame(width: stack.width, height: stack.height)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: stack),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        return (host, window)
+    }
+
+    private static func playerHosts(in view: NSView) -> [PlayerLayerHostView] {
+        var found: [PlayerLayerHostView] = []
+        func walk(_ view: NSView) {
+            if let host = view as? PlayerLayerHostView { found.append(host) }
+            view.subviews.forEach(walk)
+        }
+        walk(view)
+        return found
+    }
+
     /// A `ComparisonPane` in a real off-screen `NSWindow`, for the same reason
     /// `hostedPane` builds one for the viewer: synthetic mouse events do not
     /// reach SwiftUI's gesture recognition without one.
