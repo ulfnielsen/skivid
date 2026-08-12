@@ -63,6 +63,39 @@ struct ViewerPane: View {
                 // carries.
                 .contentShape(Rectangle())
                 .onTapGesture { model.applyTransport(.playPause) }
+                // **There is deliberately no `.onTapGesture(count: 2)` reset
+                // here, and the absence is the measurement's, not an
+                // oversight — `ComparisonPane` has one. Do not add it back
+                // without re-measuring.**
+                //
+                // A `count: 2` tap makes SwiftUI hold *every* single tap until
+                // the double-click window closes, whether or not a second click
+                // ever comes. Measured on this view hosted in a real window,
+                // macOS 26.5, load average 18, five synthetic single clicks per
+                // configuration, timing mouse-down to `player.rate` changing:
+                //
+                // | pane | median | max |
+                // | ------------------------------- | ------ | ------ |
+                // | single tap alone (shipping)     | 1.2 ms | 3.6 ms |
+                // | with a `count: 2` tap beside it | 358 ms | 363 ms |
+                //
+                // 358 ms is 2.4× the 150 ms the plan called perceptible, on the
+                // app's most-used gesture, and it is paid on every play/pause
+                // whether or not anyone ever double-clicks. Declaration order
+                // does not buy it back: 357 ms with the double-tap first, 358
+                // with it second (so the "higher count must come first" rule is
+                // not what is costing the time — the wait is). The zoom chip's
+                // level readout remains the reset route here, and it needs no
+                // arbitration at all.
+                //
+                // At 4× the numbers are the same — 1.5 ms against 358 ms — so
+                // it is not the pan gesture below paying for it, and 358 is not
+                // `NSEvent.doubleClickInterval` either, which reads 0.5 s here:
+                // SwiftUI runs its own shorter timer. The absence is pinned by
+                // `testDoubleClickingTheViewerPaneDoesNotResetTheZoom`, which
+                // also fails on its *first* assertion when the gesture is put
+                // back — the click no longer reaches play/pause in time.
+
                 // Only installed while zoomed, so at 1x it cannot swallow
                 // anything meant for the tap above.
                 .gesture(model.zoom.isZoomed ? panGesture(in: proxy.size) : nil)

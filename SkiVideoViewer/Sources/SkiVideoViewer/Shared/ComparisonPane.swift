@@ -54,11 +54,33 @@ struct ComparisonPane: View {
                     player: side == .left ? model.leftPlayer : model.rightPlayer,
                     zoom: model.zoom(for: side)
                 )
+                // Double-click resets this side, a faster route to the same
+                // thing the chip's level readout does.
+                //
+                // **It is here and deliberately *not* on `ViewerPane`, on a
+                // measurement.** A `count: 2` tap makes SwiftUI hold every
+                // single tap until the double-click window closes. Measured on
+                // a hosted pane in a real window, macOS 26.5, load average 18,
+                // five synthetic single clicks each: with a single tap alone
+                // the action ran in a median **1.2 ms**; with a `count: 2` tap
+                // beside it, **358 ms** — 2.4× the 150 ms the plan called
+                // perceptible, and identical whether the double-tap is declared
+                // before or after the single one. `ViewerPane`'s single tap is
+                // play/pause, the most-used gesture in the app, so it keeps the
+                // fast tap and loses the double-click; this pane has no single
+                // tap to hold up, so the gesture is free here. The asymmetry is
+                // the measurement's — see the comment on `ViewerPane.body`.
+                //
+                // Ahead of the drag because a double-click while zoomed is
+                // exactly when this is wanted, and it survives that: measured
+                // at 4× with `panGesture` installed, the drag does not swallow
+                // it (`DragGesture`'s 10pt `minimumDistance` is why).
+                .onTapGesture(count: 2) { model.resetZoom(side: side) }
                 // Only installed while this side is zoomed. Unlike the viewer's
-                // pane there is no tap gesture here for it to compete with, but
-                // it is still conditional: at 1× there is nothing to pan, and
-                // an always-live drag recognizer over the video would be one
-                // more thing between the operator and the chooser chip.
+                // pane there is no *single*-tap gesture here for it to compete
+                // with, but it is still conditional: at 1× there is nothing to
+                // pan, and an always-live drag recognizer over the video would
+                // be one more thing between the operator and the chooser chip.
                 .gesture(model.zoom(for: side).isZoomed ? panGesture(in: proxy.size) : nil)
 
                 if isLoaded {

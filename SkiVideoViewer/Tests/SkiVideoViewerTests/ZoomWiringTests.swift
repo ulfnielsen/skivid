@@ -820,7 +820,100 @@ final class ZoomWiringTests: XCTestCase {
         XCTAssertEqual(model.zoom.center.y, 0.5, accuracy: 0.0001, "a click is not a pan")
     }
 
+    /// **The viewer pane has no double-click reset, and this test is what keeps
+    /// it that way.** `ComparisonPane` does have one, so the asymmetry looks
+    /// like an omission; it is a measurement. Adding `.onTapGesture(count: 2)`
+    /// beside the play/pause tap made SwiftUI hold *every* single tap until the
+    /// double-click window closed — 358 ms against 1.2 ms, measured five clicks
+    /// each on this view hosted in a real window, and paid whether or not
+    /// anyone double-clicks. See the comment on `ViewerPane.body`.
+    ///
+    /// So what a double-click does here is play and then pause, which is what
+    /// the two `rate` assertions pin: without them the "still 4×" assertion
+    /// would pass on a click that landed on nothing at all.
+    func testDoubleClickingTheViewerPaneDoesNotResetTheZoom() throws {
+        let model = try Self.makeViewerModel()
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane)
+        model.panZoom(by: CGSize(width: -40, height: 0), in: pane)
+        let panned = model.zoom.center.x
+        XCTAssertNotEqual(panned, 0.5, accuracy: 0.0001, "precondition: the picture is zoomed and panned off centre")
+
+        let (_, window) = try hostedPane(model: model, pane: pane)
+        let point = CGPoint(x: 200, y: 150)
+
+        Self.click(in: window, at: point, clickCount: 1)
+        XCTAssertEqual(model.player.rate, 1, "control: the first click reaches the play/pause tap")
+
+        Self.click(in: window, at: point, clickCount: 2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+
+        XCTAssertEqual(
+            model.player.rate, 0,
+            "control: the second click is a second play/pause toggle, which is all a double-click is here"
+        )
+        XCTAssertEqual(model.zoom.scale, 4, accuracy: 0.0001, "a double-click must not reset the viewer's zoom")
+        XCTAssertEqual(model.zoom.center.x, panned, accuracy: 0.0001, "nor recentre the picture")
+    }
+
     // MARK: - The comparison panes
+
+    /// Double-click resets *this* side, and does it while the pan gesture is
+    /// installed — 4× is the only state anyone would double-click in, and a
+    /// `DragGesture` sharing the video can swallow taps. It does not: 10pt of
+    /// `minimumDistance` is why.
+    ///
+    /// The left side is zoomed separately and asserted untouched, because
+    /// `resetZoom(side:)` taking the wrong side — or ignoring it — is exactly
+    /// the bug two identical panes hide.
+    func testDoubleClickingAComparisonPaneResetsThatSideOnly() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(2, in: pane, side: .left)
+        model.setZoomScale(4, in: pane, side: .right)
+        model.panZoom(by: CGSize(width: -40, height: 0), in: pane, side: .right)
+        XCTAssertNotEqual(
+            model.zoom(for: .right).center.x, 0.5, accuracy: 0.0001,
+            "precondition: the right side is zoomed and panned off centre"
+        )
+
+        let (_, window) = try hostedComparisonPane(model: model, side: .right, pane: pane)
+        let point = CGPoint(x: 200, y: 150)
+        Self.click(in: window, at: point, clickCount: 1)
+        Self.click(in: window, at: point, clickCount: 2)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+
+        XCTAssertEqual(model.zoom(for: .right).scale, 1, accuracy: 0.0001, "the double-click must reset this side")
+        XCTAssertEqual(
+            model.zoom(for: .right).center.x, 0.5, accuracy: 0.0001,
+            "and recentre it, which is the half a scale assertion alone would miss"
+        )
+        XCTAssertEqual(
+            model.zoom(for: .left).scale, 2, accuracy: 0.0001,
+            "and must leave the other side, which the operator framed separately, alone"
+        )
+    }
+
+    /// The other half: a *single* click on a comparison pane must not reset it.
+    /// Without this, `count: 2` could be `count: 1` and every test above would
+    /// still pass — the pane has no single-tap action to notice the difference.
+    func testASingleClickOnAComparisonPaneLeavesTheZoomAlone() throws {
+        let model = try Self.makeComparisonModel()
+        defer { model.close() }
+        let pane = CGSize(width: 400, height: 300)
+        model.setZoomScale(4, in: pane, side: .right)
+
+        let (_, window) = try hostedComparisonPane(model: model, side: .right, pane: pane)
+        Self.click(in: window, at: CGPoint(x: 200, y: 150), clickCount: 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+
+        XCTAssertEqual(
+            model.zoom(for: .right).scale, 4, accuracy: 0.0001,
+            "one click is not two; a single tap must leave the framing the operator set"
+        )
+    }
+
 
     /// **Mutation-check for this test: building both panes with `side: .left`
     /// must make it fail.** Without that, a pane wired to the wrong side is
@@ -1770,7 +1863,22 @@ final class ZoomWiringTests: XCTestCase {
         return found
     }
 
-    private static func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint, windowNumber: Int) -> NSEvent {
+    /// A press and release at one point. `clickCount` is what makes two of
+    /// these a *double*-click rather than two clicks: AppKit numbers the clicks
+    /// of a run itself, and a second event still claiming `clickCount: 1` is
+    /// what a slow, deliberate pair of separate clicks looks like.
+    private static func click(in window: NSWindow, at point: CGPoint, clickCount: Int) {
+        window.sendEvent(
+            mouseEvent(.leftMouseDown, at: point, windowNumber: window.windowNumber, clickCount: clickCount)
+        )
+        window.sendEvent(
+            mouseEvent(.leftMouseUp, at: point, windowNumber: window.windowNumber, clickCount: clickCount)
+        )
+    }
+
+    private static func mouseEvent(
+        _ type: NSEvent.EventType, at point: CGPoint, windowNumber: Int, clickCount: Int = 1
+    ) -> NSEvent {
         NSEvent.mouseEvent(
             with: type,
             location: point,
@@ -1779,7 +1887,7 @@ final class ZoomWiringTests: XCTestCase {
             windowNumber: windowNumber,
             context: nil,
             eventNumber: 0,
-            clickCount: 1,
+            clickCount: clickCount,
             pressure: 1
         )!
     }
