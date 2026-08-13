@@ -109,7 +109,7 @@ public struct RemoteLibraryIndex: Equatable {
     /// version is refused rather than adapted, the same rule
     /// `AlignmentTrackStore` applies to a stale track: refusing costs one
     /// sweep, adapting silently costs a library that is subtly wrong.
-    static let currentVersion = 1
+    public static let currentVersion = 1
 
     /// Where indexes are written. Application Support rather than Caches: an
     /// index is cheap to rebuild but a purge would turn every launch into a

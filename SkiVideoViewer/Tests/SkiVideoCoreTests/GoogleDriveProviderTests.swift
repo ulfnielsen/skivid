@@ -287,6 +287,60 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(query["pageToken"], "t1")
     }
 
+    /// A clip trashed in Drive must leave the library. Drive's docs define
+    /// `removed` only as "deletion or loss of access" and say nothing about
+    /// trashing, so the client treats a `trashed` file as removed rather than
+    /// betting on which way Drive reports it.
+    func testATrashedFileIsTreatedAsRemoved() async throws {
+        transport.responses = [.init(json: """
+        {"newStartPageToken":"t2","changes":[
+          {"fileId":"f1","removed":false,
+           "file":{"id":"f1","name":"run.mp4","mimeType":"video/mp4","parents":["d1"],
+                   "size":"1","headRevisionId":"r1","trashed":true}}
+        ]}
+        """)]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.removed, ["f1"])
+        XCTAssertTrue(changes.changed.isEmpty)
+    }
+
+    /// Without `trashed` in the field list Drive omits it, and a trashed clip
+    /// is indistinguishable from a live one.
+    func testTheChangeFeedAsksForTheTrashedField() async throws {
+        transport.responses = [.init(json: #"{"newStartPageToken":"t2","changes":[]}"#)]
+        _ = try await provider.changes(since: "t1", forRoot: "d1")
+        let fields = try XCTUnwrap(transport.queryItems(of: 0)["fields"])
+        XCTAssertTrue(fields.contains("trashed"), "fields is missing trashed: \(fields)")
+    }
+
+    /// A page carrying neither a next-page nor a new-start token would leave
+    /// `pageToken` unchanged and re-issue the same request forever, which is
+    /// the one way the drain loop's "bounded number of calls" claim fails.
+    func testAChangePageWithNoTokensFailsRatherThanSpinning() async {
+        transport.responses = [.init(json: #"{"changes":[]}"#)]
+        do {
+            _ = try await provider.changes(since: "t1", forRoot: "d1")
+            XCTFail("expected a page with no tokens to throw")
+        } catch {
+            XCTAssertTrue("\(error)".contains("neither"), "got \(error)")
+        }
+    }
+
+    /// A server repeating a page token is the other way that loop could spin.
+    func testARepeatedChangePageTokenFailsRatherThanSpinning() async {
+        transport.responses = [
+            .init(json: #"{"nextPageToken":"t1","changes":[]}"#),
+        ]
+        do {
+            _ = try await provider.changes(since: "t1", forRoot: "d1")
+            XCTFail("expected a repeated page token to throw")
+        } catch {
+            XCTAssertTrue("\(error)".contains("repeated"), "got \(error)")
+        }
+    }
+
     func testChangesFollowTheirOwnPageTokens() async throws {
         transport.responses = [
             .init(json: """

@@ -214,12 +214,32 @@ final class RemoteLibraryIndexTests: XCTestCase {
     /// An index written by an older build is refused, not adapted — the same
     /// rule `AlignmentTrackStore` applies to a stale track. Refusing costs one
     /// sweep; adapting silently costs a library that is subtly wrong.
-    func testAnIndexFromAnOlderVersionIsRefused() throws {
+    ///
+    /// Asserted as a *pair*, because a version-0 fixture alone proves nothing:
+    /// any payload the decoder rejects for an unrelated reason — a missing
+    /// field, a typo — makes `load` return nil too, so the test would pass
+    /// with the version check deleted. The current-version fixture is
+    /// byte-identical apart from `version`, so the only thing that can explain
+    /// one loading and the other not is the gate itself.
+    func testAnIndexFromAnOlderVersionIsRefusedWhileACurrentOneLoads() throws {
         try withTemporaryStore { root in
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            try Data(#"{"version":0,"providerIdentifier":"gdrive","files":[],"cursor":null}"#.utf8)
-                .write(to: RemoteLibraryIndex.storeURL(forRoot: "d1"))
-            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
+
+            func write(version: Int, forRoot rootID: String) throws {
+                try Data("""
+                {"version":\(version),"providerIdentifier":"gdrive","rootName":"Club",\
+                "files":[],"cursor":null}
+                """.utf8).write(to: RemoteLibraryIndex.storeURL(forRoot: rootID))
+            }
+
+            try write(version: 0, forRoot: "old")
+            try write(version: RemoteLibraryIndex.currentVersion, forRoot: "current")
+
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "old"))
+            XCTAssertNotNil(
+                RemoteLibraryIndex.load(forRoot: "current"),
+                "the fixture must be decodable, or the version test proves nothing"
+            )
         }
     }
 

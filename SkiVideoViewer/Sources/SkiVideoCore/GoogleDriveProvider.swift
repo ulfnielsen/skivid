@@ -275,16 +275,38 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
             ]
             let page: DriveChangeList = try await get(components)
             for change in page.changes {
-                if change.removed == true || change.file == nil {
+                // `trashed` counts as removed. Google's docs define `removed`
+                // only as "removed from this list of changes, for example by
+                // deletion or loss of access" and say nothing about trashing,
+                // so this handles both readings: if Drive reports a trashed
+                // clip as an ordinary change it is caught here, and if it
+                // reports one as `removed` the first branch already had it.
+                // Getting this wrong the other way would leave a clip a coach
+                // deleted sitting in the sidebar until Drive purged it.
+                if change.removed == true || change.file == nil || change.file?.trashed == true {
                     removed.append(change.fileId)
                 } else if let record = change.file {
                     changed.append(record)
                 }
             }
             if let next = page.nextPageToken {
+                // A server repeating a token would otherwise re-issue the same
+                // request forever, which is the one way this loop's "bounded
+                // number of calls" claim could be false.
+                guard next != pageToken else {
+                    throw RemoteLibraryError.api(
+                        "Google Drive repeated a change-feed page token. Refresh again in a moment."
+                    )
+                }
                 pageToken = next
+            } else if let newStart = page.newStartPageToken {
+                nextCursor = newStart
             } else {
-                nextCursor = page.newStartPageToken
+                // Neither token: without this the loop would spin on an
+                // unchanged `pageToken`.
+                throw RemoteLibraryError.api(
+                    "Google Drive returned a change page with neither a next page nor a new start token."
+                )
             }
         }
 
@@ -316,7 +338,10 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
         )
     }
 
-    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents"
+    /// `trashed` is requested because the sweep excludes trashed files with
+    /// `q: trashed = false` and the change feed has no equivalent — without
+    /// the field there is no way to tell a trashed clip from a live one.
+    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents,trashed"
 }
 
 // MARK: - Wire formats
@@ -329,6 +354,9 @@ struct DriveRecord: Decodable {
     let md5Checksum: String?
     let headRevisionId: String?
     let parents: [String]?
+    /// Only requested by the change feed. The sweep filters trashed files out
+    /// server-side with `q: trashed = false`, so it never needs to read this.
+    let trashed: Bool?
 }
 
 private struct DriveFileList: Decodable {
