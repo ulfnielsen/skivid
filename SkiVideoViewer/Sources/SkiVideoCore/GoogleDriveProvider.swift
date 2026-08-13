@@ -24,17 +24,23 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     /// entirely on its own.
     private let signIn: SignIn?
 
-    /// Bundles what `connect` needs and boxes the access token it obtains, so
+    /// Bundles what `connect` needs, boxes the access token it obtains so
     /// `token` can read it back on every later request without another round
-    /// trip. A class, not a struct, because the struct around it (`Sendable`,
+    /// trip, and refreshes that token on demand when a request finds it
+    /// stale. A class, not a struct, because the struct around it (`Sendable`,
     /// so it can cross actors) must stay immutable while this still gets
-    /// written once, from `connect`.
+    /// written from `connect` and from a mid-session refresh.
     private final class SignIn: @unchecked Sendable {
         let configuration: GoogleOAuthConfiguration
         let transport: HTTPTransport
         let tokenStore: OAuthTokenStore
         private let lock = NSLock()
         private var accessToken: String?
+        /// An in-flight refresh, shared so several requests that all find
+        /// the same stale token trigger exactly one refresh rather than one
+        /// each — a coach with more than one pane open must not turn a
+        /// single expired token into a stampede of refresh calls.
+        private var refreshTask: Task<String, Error>?
 
         init(configuration: GoogleOAuthConfiguration, transport: HTTPTransport, tokenStore: OAuthTokenStore) {
             self.configuration = configuration
@@ -42,16 +48,57 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
             self.tokenStore = tokenStore
         }
 
-        func currentAccessToken() -> String? {
+        /// `NSLock.lock`/`.unlock` are flagged when called directly inside an
+        /// `async` function — a suspension point could sneak in between them,
+        /// holding the lock across an `await`. Wrapping both in a synchronous
+        /// closure keeps every lock/unlock pair inside one non-async call,
+        /// even where it's invoked from `refreshedAccessToken` below.
+        private func withLock<T>(_ body: () -> T) -> T {
             lock.lock()
             defer { lock.unlock() }
-            return accessToken
+            return body()
+        }
+
+        func currentAccessToken() -> String? {
+            withLock { accessToken }
         }
 
         func store(_ newAccessToken: String) {
-            lock.lock()
-            defer { lock.unlock() }
-            accessToken = newAccessToken
+            withLock { accessToken = newAccessToken }
+        }
+
+        /// Exchanges the stored refresh token for a new access token — the
+        /// same non-interactive call `GoogleOAuth.accessToken` exists for —
+        /// and caches the result. Concurrent callers that arrive while one
+        /// refresh is already running await that same attempt instead of
+        /// starting their own.
+        func refreshedAccessToken() async throws -> String {
+            let (task, isCreator): (Task<String, Error>, Bool) = withLock {
+                if let inFlight = refreshTask {
+                    return (inFlight, false)
+                }
+                let created = Task<String, Error> { [configuration, transport, tokenStore] in
+                    try await GoogleOAuth.accessToken(
+                        configuration: configuration, transport: transport, tokenStore: tokenStore
+                    )
+                }
+                refreshTask = created
+                return (created, true)
+            }
+
+            // A joiner just awaits the shared task; only its creator clears
+            // the slot and caches the result, so it happens exactly once.
+            guard isCreator else {
+                return try await task.value
+            }
+            let result = await task.result
+            withLock {
+                refreshTask = nil
+                if case let .success(newAccessToken) = result {
+                    accessToken = newAccessToken
+                }
+            }
+            return try result.get()
         }
     }
 
@@ -67,14 +114,18 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     }
 
     /// The production path: `connect` runs the real Google sign-in flow and
-    /// every request after it authorizes with what that flow obtained.
-    /// `tokenStore` defaults to the real Keychain; a test supplies its own
-    /// in-memory one so `connect` never touches it.
-    public init(
-        configuration: GoogleOAuthConfiguration,
-        transport: HTTPTransport = URLSessionTransport(),
-        tokenStore: OAuthTokenStore = KeychainTokenStore()
-    ) {
+    /// every request after it authorizes with what that flow obtained,
+    /// refreshing silently in between as needed. `tokenStore` stays internal
+    /// — the real Keychain by default — rather than a parameter here, so
+    /// `SkiVideoCore` does not have to expose it; a test reaches the
+    /// `tokenStore:` initialiser below through `@testable import`.
+    public init(configuration: GoogleOAuthConfiguration, transport: HTTPTransport = URLSessionTransport()) {
+        self.init(configuration: configuration, transport: transport, tokenStore: KeychainTokenStore())
+    }
+
+    /// The same initialiser, with the Keychain-backed default made explicit
+    /// so a test can supply its own in-memory `OAuthTokenStore` instead.
+    init(configuration: GoogleOAuthConfiguration, transport: HTTPTransport, tokenStore: OAuthTokenStore) {
         let signIn = SignIn(configuration: configuration, transport: transport, tokenStore: tokenStore)
         self.transport = transport
         self.token = { signIn.currentAccessToken() }
@@ -262,16 +313,42 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     // MARK: - Requests
 
     private func get<T: Decodable>(_ components: URLComponents) async throws -> T {
-        guard let token = token() else { throw RemoteLibraryError.notSignedIn }
+        guard var token = token() else { throw RemoteLibraryError.notSignedIn }
         guard let url = components.url else {
             throw RemoteLibraryError.api("Could not build a request to Google Drive.")
         }
-        var request = URLRequest(url: url)
-        // Never a query parameter. Measured 2026-08-13: on the media path a
-        // query-string token is refused with an HTML block page.
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await transport.data(for: request)
+        func request(bearer: String) -> URLRequest {
+            var request = URLRequest(url: url)
+            // Never a query parameter. Measured 2026-08-13: on the media path a
+            // query-string token is refused with an HTML block page.
+            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+            return request
+        }
+
+        var (data, response) = try await transport.data(for: request(bearer: token))
+
+        // A cached token can go stale mid-session — Google's access tokens
+        // last about an hour, well inside a coach's review session. Refusing
+        // to refresh here is exactly the failure this app moved away from
+        // once already, when a token baked into a playback URL expired
+        // mid-session with no way to replace it. One retry with a freshly
+        // refreshed token — silent, not another interactive `connect` — is
+        // what keeps a long session working without a human. `signIn` is nil
+        // for a provider built from the `token:` closure, which has no
+        // refresh token to exchange, so a 401 there still surfaces as-is.
+        if response.statusCode == 401, let signIn {
+            do {
+                token = try await signIn.refreshedAccessToken()
+            } catch {
+                // No stored refresh token, or it was rejected: this is what
+                // `.notSignedIn` means here, not a raw exchange error the
+                // coach has no way to act on.
+                throw RemoteLibraryError.notSignedIn
+            }
+            (data, response) = try await transport.data(for: request(bearer: token))
+        }
+
         guard (200...299).contains(response.statusCode) else {
             throw Self.describeFailure(data: data, response: response)
         }

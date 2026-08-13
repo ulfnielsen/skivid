@@ -19,16 +19,35 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
         }
     }
 
-    /// Consumed in order, one per request.
+    /// Consumed in order, one per request. Tests set this before issuing any
+    /// request, never concurrently with one, so it needs no lock of its own.
     var responses: [Response] = []
     private(set) var requests: [URLRequest] = []
+    /// Guards `requests`/`responses` inside `data(for:)` only — the single-
+    /// flight refresh test fires two requests concurrently, and without this
+    /// two overlapping calls could interleave the append-then-removeFirst
+    /// sequence below, corrupting which response each request gets (or
+    /// tripping Swift's exclusivity checking outright).
+    private let lock = NSLock()
+
+    /// `NSLock.lock`/`.unlock` are flagged when called directly inside an
+    /// `async` function, so the pair is wrapped in one synchronous closure
+    /// rather than written inline in `data(for:)`, which is `async`.
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        requests.append(request)
-        guard !responses.isEmpty else {
+        let response: Response? = withLock {
+            requests.append(request)
+            guard !responses.isEmpty else { return nil }
+            return responses.removeFirst()
+        }
+        guard let response else {
             throw RemoteLibraryError.api("FakeHTTPTransport ran out of responses")
         }
-        let response = responses.removeFirst()
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
             httpVersion: nil, headerFields: ["Content-Type": response.contentType]

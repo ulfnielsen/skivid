@@ -328,11 +328,12 @@ private struct GoogleTokenResponse: Decodable {
 }
 
 /// Where `GoogleOAuth` keeps the refresh token, abstracted so a test can
-/// supply an in-memory stand-in instead of the real Keychain. `public`
-/// because `GoogleDriveProvider`'s configuration-based initialiser — a
-/// different type, constructed from the app target — takes one too, and a
-/// public initialiser cannot have a parameter of a non-public type.
-public protocol OAuthTokenStore: Sendable {
+/// supply an in-memory stand-in instead of the real Keychain. Internal, not
+/// public: `GoogleDriveProvider`'s public initialiser stays at
+/// `(configuration:transport:)` and delegates to an internal one that takes
+/// this, so `SkiVideoCore` does not have to expose it — a test reaches the
+/// internal initialiser through `@testable import`, same as this protocol.
+protocol OAuthTokenStore: Sendable {
     func load(account: String) -> String?
     func save(_ token: String, account: String) throws
     func remove(account: String)
@@ -340,17 +341,15 @@ public protocol OAuthTokenStore: Sendable {
 
 /// The real Keychain, behind `OAuthTokenStore`. Never constructed by a test —
 /// every test that needs a token store injects its own in-memory one instead.
-///
-/// `public`, like its `init()`: it is `GoogleDriveProvider`'s configuration
-/// initialiser's default `tokenStore` value, and a public initialiser's
-/// default argument must be built from public symbols — the same reason
-/// `OAuthTokenStore` above is public.
-public struct KeychainTokenStore: OAuthTokenStore {
+/// Internal rather than file-private (its original form): `GoogleDriveProvider`,
+/// a different file in the same module, needs to name it as the internal
+/// initialiser's default `tokenStore` value.
+struct KeychainTokenStore: OAuthTokenStore {
     private let service = "ch.ski.video-viewer.google-drive"
 
-    public init() {}
+    init() {}
 
-    public func load(account: String) -> String? {
+    func load(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -367,7 +366,7 @@ public struct KeychainTokenStore: OAuthTokenStore {
         return String(data: data, encoding: .utf8)
     }
 
-    public func save(_ token: String, account: String) throws {
+    func save(_ token: String, account: String) throws {
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -386,7 +385,7 @@ public struct KeychainTokenStore: OAuthTokenStore {
         }
     }
 
-    public func remove(account: String) {
+    func remove(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

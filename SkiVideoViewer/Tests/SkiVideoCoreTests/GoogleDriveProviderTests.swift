@@ -73,6 +73,101 @@ final class GoogleDriveProviderTests: XCTestCase {
         }
     }
 
+    /// Google's access tokens last about an hour — well inside a coach's
+    /// review session. A cached token going stale mid-session must not force
+    /// an interactive re-sign-in: one 401 must trigger exactly one silent
+    /// refresh (`GoogleOAuth.accessToken`, not another `connect`), and the
+    /// retried request must carry the refreshed token. Reproduces, one layer
+    /// up, the exact failure this app moved off streaming to avoid — a token
+    /// that expires mid-session with no way to replace it.
+    @MainActor
+    func testA401TriggersExactlyOneRefreshAndRetriesWithTheNewToken() async throws {
+        provider = makeOAuthBackedProvider()
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:1/?code=abc&state=STATE")!
+        transport.responses = [.init(json: #"{"access_token":"at-1","refresh_token":"rt-1"}"#)]
+        try await provider.connect(presenter: presenter)
+        let requestsBeforeRefresh = transport.requests.count
+
+        transport.responses = [
+            .init(status: 401, json: #"{"error":{"code":401,"message":"Invalid Credentials"}}"#),
+            .init(json: #"{"access_token":"at-2"}"#),
+            .init(json: #"{"drives":[]}"#),
+        ]
+
+        _ = try await provider.roots()
+
+        let newRequests = transport.requests.suffix(from: requestsBeforeRefresh)
+        XCTAssertEqual(newRequests.count, 3, "expected the 401, one refresh, and the retry")
+        XCTAssertEqual(
+            newRequests.filter { $0.url?.host == "oauth2.googleapis.com" }.count, 1,
+            "expected exactly one refresh call"
+        )
+        XCTAssertEqual(
+            transport.requests.last?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer at-2"
+        )
+    }
+
+    /// Two requests that both find the same stale token must share one
+    /// refresh rather than each triggering their own — several panes open on
+    /// one expired token must not turn into a stampede of refresh calls.
+    @MainActor
+    func testConcurrentRequestsThatBothHit401ShareOneRefresh() async throws {
+        provider = makeOAuthBackedProvider()
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:1/?code=abc&state=STATE")!
+        transport.responses = [.init(json: #"{"access_token":"at-1","refresh_token":"rt-1"}"#)]
+        try await provider.connect(presenter: presenter)
+        let requestsBeforeRefresh = transport.requests.count
+
+        transport.responses = [
+            .init(status: 401, json: #"{"error":{"code":401,"message":"Invalid Credentials"}}"#),
+            .init(status: 401, json: #"{"error":{"code":401,"message":"Invalid Credentials"}}"#),
+            .init(json: #"{"access_token":"at-2"}"#),
+            .init(json: #"{"drives":[]}"#),
+            .init(json: #"{"drives":[]}"#),
+        ]
+
+        async let first = provider.roots()
+        async let second = provider.roots()
+        _ = try await (first, second)
+
+        let newRequests = transport.requests.suffix(from: requestsBeforeRefresh)
+        XCTAssertEqual(newRequests.count, 5, "expected two 401s, one shared refresh, and two retries")
+        XCTAssertEqual(
+            newRequests.filter { $0.url?.host == "oauth2.googleapis.com" }.count, 1,
+            "expected the two concurrent 401s to share one refresh, not one each"
+        )
+    }
+
+    /// A refresh that fails outright — the refresh token itself revoked, not
+    /// merely the access token stale — must surface as `.notSignedIn`, the
+    /// same message an actually-unconnected provider gives, rather than a raw
+    /// exchange error the coach has no way to act on.
+    @MainActor
+    func testARefreshThatFailsSurfacesAsNotSignedIn() async throws {
+        provider = makeOAuthBackedProvider()
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:1/?code=abc&state=STATE")!
+        transport.responses = [.init(json: #"{"access_token":"at-1","refresh_token":"rt-1"}"#)]
+        try await provider.connect(presenter: presenter)
+
+        transport.responses = [
+            .init(status: 401, json: #"{"error":{"code":401,"message":"Invalid Credentials"}}"#),
+            .init(status: 400, json: #"{"error":{"message":"invalid_grant"}}"#),
+        ]
+
+        do {
+            _ = try await provider.roots()
+            XCTFail("expected .notSignedIn")
+        } catch let error as RemoteLibraryError {
+            XCTAssertEqual(error, .notSignedIn)
+        } catch {
+            XCTFail("expected RemoteLibraryError, got \(error)")
+        }
+    }
+
     // MARK: - Credentials
 
     /// Measured 2026-08-13: a query-string token on `alt=media` is refused
