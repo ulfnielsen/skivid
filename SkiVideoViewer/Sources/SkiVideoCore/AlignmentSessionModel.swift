@@ -152,12 +152,10 @@ public final class AlignmentSessionModel: ObservableObject {
     /// the whole question is whether the two agree.
     @discardableResult
     public func loadStored(
-        left: URL, right: URL,
+        left: ClipIdentity, right: ClipIdentity,
         leftStart: TimeInterval, rightStart: TimeInterval
     ) -> AlignmentTrack? {
-        guard let stored = AlignmentTrackStore.load(
-            left: ClipIdentity(left), right: ClipIdentity(right)
-        ) else {
+        guard let stored = AlignmentTrackStore.load(left: left, right: right) else {
             reset()
             return nil
         }
@@ -165,6 +163,22 @@ public final class AlignmentSessionModel: ObservableObject {
         adopt(stored)
         state = .ready(stored)
         return stored
+    }
+
+    /// Convenience for a caller that only has URLs — a local pair, most
+    /// often. `ClipIdentity(_:)` is always `.local`, so this must not be used
+    /// for a pair where either side's bytes sit somewhere other than where
+    /// the clip itself lives, which is exactly the cloud case `loadStored(
+    /// left:right:leftStart:rightStart:)` exists for.
+    @discardableResult
+    public func loadStored(
+        left: URL, right: URL,
+        leftStart: TimeInterval, rightStart: TimeInterval
+    ) -> AlignmentTrack? {
+        loadStored(
+            left: ClipIdentity(left), right: ClipIdentity(right),
+            leftStart: leftStart, rightStart: rightStart
+        )
     }
 
     /// Back to knowing nothing, for when the pair itself changes — a clip

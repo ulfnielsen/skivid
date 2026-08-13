@@ -151,7 +151,12 @@ struct ComparisonView: View {
                 clip: picking.clip,
                 sideTitle: picking.side == .left ? "Left clip" : "Right clip",
                 phase: runStart,
-                onConfirm: { confirmSubject(side: picking.side, clip: picking.clip, segmentIDs: $0) },
+                onConfirm: {
+                    confirmSubject(
+                        side: picking.side, clip: picking.clip,
+                        identity: picking.identity, segmentIDs: $0
+                    )
+                },
                 onCancelRunStart: { cancelRunStart() },
                 onDone: { dismissSubjectSheet() }
             )
@@ -232,8 +237,10 @@ struct ComparisonView: View {
 
     private func loadStoredAlignment() {
         guard
-            let left = clip(for: .left),
-            let right = clip(for: .right),
+            clip(for: .left) != nil,
+            clip(for: .right) != nil,
+            let leftIdentity = model.identity(for: .left),
+            let rightIdentity = model.identity(for: .right),
             let starts = runStarts
         else {
             // Not merely "leave it alone": a track loaded for the previous pair
@@ -242,7 +249,7 @@ struct ComparisonView: View {
             return
         }
         alignment.loadStored(
-            left: left, right: right,
+            left: leftIdentity, right: rightIdentity,
             leftStart: starts.left, rightStart: starts.right
         )
     }
@@ -344,14 +351,14 @@ struct ComparisonView: View {
     }
 
     private func loadStoredSubject(_ side: ComparisonSide) {
-        guard let clip = clip(for: side) else { return }
-        subjects.session(for: side).loadStored(for: clip)
+        guard clip(for: side) != nil, let identity = model.identity(for: side) else { return }
+        subjects.session(for: side).loadStored(for: identity)
     }
 
     private func openSubjectSheet(_ side: ComparisonSide) {
-        guard let clip = clip(for: side) else { return }
+        guard let clip = clip(for: side), let identity = model.identity(for: side) else { return }
         runStart = .notRunning
-        picking = PickingSide(side: side, clip: clip)
+        picking = PickingSide(side: side, clip: clip, identity: identity)
     }
 
     private func dismissSubjectSheet() {
@@ -430,9 +437,17 @@ struct ComparisonView: View {
     /// makes omitting it here a silent revert. On the operator's C0094 that is a
     /// drop from a corrected 18.290s back to a detected 0.640s: not a slow path,
     /// a lost eighteen seconds of judgement.
+    ///
+    /// `identity` defaults to nil and, when omitted, falls back to
+    /// `ClipIdentity(clip)` — exactly what `session.confirm(…, for: clip)`
+    /// already did, so a caller that only has a URL (every pre-existing test
+    /// of this function) keeps its old behaviour unchanged. `ComparisonView`
+    /// itself always passes the side's real identity, which is what makes a
+    /// cloud clip's pick land in the keyed store instead of beside its cache
+    /// path.
     @MainActor
     static func record(
-        segmentIDs: [Int], clip: URL, in session: SubjectSessionModel,
+        segmentIDs: [Int], clip: URL, identity: ClipIdentity? = nil, in session: SubjectSessionModel,
         measuringWith measure: RunStartMeasurement,
         reportingSaveFailure onSaveFailure: (Error) -> Void = { _ in }
     ) async throws -> ConfirmOutcome {
@@ -465,7 +480,7 @@ struct ComparisonView: View {
         do {
             try session.confirm(
                 segmentIDs: segmentIDs, runStart: stored,
-                correctedRunStart: corrected, for: clip
+                correctedRunStart: corrected, for: identity ?? ClipIdentity(clip)
             )
         } catch {
             // Surfaced once and moved past: the pick is in memory and good for
@@ -489,7 +504,9 @@ struct ComparisonView: View {
     /// answer is reused, `.working` is never entered at all: the decision is made
     /// here, synchronously, before any task is started, so the operator does not
     /// see a spinner flash for work that did not happen.
-    private func confirmSubject(side: ComparisonSide, clip: URL, segmentIDs: [Int]) {
+    private func confirmSubject(
+        side: ComparisonSide, clip: URL, identity: ClipIdentity, segmentIDs: [Int]
+    ) {
         let session = subjects.session(for: side)
         // Unreachable in practice — the confirm button only exists in the
         // `.ready` state, and `analysis` is exactly what that state carries —
@@ -516,7 +533,7 @@ struct ComparisonView: View {
         runStartTask = Task { @MainActor in
             do {
                 let outcome = try await Self.record(
-                    segmentIDs: segmentIDs, clip: clip, in: session,
+                    segmentIDs: segmentIDs, clip: clip, identity: identity, in: session,
                     measuringWith: { clip, analysis, ids in
                         try await SubjectAnalyzer.runStart(
                             clip: clip, analysis: analysis, segmentIDs: ids
@@ -633,13 +650,14 @@ struct ComparisonView: View {
     private func persistCorrection(_ side: ComparisonSide, start: TimeInterval) {
         guard
             let clip = clip(for: side),
+            let identity = model.identity(for: side),
             let pick = subjects.session(for: side).pickedSubject,
             case let .write(corrected) = Self.correction(for: pick, anchoredAt: start)
         else { return }
         do {
             try subjects.session(for: side).confirm(
                 segmentIDs: pick.segmentIDs, runStart: pick.runStart,
-                correctedRunStart: corrected, for: clip
+                correctedRunStart: corrected, for: identity
             )
         } catch {
             // Same rule as a failed pick write, for the same reason: the
@@ -689,6 +707,11 @@ struct ComparisonView: View {
     struct PickingSide: Identifiable {
         let side: ComparisonSide
         let clip: URL
+        /// Captured alongside `clip` rather than re-read from the model at
+        /// confirm time, for the same reason `clip` is captured: the sheet
+        /// must not be re-pointed at a different clip's identity half way
+        /// through by a load on that side.
+        let identity: ClipIdentity
         var id: String { (side == .left ? "left:" : "right:") + clip.path }
     }
 

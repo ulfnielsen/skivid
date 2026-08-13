@@ -199,6 +199,20 @@ public final class ViewerModel: ObservableObject {
         return cachedRemoteURL(for: file)
     }
 
+    /// What the analysis stores should file this clip under. A cloud clip is
+    /// its provider and file id; a local clip is its own URL.
+    func identity(of video: URL) -> ClipIdentity {
+        guard let remoteIndex, let file = remoteIndex.file(for: video) else {
+            return ClipIdentity(video)
+        }
+        return file.identity(inProvider: remoteIndex.providerIdentifier)
+    }
+
+    /// The selected clip's identity, or nil when nothing is selected.
+    public var currentClipIdentity: ClipIdentity? {
+        currentVideo.map(identity(of:))
+    }
+
     private func cachedRemoteURL(for file: RemoteFile) -> URL? {
         guard let url = materialisedByFileID[file.id] else { return nil }
         // The mirror can outlive the bytes. Eviction deletes a clip's file
@@ -225,7 +239,8 @@ public final class ViewerModel: ObservableObject {
                         id: "\(athlete.id)|\(video.absoluteString)",
                         name: video.lastPathComponent,
                         playbackURL: remoteIndex?.file(for: video)
-                            .flatMap { cachedRemoteURL(for: $0) } ?? video
+                            .flatMap { cachedRemoteURL(for: $0) } ?? video,
+                        identity: identity(of: video)
                     )
                 }
             )

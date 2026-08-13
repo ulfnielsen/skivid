@@ -69,8 +69,8 @@ public final class SubjectSessionModel: ObservableObject {
     /// Silently recomputing would discard a human decision to chase a number
     /// that was probably already right.
     @discardableResult
-    public func loadStored(for clip: URL) -> ClipAnalysis? {
-        guard let stored = ClipAnalysisStore.load(for: ClipIdentity(clip)) else {
+    public func loadStored(for identity: ClipIdentity) -> ClipAnalysis? {
+        guard let stored = ClipAnalysisStore.load(for: identity) else {
             state = .idle
             isStale = false
             return nil
@@ -78,6 +78,16 @@ public final class SubjectSessionModel: ObservableObject {
         isStale = stored.isStale(against: .current)
         state = .ready(stored)
         return stored
+    }
+
+    /// Convenience for a caller that only has a URL — a local clip's own
+    /// file, most often. `ClipIdentity(clip)` is always `.local`, so this must
+    /// not be used for a clip whose bytes sit somewhere other than where the
+    /// clip itself lives, which is exactly the cloud case `loadStored(for
+    /// identity:)` exists for.
+    @discardableResult
+    public func loadStored(for clip: URL) -> ClipAnalysis? {
+        loadStored(for: ClipIdentity(clip))
     }
 
     /// Runs the analysis, publishing progress. Cancels any run in flight
@@ -150,7 +160,7 @@ public final class SubjectSessionModel: ObservableObject {
     ///   detected start, and a new detection is not that start.
     public func confirm(
         segmentIDs: [Int], runStart: StoredRunStart,
-        correctedRunStart: TimeInterval? = nil, for clip: URL
+        correctedRunStart: TimeInterval? = nil, for identity: ClipIdentity
     ) throws {
         guard let current = analysis else { throw SessionError.noAnalysis }
         let updated = current.with(
@@ -160,7 +170,19 @@ public final class SubjectSessionModel: ObservableObject {
             )
         )
         state = .ready(updated)
-        try ClipAnalysisStore.save(updated, for: ClipIdentity(clip))
+        try ClipAnalysisStore.save(updated, for: identity)
+    }
+
+    /// Convenience for a caller that only has a URL; see `loadStored(for
+    /// clip:)` for why this must not be used for a cloud clip.
+    public func confirm(
+        segmentIDs: [Int], runStart: StoredRunStart,
+        correctedRunStart: TimeInterval? = nil, for clip: URL
+    ) throws {
+        try confirm(
+            segmentIDs: segmentIDs, runStart: runStart,
+            correctedRunStart: correctedRunStart, for: ClipIdentity(clip)
+        )
     }
 
     private func updateProgress(_ value: Double, generation: Int) {

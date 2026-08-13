@@ -156,6 +156,17 @@ public final class ComparisonModel: ObservableObject {
     @Published public private(set) var leftZoom = VideoZoom()
     @Published public private(set) var rightZoom = VideoZoom()
 
+    /// What each side's clip is filed under, for the analysis stores.
+    ///
+    /// Set alongside the player load rather than derived from it later: a
+    /// cloud clip's `AVPlayerItem` is built from its cache path, and deriving
+    /// an identity from that path at the point of storage is exactly the bug
+    /// this pair of properties exists to avoid. `load(_:side:)`'s URL overload
+    /// sets `.local(url)`; `load(_:side:)`'s choice overload overwrites it
+    /// with the choice's own identity, which may be `.remote`.
+    private var leftIdentity: ClipIdentity?
+    private var rightIdentity: ClipIdentity?
+
     public let leftPlayer = AVPlayer()
     public let rightPlayer = AVPlayer()
     public let openLibrary: [ComparisonAthleteChoice]
@@ -512,10 +523,12 @@ public final class ComparisonModel: ObservableObject {
             leftName = url.lastPathComponent
             leftTime = 0
             leftDuration = 0
+            leftIdentity = ClipIdentity(url)
         case .right:
             rightName = url.lastPathComponent
             rightTime = 0
             rightDuration = 0
+            rightIdentity = ClipIdentity(url)
         }
         clearSync(message: "Align both videos, then set the sync points.")
     }
@@ -525,9 +538,17 @@ public final class ComparisonModel: ObservableObject {
         switch side {
         case .left:
             leftName = choice.name
+            leftIdentity = choice.identity
         case .right:
             rightName = choice.name
+            rightIdentity = choice.identity
         }
+    }
+
+    /// What `side`'s analysis should be filed under, or nil until a clip has
+    /// been loaded there.
+    public func identity(for side: ComparisonSide) -> ClipIdentity? {
+        side == .left ? leftIdentity : rightIdentity
     }
 
     public func toggleIndividual(_ side: ComparisonSide) {

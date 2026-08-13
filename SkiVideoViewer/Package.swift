@@ -28,9 +28,13 @@ let package = Package(
         // Tests the app target itself, including the AppKit seam
         // implementations. A test target can @testable import an executable
         // target from swift-tools 5.5 onward.
+        //
+        // Depends on `SkiVideoCoreTests` too, so `RemoteAnalysisIdentityTests`
+        // can reuse that target's `RemoteLibraryTestSupport` helpers and its
+        // `FakeRemoteProvider` rather than keeping a second copy of either.
         .testTarget(
             name: "SkiVideoViewerTests",
-            dependencies: ["SkiVideoViewer", "SkiVideoCore"]
+            dependencies: ["SkiVideoViewer", "SkiVideoCore", "SkiVideoCoreTests"]
         ),
     ],
     swiftLanguageModes: [.v5]

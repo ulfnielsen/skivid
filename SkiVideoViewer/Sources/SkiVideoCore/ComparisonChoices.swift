@@ -13,6 +13,13 @@ public struct ComparisonVideoChoice: Identifiable {
     public let id: String
     public let name: String
     public let playbackURL: URL
+    /// What this clip's analysis is filed under.
+    ///
+    /// Carried rather than derived from `playbackURL`, because for a cloud
+    /// clip that URL is a path under `Caches` — a sidecar written there is
+    /// reclaimed by cache eviction and may be purged by iOS outright. The
+    /// identity is the one thing about a clip that does not move.
+    public let identity: ClipIdentity
 }
 
 public struct ComparisonAthleteChoice: Identifiable {
