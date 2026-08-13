@@ -1,0 +1,141 @@
+import CryptoKit
+import Foundation
+
+/// A filesystem-safe, length-bounded name for an arbitrary identifier.
+///
+/// Names the files this module writes: one index per Shared Drive, one cached
+/// clip per file id. A digest rather than an escaped copy, because an
+/// identifier is not a filename — escaping is lossy, so two distinct ids can
+/// fold to one name and silently overwrite each other, and an escaped
+/// identifier is unbounded where a filename component is capped at 255 bytes.
+///
+/// Deliberately *not* `ClipIdentity.pairKey`. That answers "what is this
+/// clip's analysis filed under" and is half of a stored format; borrowing it
+/// to name an unrelated file would tie two things that must stay free to
+/// change apart.
+enum StorageName {
+    static func forIdentifier(_ identifier: String) -> String {
+        SHA256.hash(data: Data(identifier.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+}
+
+/// A cloud source of clips: what the app needs from Drive, and what it would
+/// need from anything else.
+///
+/// Four methods, because four are what a library that only *reads* requires.
+/// Deliberately absent: writes, thumbnails, quota, search, and a change feed.
+/// A usable change feed exists for only some providers, so when a second one
+/// arrives, delta belongs in its own optional protocol rather than as a stub
+/// three implementations have to carry.
+public protocol RemoteLibraryProvider: Sendable {
+    /// Namespaces this provider's file ids. Becomes the scheme of a library
+    /// URL and half of a `ClipIdentity`, so it must not change once anything
+    /// has been indexed or cached.
+    static var identifier: String { get }
+
+    /// Interactive sign-in. Implementations persist their own refresh token.
+    func connect(presenter: OAuthPresenter) async throws
+
+    /// The top-level containers this account can see — each Shared Drive, and
+    /// My Drive. One element is a fine answer.
+    func roots() async throws -> [RemoteFolder]
+
+    /// Every descendant *file* of `folder`, streamed so a large library can
+    /// show results before the sweep finishes. A failure part-way through
+    /// finishes the stream by throwing — never silently, which would show a
+    /// half library as if it were whole.
+    func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error>
+
+    /// Where to fetch this file's bytes. Minted per download and never stored
+    /// in the index: any credential in it is short-lived.
+    func downloadSource(for file: RemoteFile) async throws -> DownloadSource
+}
+
+public struct RemoteFolder: Hashable, Sendable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+public struct RemoteFile: Hashable, Sendable {
+    public let id: String
+    public let name: String
+    /// Folder names from the enumerated root down to this file's parent.
+    /// The grouping rule reads the last two; nothing may parse `id`.
+    public let path: [String]
+    public let size: Int64
+    /// Opaque. Equal means the bytes are unchanged — Drive's `headRevisionId`.
+    /// Nil means never reuse a cached copy, because nothing can confirm it is
+    /// still current.
+    public let contentVersion: String?
+    /// For checking the bytes after a download. Absent for some files, so a
+    /// cache cannot depend on having it.
+    public let md5: String?
+
+    public init(
+        id: String, name: String, path: [String],
+        size: Int64, contentVersion: String?, md5: String?
+    ) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.size = size
+        self.contentVersion = contentVersion
+        self.md5 = md5
+    }
+
+    /// What this clip's analysis is keyed on.
+    ///
+    /// The file id alone, so a clip renamed or moved in Drive keeps the
+    /// alignment and pose work already done on it — the thing a path-keyed
+    /// sidecar could never manage.
+    public func identity(inProvider provider: String) -> ClipIdentity {
+        .remote(provider: provider, fileID: id)
+    }
+}
+
+/// A URL plus the headers that must accompany every request to it.
+///
+/// Headers rather than a signed URL because Google Drive has no
+/// pre-authenticated download link: measured 2026-08-13, a query-string
+/// `access_token` on `alt=media` is refused with a 403 HTML anti-abuse page
+/// while the same request with `Authorization: Bearer` returns 206 and bytes.
+/// That is workable only because `URLSession` fetches these bytes — `AVPlayer`
+/// never sees this URL.
+public struct DownloadSource: Sendable {
+    public let url: URL
+    public let headers: [String: String]
+
+    public init(url: URL, headers: [String: String]) {
+        self.url = url
+        self.headers = headers
+    }
+}
+
+public enum RemoteLibraryError: LocalizedError, Equatable {
+    case notSignedIn
+    case api(String)
+    case cancelled
+    /// Drive answers an unauthenticated media request with an HTML block page
+    /// rather than JSON. Its own case so a caller cannot mistake the body for
+    /// an API error object.
+    case unexpectedResponseBody(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notSignedIn:
+            return "Sign in to your club's Google account to browse the shared library."
+        case let .api(message), let .unexpectedResponseBody(message):
+            return message
+        case .cancelled:
+            return "The request was cancelled."
+        }
+    }
+}
