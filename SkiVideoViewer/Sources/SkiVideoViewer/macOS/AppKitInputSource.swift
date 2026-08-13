@@ -57,7 +57,7 @@ final class AppKitInputSource: PlaybackInputSource {
     /// the same fact as the model's `SlowMotionHold`, which is hold state: the
     /// model tears its hold down from `endSlowMotion()` whenever the library
     /// changes (`openDirectory`, `selectAthlete`, `changeVideo`,
-    /// `connectGoogleDrive`) while the key is still held, and this copy must
+    /// `openRemoteLibrary`) while the key is still held, and this copy must
     /// survive that so the eventual key-up is still consumed rather than
     /// leaking to the app.
     ///

@@ -1,6 +1,14 @@
 import SkiVideoCore
 import SwiftUI
 
+/// A placeholder. `RemoteLibraryProvider`, `RemoteLibraryIndex` and
+/// `ClipCache` can already open a cloud library end to end — see
+/// `ViewerModel.openRemoteLibrary` — but nothing in this app target can
+/// obtain the credentials `GoogleDriveProvider` needs to do it: sign-in is a
+/// later plan's job (`ASWebAuthenticationSession`, the loopback/custom-scheme
+/// split, the Shared Drive picker). Until then a cloud library is opened
+/// programmatically, by a caller that already has a token, not from this
+/// sheet.
 struct GoogleDriveSheet: View {
     @ObservedObject var model: ViewerModel
     @Binding var isPresented: Bool
@@ -9,47 +17,19 @@ struct GoogleDriveSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Open Shared Drive")
                 .font(.title2.bold())
-            Text("Sign in with a Google desktop OAuth client, then browse video files under a Shared Drive folder. The client secret stays in its selected location; the refresh token is stored in your macOS Keychain.")
+            Text("Google sign-in is not wired up yet. A cloud library can only be opened programmatically for now — there is no button here that will connect one.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("OAuth client-secret JSON")
-                    .font(.headline)
-                HStack {
-                    TextField("Choose client-secret JSON…", text: $model.clientSecretsPath)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Choose…") {
-                        Task { await model.chooseClientSecretsFile() }
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Shared Drive folder ID")
-                    .font(.headline)
-                TextField("Paste Shared Drive folder ID", text: $model.driveFolderID)
-                    .textFieldStyle(.roundedBorder)
-            }
-
             HStack {
                 Spacer()
-                Button("Cancel") {
+                Button("Close") {
                     isPresented = false
                 }
-                Button(model.isConnectingToDrive ? "Connecting…" : "Connect & Open") {
-                    model.connectGoogleDrive()
-                    isPresented = false
-                }
-                .disabled(
-                    model.isConnectingToDrive
-                        || model.clientSecretsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || model.driveFolderID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
-        .frame(width: 560)
+        .frame(width: 420)
     }
 }

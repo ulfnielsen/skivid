@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import UniformTypeIdentifiers
 
 /// Platform-agnostic playback state. Everything platform-specific reaches it
 /// through the seams in `Seams.swift`, so the same model backs the macOS app
@@ -15,10 +14,6 @@ public final class ViewerModel: ObservableObject {
     @Published public private(set) var athletes: [AthleteGroup] = []
     @Published public var selectedAthleteID: String?
     @Published public var athleteQuery = ""
-    @Published public var driveFolderID: String
-    @Published public var clientSecretsPath: String
-    @Published public private(set) var isConnectingToDrive = false
-    @Published public private(set) var isUsingGoogleDrive = false
     /// Internal: no view reads it, but the intent tests assert on it.
     @Published private(set) var videoIndex = 0
     @Published public private(set) var status = "Choose an organized video directory"
@@ -44,18 +39,32 @@ public final class ViewerModel: ObservableObject {
     ///
     /// Kept across clip and athlete changes — watching several runs of one
     /// drill at a fixed magnification is what the control is for — and reset in
-    /// `openDirectory`/`connectGoogleDrive`, where a pan into one library's
+    /// `openDirectory`/`openRemoteLibrary`, where a pan into one library's
     /// corner says nothing about another's.
     @Published public private(set) var zoom = VideoZoom()
 
     public let player = AVPlayer()
+
+    /// The cloud library, when one is open. Nil for a local folder.
+    private var remoteIndex: RemoteLibraryIndex?
+    private var remoteProvider: (any RemoteLibraryProvider)?
+    private var clipCache: ClipCache?
+
+    @Published public private(set) var isUsingRemoteLibrary = false
+    /// True while the current clip's bytes are being fetched. The view shows
+    /// progress instead of an empty player.
+    @Published public private(set) var isPreparingClip = false
+
+    /// Mirrors the cache for synchronous reads. `currentPlaybackURL` and
+    /// `comparisonLibrary` are computed properties a SwiftUI view reads
+    /// directly, so neither can await an actor.
+    private var materialisedByFileID: [String: URL] = [:]
 
     private var activeAthleteID: String?
     private var hasStarted = false
     private let hold = SlowMotionHold()
     private var lastTapDirection: ScrubDirection?
     private var lastTapTime = Date.distantPast
-    private var driveMediaByURL: [URL: DriveMedia] = [:]
     private var timeObserver: Any?
     private var durationObserver: NSKeyValueObservation?
     private var rateObserver: NSKeyValueObservation?
@@ -78,8 +87,6 @@ public final class ViewerModel: ObservableObject {
         self.folderPicker = folderPicker
         self.oauthPresenter = oauthPresenter
         self.now = now
-        driveFolderID = UserDefaults.standard.string(forKey: "driveFolderID") ?? ""
-        clientSecretsPath = UserDefaults.standard.string(forKey: "driveClientSecretsPath") ?? ""
         self.input.onIntent = { [weak self] intent in
             self?.handle(intent)
         }
@@ -172,9 +179,20 @@ public final class ViewerModel: ObservableObject {
         return athlete.videos[videoIndex]
     }
 
+    /// What playback opens. A local library's URLs are already files; a cloud
+    /// library's resolve to whatever the cache holds, and to nil until the
+    /// bytes land — there is nothing to play before then, and handing back a
+    /// path to a missing file would show an error instead of progress.
     public var currentPlaybackURL: URL? {
         guard let currentVideo else { return nil }
-        return driveMediaByURL[currentVideo]?.streamingURL ?? currentVideo
+        guard let remoteIndex, let file = remoteIndex.file(for: currentVideo) else {
+            return currentVideo
+        }
+        return cachedRemoteURL(for: file)
+    }
+
+    private func cachedRemoteURL(for file: RemoteFile) -> URL? {
+        materialisedByFileID[file.id]
     }
 
     public var comparisonLibrary: [ComparisonAthleteChoice] {
@@ -190,7 +208,8 @@ public final class ViewerModel: ObservableObject {
                     ComparisonVideoChoice(
                         id: "\(athlete.id)|\(video.absoluteString)",
                         name: video.lastPathComponent,
-                        playbackURL: driveMediaByURL[video]?.streamingURL ?? video
+                        playbackURL: remoteIndex?.file(for: video)
+                            .flatMap { materialisedByFileID[$0.id] } ?? video
                     )
                 }
             )
@@ -236,58 +255,65 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
-    public func chooseClientSecretsFile() async {
-        guard let url = await folderPicker.pickFile(
-            ofType: .json,
-            title: "Choose Google OAuth Client Secret"
-        ) else { return }
-        clientSecretsPath = url.path
-        UserDefaults.standard.set(clientSecretsPath, forKey: "driveClientSecretsPath")
+    /// Opens a cloud library: index it, group it, show it. No bytes are
+    /// fetched — a clip downloads when it is selected.
+    public func openRemoteLibrary(
+        provider: any RemoteLibraryProvider,
+        root: RemoteFolder,
+        cache: ClipCache
+    ) async throws {
+        status = "Listing \(root.name)…"
+        var files: [RemoteFile] = []
+        for try await file in provider.enumerate(root) {
+            files.append(file)
+        }
+        let index = RemoteLibraryIndex(
+            providerIdentifier: type(of: provider).identifier,
+            rootName: root.name,
+            files: files
+        )
+        guard !index.athletes.isEmpty else { throw ViewerError.noVideos }
+
+        endSlowMotion()
+        player.pause()
+        directory = nil
+        remoteIndex = index
+        remoteProvider = provider
+        clipCache = cache
+        materialisedByFileID = [:]
+        isUsingRemoteLibrary = true
+        athletes = index.athletes
+        activeAthleteID = nil
+        selectedAthleteID = index.athletes[0].id
+        athleteQuery = ""
+        zoom.reset()
+        selectAthlete(index.athletes[0].id)
+        status = "\(root.name) — \(files.count) clips"
     }
 
-    public func connectGoogleDrive() {
-        let folderID = driveFolderID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clientSecretsPath = clientSecretsPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !folderID.isEmpty, !clientSecretsPath.isEmpty else {
-            errorMessage = DriveError.missingConfiguration.localizedDescription
-            return
-        }
-        let clientSecretsURL = URL(fileURLWithPath: clientSecretsPath)
-        guard FileManager.default.isReadableFile(atPath: clientSecretsURL.path) else {
-            errorMessage = "The selected Google OAuth client-secret file cannot be read."
-            return
-        }
+    /// Brings the selected clip's bytes to disk, so playback and analysis have
+    /// a real file. A no-op for a local library.
+    public func prepareCurrentClip() async throws {
+        guard let currentVideo,
+              let remoteIndex, let remoteProvider, let clipCache,
+              let file = remoteIndex.file(for: currentVideo)
+        else { return }
 
-        UserDefaults.standard.set(folderID, forKey: "driveFolderID")
-        isConnectingToDrive = true
-        status = "Connecting to Google Drive…"
-        Task {
-            do {
-                let drive = try await GoogleDriveClient.connect(
-                    clientSecretsURL: clientSecretsURL,
-                    presenter: oauthPresenter
-                )
-                status = "Scanning Shared Drive…"
-                let library = try await drive.scanSharedDrive(folderID: folderID)
-                guard !library.athletes.isEmpty else { throw ViewerError.noVideos }
-                endSlowMotion()
-                player.pause()
-                directory = nil
-                athletes = library.athletes
-                driveMediaByURL = library.mediaByURL
-                isUsingGoogleDrive = true
-                activeAthleteID = nil
-                selectedAthleteID = library.athletes[0].id
-                athleteQuery = ""
-                zoom.reset()
-                selectAthlete(library.athletes[0].id)
-                status = "Google Drive connected"
-            } catch {
-                errorMessage = error.localizedDescription
-                status = "Could not connect to Google Drive"
-            }
-            isConnectingToDrive = false
+        isPreparingClip = true
+        defer { isPreparingClip = false }
+        status = "Fetching \(file.name)…"
+        let source = try await remoteProvider.downloadSource(for: file)
+        materialisedByFileID[file.id] = try await clipCache.materialize(file, source: source)
+        await clipCache.recordPlayback(
+            of: file.identity(inProvider: remoteIndex.providerIdentifier)
+        )
+        // The operator may have moved on to a different clip while this one
+        // was downloading; only push the freshly cached file into the player
+        // if it is still the one on screen.
+        if self.currentVideo == currentVideo {
+            loadCurrentVideo()
         }
+        status = file.name
     }
 
     public func openDirectory(_ url: URL) {
@@ -298,8 +324,11 @@ public final class ViewerModel: ObservableObject {
             player.pause()
             directory = url
             athletes = scannedAthletes
-            driveMediaByURL = [:]
-            isUsingGoogleDrive = false
+            remoteIndex = nil
+            remoteProvider = nil
+            clipCache = nil
+            materialisedByFileID = [:]
+            isUsingRemoteLibrary = false
             activeAthleteID = nil
             selectedAthleteID = scannedAthletes[0].id
             zoom.reset()
@@ -538,20 +567,27 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
+    /// Loads whatever `currentPlaybackURL` resolves to. For a local library
+    /// that is always the current clip's own file; for a cloud library it is
+    /// nil until `prepareCurrentClip` lands the bytes, and calling this again
+    /// once it has is what puts the downloaded clip on screen.
     private func loadCurrentVideo() {
-        guard let currentVideo else { return }
-        let item: AVPlayerItem
-        if let media = driveMediaByURL[currentVideo] {
-            item = AVPlayerItem(url: media.streamingURL)
-        } else {
-            item = AVPlayerItem(url: currentVideo)
-        }
-        player.replaceCurrentItem(with: item)
+        guard currentVideo != nil else { return }
         // Reset before observing: the previous clip's figures would otherwise
         // drive the scrubber until the new duration arrives, which for a remote
-        // Drive item can be a visible moment.
+        // Drive item can be a visible moment. Also correct for the "not yet
+        // on disk" branch below, which has no clip to report a duration for.
         currentTime = 0
         duration = 0
+        guard let playbackURL = currentPlaybackURL else {
+            // Cloud clip not yet on disk. Nothing to show until the fetch
+            // completes and calls back in here.
+            player.replaceCurrentItem(with: nil)
+            status = "Paused"
+            return
+        }
+        let item = AVPlayerItem(url: playbackURL)
+        player.replaceCurrentItem(with: item)
         observeDuration(of: item)
         player.pause()
         status = "Paused"

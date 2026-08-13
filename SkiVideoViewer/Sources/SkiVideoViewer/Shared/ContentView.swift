@@ -195,14 +195,7 @@ struct ContentView: View {
         }
         .navigationTitle("Athletes")
         .overlay {
-            if model.isConnectingToDrive {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text(model.status)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-            } else if model.athletes.isEmpty {
+            if model.athletes.isEmpty {
                 emptyState(
                     title: "No Folder Open",
                     systemImage: "folder",
@@ -237,7 +230,7 @@ struct ContentView: View {
                 )
             }
         }
-        .navigationTitle(model.directory?.lastPathComponent ?? (model.isUsingGoogleDrive ? "Google Drive" : "Ski Video Viewer"))
+        .navigationTitle(model.directory?.lastPathComponent ?? (model.isUsingRemoteLibrary ? "Remote Library" : "Ski Video Viewer"))
         // iPadOS renders a toolbar attached to a column, not one attached to
         // the split view, so the items hang off the detail column's navigation
         // bar here. macOS keeps its attachment in `body`; putting the macOS

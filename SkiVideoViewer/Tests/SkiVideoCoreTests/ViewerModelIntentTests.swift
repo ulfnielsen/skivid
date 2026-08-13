@@ -285,43 +285,6 @@ final class ViewerModelIntentTests: XCTestCase {
         XCTAssertTrue(model.athletes.isEmpty)
     }
 
-    func testChooseClientSecretsFileStoresWhatThePickerReturns() async throws {
-        let picker = FakeFolderPicker()
-        let secretsURL = URL(fileURLWithPath: "/tmp/does-not-need-to-exist-client_secret.json")
-        picker.fileToReturn = secretsURL
-        let model = ViewerModel(
-            input: FakeInputSource(),
-            folderPicker: picker,
-            oauthPresenter: FakeOAuthPresenter()
-        )
-
-        await model.chooseClientSecretsFile()
-
-        XCTAssertEqual(picker.pickFileCallCount, 1)
-        XCTAssertEqual(model.clientSecretsPath, secretsURL.path)
-        XCTAssertEqual(
-            picker.lastPickFileTitle,
-            "Choose Google OAuth Client Secret",
-            "regression guard: the panel title the user sees must survive routing through the FolderPicker seam"
-        )
-    }
-
-    func testChooseClientSecretsFileDoesNothingWhenCancelled() async throws {
-        let picker = FakeFolderPicker()
-        picker.fileToReturn = nil
-        let model = ViewerModel(
-            input: FakeInputSource(),
-            folderPicker: picker,
-            oauthPresenter: FakeOAuthPresenter()
-        )
-        let pathBefore = model.clientSecretsPath
-
-        await model.chooseClientSecretsFile()
-
-        XCTAssertEqual(picker.pickFileCallCount, 1)
-        XCTAssertEqual(model.clientSecretsPath, pathBefore)
-    }
-
     func testEventsSectionTheAthleteList() throws {
         let model = try makeEventModel([
             "2026-07-16_Neuss": ["Alice", "Bob"],

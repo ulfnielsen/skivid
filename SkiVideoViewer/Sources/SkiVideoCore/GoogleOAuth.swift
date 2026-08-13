@@ -9,9 +9,7 @@ import CryptoKit
 import Foundation
 import Security
 
-/// Public because the platform `OAuthPresenter` implementations throw it —
-/// `DriveMedia`, `DriveLibrary` and `GoogleDriveClient` stay internal, since
-/// only `ViewerModel` touches them and it now lives in this module too.
+/// Public because the platform `OAuthPresenter` implementations throw it.
 public enum DriveError: LocalizedError {
     case missingConfiguration
     case invalidClientSecrets
