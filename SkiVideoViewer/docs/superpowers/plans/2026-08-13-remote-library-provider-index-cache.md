@@ -572,18 +572,29 @@ final class RemoteLibraryIndexTests: XCTestCase {
         XCTAssertEqual(index.athletes.map(\.event), ["Neuss 2026"])
     }
 
-    /// Within an athlete, clips sort by folder path then name — the local
+    /// Within an athlete, clips sort by folder path *before* name — the local
     /// scanner's order, which the old flat URL could not produce.
-    func testClipsSortByFolderPathThenName() {
+    ///
+    /// The two clips group together (the rule reads the two folders nearest
+    /// the clip, so both are event "E", athlete "Ada") but sit in different
+    /// folders. `/Archive/E/Ada/z.mp4` sorts before `/E/Ada/a.mp4` on path
+    /// while sorting *after* it on name, so this test fails under any
+    /// filename-only ordering — which is exactly what the old synthesised URL
+    /// produced, and the defect this task exists to fix.
+    ///
+    /// Verified against Foundation: path order gives ["z.mp4", "a.mp4"],
+    /// filename order gives ["a.mp4", "z.mp4"].
+    func testClipsSortByFolderPathBeforeName() {
         let index = RemoteLibraryIndex(
             providerIdentifier: "gdrive",
             files: [
-                file("c", "b.mp4", ["E", "Ada"]),
                 file("a", "a.mp4", ["E", "Ada"]),
+                file("z", "z.mp4", ["Archive", "E", "Ada"]),
             ]
         )
+        XCTAssertEqual(index.athletes.count, 1, "both clips belong to one athlete")
         XCTAssertEqual(
-            index.athletes[0].videos.map(\.lastPathComponent), ["a.mp4", "b.mp4"]
+            index.athletes[0].videos.map(\.lastPathComponent), ["z.mp4", "a.mp4"]
         )
     }
 
@@ -720,12 +731,21 @@ public struct RemoteLibraryIndex: Equatable {
         components.host = file.id
         components.path = "/" + (file.path + [file.name]).joined(separator: "/")
         if let url = components.url { return url }
-        // Unreachable for Drive, whose ids are base64url and whose names are
-        // percent-encoded by URLComponents. A provider that broke that
-        // assumption would otherwise crash on a force-unwrap; this keeps the
-        // clip out of the library instead, where the id still makes it unique.
-        return URL(string: "\(providerIdentifier)://\(file.id)")
-            ?? URL(fileURLWithPath: "/dev/null")
+
+        // Drive ids are base64url and always form a host, but an id carrying a
+        // space, ":", "\", "[" or "]" makes URLComponents refuse. Digesting it
+        // gives a host that is always URL-safe and still unique per file, so
+        // the clip stays in the library instead of colliding with every other
+        // unbuildable one. Nothing parses this host back — `file(for:)` is a
+        // dictionary lookup — so a digest reads as badly and works as well.
+        components.host = StorageName.forIdentifier(file.id)
+        if let url = components.url { return url }
+
+        // Reaching here means the *scheme* is unusable, which is a provider
+        // bug rather than bad data: identifiers are compile-time constants.
+        // Still per-file unique, because the alternative is two clips sharing
+        // one URL and one of them vanishing from the sidebar.
+        return URL(fileURLWithPath: "/\(StorageName.forIdentifier(file.id))")
     }
 
     /// The file a library URL stands for, or nil when the URL is not this
