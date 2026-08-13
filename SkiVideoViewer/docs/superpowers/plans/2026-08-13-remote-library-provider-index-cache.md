@@ -416,10 +416,16 @@ From `Sources/SkiVideoCore/GoogleDriveSupport.swift`, cut these declarations **v
 - `private enum GoogleOAuth`
 - `private struct GoogleTokenResponse`
 - `private enum KeychainTokenStore`
+- `private struct GoogleAPIError` — **required**: `GoogleOAuth.tokenRequest` calls
+  `GoogleAPIError.describe`, and Task 7 deletes `GoogleDriveSupport.swift`
+  outright. Leaving it behind and merely widening its access compiles today and
+  breaks the moment that file goes.
 - `private extension Data { base64URLEncodedString }`
 - `private extension String { urlFormEncoded }`
 
-Change exactly one thing: `GoogleOAuthClient` and `GoogleOAuth` become **internal** (drop `private`) so Task 4's `GoogleDriveProvider` can call them from its own file. Everything else keeps its access level. `DriveError` stays `public`.
+Change exactly one thing: `GoogleOAuthClient` and `GoogleOAuth` become **internal** (drop `private`) so Task 4's `GoogleDriveProvider` can call them from its own file. Everything else keeps its access level — `GoogleAPIError` stays `private`, because after the move its only caller is in the same file. `DriveError` stays `public`.
+
+> `GoogleDriveClient` — which this task leaves behind and Task 7 deletes — also calls `GoogleAPIError.describe`. Give the doomed client its own private copy of the type for the two tasks it has left to live, rather than widening the moved one's access to serve code that is being deleted. Task 4's provider decodes the same JSON shape into `RemoteLibraryError` through its own `DriveAPIError`; three short Decodables briefly coexist, and two of them are gone by Task 7.
 
 Add this file-level doc comment at the top of the new file:
 
