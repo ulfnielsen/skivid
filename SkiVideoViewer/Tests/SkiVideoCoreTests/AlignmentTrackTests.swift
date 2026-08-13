@@ -118,4 +118,80 @@ final class AlignmentTrackTests: XCTestCase {
             track().isStale(leftStart: 18.560000001, rightStart: 4.4)
         )
     }
+
+    // MARK: - Identity-keyed pairs
+
+    private func withTemporaryKeyedStore(_ body: (URL) throws -> Void) rethrows {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let previous = ClipIdentity.keyedStoreRoot
+        ClipIdentity.keyedStoreRoot = root
+        defer {
+            ClipIdentity.keyedStoreRoot = previous
+            try? FileManager.default.removeItem(at: root)
+        }
+        try body(root)
+    }
+
+    // `withTemporaryKeyedStore` is `rethrows`, so a test whose closure calls
+    // nothing throwing must omit both `try` and `throws` — otherwise the
+    // compiler warns "no calls to throwing functions occur within 'try'".
+    func testRemotePairLivesInTheKeyedStoreNamedFromBothSides() {
+        withTemporaryKeyedStore { root in
+            let url = AlignmentTrackStore.sidecarURL(
+                left: .remote(provider: "gdrive", fileID: "L"),
+                right: .remote(provider: "gdrive", fileID: "R")
+            )
+            XCTAssertEqual(url.deletingLastPathComponent().path, root.path)
+            XCTAssertEqual(url.lastPathComponent, "gdrive-L--gdrive-R.skialignment.json")
+        }
+    }
+
+    /// A coach can compare a cloud clip against one on disk. That pair has no
+    /// business beside the local clip — the track would be orphaned the moment
+    /// the folder moved, and half of it describes a file that folder never
+    /// held.
+    func testMixedPairGoesToTheKeyedStoreRatherThanBesideTheLocalClip() {
+        withTemporaryKeyedStore { root in
+            let url = AlignmentTrackStore.sidecarURL(
+                left: ClipIdentity(directory.appendingPathComponent("C0094.MP4")),
+                right: .remote(provider: "gdrive", fileID: "R")
+            )
+            XCTAssertEqual(url.deletingLastPathComponent().path, root.path)
+        }
+    }
+
+    func testRemotePairRoundTrips() throws {
+        try withTemporaryKeyedStore { _ in
+            let left = ClipIdentity.remote(provider: "gdrive", fileID: "L")
+            let right = ClipIdentity.remote(provider: "gdrive", fileID: "R")
+            try AlignmentTrackStore.save(track(), left: left, right: right)
+            XCTAssertEqual(
+                AlignmentTrackStore.load(left: left, right: right)?.samples.count, 2
+            )
+        }
+    }
+
+    /// Left and right are not interchangeable — the track describes a shift
+    /// *from* one *to* the other — so the reversed pair must be a different
+    /// sidecar, exactly as it is for two local clips.
+    func testReversedRemotePairIsADifferentTrack() throws {
+        try withTemporaryKeyedStore { _ in
+            let left = ClipIdentity.remote(provider: "gdrive", fileID: "L")
+            let right = ClipIdentity.remote(provider: "gdrive", fileID: "R")
+            try AlignmentTrackStore.save(track(), left: left, right: right)
+            XCTAssertNil(AlignmentTrackStore.load(left: right, right: left))
+        }
+    }
+
+    func testTwoLocalIdentitiesResolveToTheSameSidecarAsTheURLAPI() {
+        let left = directory.appendingPathComponent("C0094.MP4")
+        let right = directory.appendingPathComponent("C0092.MP4")
+        XCTAssertEqual(
+            AlignmentTrackStore.sidecarURL(
+                left: ClipIdentity(left), right: ClipIdentity(right)
+            ),
+            AlignmentTrackStore.sidecarURL(left: left, right: right)
+        )
+    }
 }
