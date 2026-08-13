@@ -10,65 +10,116 @@ import Foundation
 import Security
 
 /// Public because the platform `OAuthPresenter` implementations throw it.
-public enum DriveError: LocalizedError {
-    case missingConfiguration
-    case invalidClientSecrets
+public enum DriveError: LocalizedError, Equatable {
     case oauthCallback(String)
     case tokenExchange(String)
     case api(String)
     case secureRandomnessUnavailable
+    /// The account is outside the club's Workspace. Google refuses these
+    /// outright for an Internal app — there is no request-access prompt — so
+    /// the message has to say which account to use instead.
+    case notInOrganisation
+    /// A Workspace administrator has not allowed this app under
+    /// Admin console → API controls. Nothing the coach can do.
+    case blockedByAdministrator
 
     public var errorDescription: String? {
         switch self {
-        case .missingConfiguration:
-            return "Choose an OAuth client-secret JSON file and enter a Shared Drive folder ID."
-        case .invalidClientSecrets:
-            return "That file is not a valid Google desktop OAuth client-secret JSON file."
         case let .oauthCallback(message), let .tokenExchange(message), let .api(message):
             return message
         case .secureRandomnessUnavailable:
             return "Could not generate a secure random value for Google sign-in. Please try again."
+        case .notInOrganisation:
+            return "This Google account is not in the club's Workspace. Sign in with your club account."
+        case .blockedByAdministrator:
+            return "A Workspace administrator has to allow this app under Admin console → API controls before it can open the club's Drive."
         }
     }
 }
 
-struct GoogleOAuthClient: Decodable {
-    struct Details: Decodable {
-        let clientID: String
-        let clientSecret: String
-        let authURI: String
-        let tokenURI: String
+/// How this platform receives the authorization redirect.
+///
+/// Not a detail: loopback has been blocked for iOS OAuth clients since
+/// 21 October 2022, and the out-of-band paste-the-code flow is dead for every
+/// client type since 31 January 2023. macOS uses a Desktop client and a
+/// loopback listener; iPad uses an iOS client and a reverse-DNS scheme.
+public enum GoogleRedirectKind: Sendable {
+    case loopback
+    case customScheme(String)
+}
 
-        enum CodingKeys: String, CodingKey {
-            case clientID = "client_id"
-            case clientSecret = "client_secret"
-            case authURI = "auth_uri"
-            case tokenURI = "token_uri"
-        }
-    }
+public struct GoogleOAuthConfiguration: Sendable {
+    public let clientID: String
+    /// Absent for an iOS client, which Google issues without one. The token
+    /// request must then omit the field rather than send it empty.
+    public let clientSecret: String?
+    public let redirectKind: GoogleRedirectKind
 
-    let installed: Details?
-
-    static func load(from url: URL) throws -> Details {
-        let decoded = try JSONDecoder().decode(GoogleOAuthClient.self, from: Data(contentsOf: url))
-        guard let installed = decoded.installed else { throw DriveError.invalidClientSecrets }
-        return installed
+    public init(clientID: String, clientSecret: String?, redirectKind: GoogleRedirectKind) {
+        self.clientID = clientID
+        self.clientSecret = clientSecret
+        self.redirectKind = redirectKind
     }
 }
 
 enum GoogleOAuth {
     private static let scope = "https://www.googleapis.com/auth/drive.readonly"
+    // Fixed Google endpoints. The client-secret JSON this flow used to read
+    // carried the same two URLs for every installed-app client, so there is
+    // nothing left to configure once the file is gone.
+    private static let authorizationEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
+    private static let tokenEndpoint = "https://oauth2.googleapis.com/token"
+
+    /// Stands in for the loopback port in `redirectURI(for:)`. The redirect
+    /// URI has to be built before the listener that owns the real port
+    /// exists — it is a query parameter of the authorization URL, and the
+    /// listener is what assigns the port in the first place — so the
+    /// presenter substitutes this token for the real port once it has one.
+    static let loopbackPortPlaceholder = "PORT"
+
+    /// The redirect URI Google should send its authorization response to.
+    ///
+    /// `.customScheme` is fully determined by configuration. `.loopback`
+    /// cannot be: the actual port is only known once a listener is running,
+    /// so this carries `loopbackPortPlaceholder` in its place.
+    static func redirectURI(for configuration: GoogleOAuthConfiguration) -> String {
+        switch configuration.redirectKind {
+        case .loopback:
+            return "http://127.0.0.1:\(loopbackPortPlaceholder)"
+        case let .customScheme(scheme):
+            return "\(scheme):/oauth2redirect"
+        }
+    }
+
+    /// Maps the callback's `error` query parameter to the specific case it
+    /// names, so a coach sees why sign-in failed rather than a generic
+    /// message. Returns nil when the callback carries no error.
+    static func error(fromCallback url: URL) -> DriveError? {
+        guard let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "error" })?.value
+        else {
+            return nil
+        }
+        switch code {
+        case "org_internal":
+            return .notInOrganisation
+        case "admin_policy_enforced":
+            return .blockedByAdministrator
+        default:
+            return nil
+        }
+    }
 
     static func authorize(
-        client: GoogleOAuthClient.Details,
+        configuration: GoogleOAuthConfiguration,
         presenter: OAuthPresenter
     ) async throws -> String {
-        if let refreshToken = KeychainTokenStore.load(account: client.clientID) {
+        if let refreshToken = KeychainTokenStore.load(account: configuration.clientID) {
             do {
-                return try await refreshAccessToken(refreshToken: refreshToken, client: client)
+                return try await refreshAccessToken(refreshToken: refreshToken, configuration: configuration)
             } catch {
                 // A revoked or expired refresh token should not permanently prevent a new sign-in.
-                KeychainTokenStore.remove(account: client.clientID)
+                KeychainTokenStore.remove(account: configuration.clientID)
             }
         }
 
@@ -76,9 +127,9 @@ enum GoogleOAuth {
         let state = try randomURLSafeString(byteCount: 24)
         let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
-        var components = URLComponents(string: client.authURI)!
+        var components = URLComponents(string: authorizationEndpoint)!
         components.queryItems = [
-            URLQueryItem(name: "client_id", value: client.clientID),
+            URLQueryItem(name: "client_id", value: configuration.clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "scope", value: scope),
@@ -88,7 +139,9 @@ enum GoogleOAuth {
             URLQueryItem(name: "code_challenge", value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
         ]
-        guard let authorizationURL = components.url else { throw DriveError.invalidClientSecrets }
+        guard let authorizationURL = components.url else {
+            throw DriveError.oauthCallback("Could not build a Google sign-in authorization URL.")
+        }
 
         let callback = try await presenter.authorize(
             authorizationURL: authorizationURL,
@@ -99,15 +152,18 @@ enum GoogleOAuth {
         else {
             throw DriveError.oauthCallback("Google sign-in response could not be verified.")
         }
-        if let error = callbackComponents.queryItems?.first(where: { $0.name == "error" })?.value {
-            throw DriveError.oauthCallback("Google sign-in failed: \(error)")
+        if let mapped = error(fromCallback: callback) {
+            throw mapped
+        }
+        if let errorCode = callbackComponents.queryItems?.first(where: { $0.name == "error" })?.value {
+            throw DriveError.oauthCallback("Google sign-in failed: \(errorCode)")
         }
         guard let code = callbackComponents.queryItems?.first(where: { $0.name == "code" })?.value else {
             throw DriveError.oauthCallback("Google did not return an authorization code.")
         }
 
         let token = try await tokenRequest(
-            client: client,
+            configuration: configuration,
             values: [
                 "code": code,
                 "redirect_uri": redirectURI,
@@ -118,16 +174,26 @@ enum GoogleOAuth {
         guard let refreshToken = token.refreshToken else {
             throw DriveError.tokenExchange("Google did not return a refresh token. Try connecting again.")
         }
-        try KeychainTokenStore.save(refreshToken, account: client.clientID)
+        try KeychainTokenStore.save(refreshToken, account: configuration.clientID)
         return token.accessToken
+    }
+
+    /// A fresh access token using whatever refresh token is already in the
+    /// Keychain, without the interactive dance. Throws if there is none —
+    /// callers that can present UI should fall back to `authorize`.
+    static func accessToken(configuration: GoogleOAuthConfiguration) async throws -> String {
+        guard let refreshToken = KeychainTokenStore.load(account: configuration.clientID) else {
+            throw DriveError.tokenExchange("No stored Google sign-in to refresh. Sign in again.")
+        }
+        return try await refreshAccessToken(refreshToken: refreshToken, configuration: configuration)
     }
 
     private static func refreshAccessToken(
         refreshToken: String,
-        client: GoogleOAuthClient.Details
+        configuration: GoogleOAuthConfiguration
     ) async throws -> String {
         try await tokenRequest(
-            client: client,
+            configuration: configuration,
             values: [
                 "refresh_token": refreshToken,
                 "grant_type": "refresh_token",
@@ -135,21 +201,31 @@ enum GoogleOAuth {
         ).accessToken
     }
 
-    private static func tokenRequest(
-        client: GoogleOAuthClient.Details,
-        values: [String: String]
-    ) async throws -> GoogleTokenResponse {
+    /// The token endpoint's form-urlencoded body. Extracted from the request
+    /// itself so it is testable without a network call: an iOS client has no
+    /// secret at all, and Google rejects an empty `client_secret` rather than
+    /// treating it as absent, so this has to omit the key entirely rather
+    /// than interpolate an optional.
+    static func tokenRequestBody(values: [String: String], configuration: GoogleOAuthConfiguration) -> String {
         var formValues = values
-        formValues["client_id"] = client.clientID
-        formValues["client_secret"] = client.clientSecret
-        var request = URLRequest(url: URL(string: client.tokenURI)!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = formValues
+        formValues["client_id"] = configuration.clientID
+        if let clientSecret = configuration.clientSecret {
+            formValues["client_secret"] = clientSecret
+        }
+        return formValues
             .map { "\($0.key.urlFormEncoded)=\($0.value.urlFormEncoded)" }
             .sorted()
             .joined(separator: "&")
-            .data(using: .utf8)
+    }
+
+    private static func tokenRequest(
+        configuration: GoogleOAuthConfiguration,
+        values: [String: String]
+    ) async throws -> GoogleTokenResponse {
+        var request = URLRequest(url: URL(string: tokenEndpoint)!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = tokenRequestBody(values: values, configuration: configuration).data(using: .utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode)
@@ -264,7 +340,21 @@ private extension Data {
 }
 
 private extension String {
+    /// `.alphanumerics` alone under-allows: it excludes `-._~`, the RFC 3986
+    /// unreserved punctuation, so every snake_case key (`client_id`,
+    /// `grant_type`, …) and any dotted value came out with `_` and `.`
+    /// percent-encoded. Google's parser would still have decoded that
+    /// correctly, but it left the wire body needlessly unreadable — and
+    /// `GoogleOAuthTests` now asserts the body directly, which caught it.
     var urlFormEncoded: String {
-        addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? self
+        addingPercentEncoding(withAllowedCharacters: .urlFormValueAllowed) ?? self
     }
+}
+
+private extension CharacterSet {
+    static let urlFormValueAllowed: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~")
+        return set
+    }()
 }
