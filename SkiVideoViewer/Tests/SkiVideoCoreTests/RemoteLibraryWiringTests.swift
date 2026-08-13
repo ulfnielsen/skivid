@@ -99,18 +99,40 @@ final class RemoteLibraryWiringTests: XCTestCase {
         )
     }
 
-    /// The comparison window gets the same treatment — a pane must never be
-    /// handed a remote URL.
-    func testTheComparisonPickerOffersOnlyLocalURLs() async throws {
+    /// A prepared clip resolves to a file for the comparison window; an
+    /// unprepared one does not, and today the picker hands out the library URL
+    /// for it.
+    ///
+    /// That second half is pinned deliberately rather than claimed otherwise.
+    /// `ComparisonVideoChoice.playbackURL` is non-optional, so there is nothing
+    /// honest to put there until plan 3 fetches a clip when a pane selects it —
+    /// and a test asserting "only local URLs" would be false the moment a
+    /// library has more than one clip. When plan 3 lands, the second assertion
+    /// is the one that changes.
+    func testTheComparisonPickerOffersAFileOnlyForAPreparedClip() async throws {
         let (model, provider, cache) = self.model(files: [
             file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            file("b", "run2.mp4", ["Neuss 2026", "Ada"]),
         ])
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
         )
         try await model.prepareCurrentClip()
 
-        let choice = try XCTUnwrap(model.comparisonLibrary.first?.videos.first)
-        XCTAssertTrue(choice.playbackURL.isFileURL, "got \(choice.playbackURL)")
+        let choices = try XCTUnwrap(model.comparisonLibrary.first?.videos)
+        XCTAssertEqual(choices.count, 2)
+        XCTAssertTrue(
+            choices[0].playbackURL.isFileURL,
+            "the prepared clip must be a file: got \(choices[0].playbackURL)"
+        )
+        XCTAssertFalse(
+            choices[1].playbackURL.isFileURL,
+            """
+            KNOWN GAP, pinned on purpose: an unprepared clip is still offered its \
+            library URL, which no player can open. Plan 3 must fetch a clip when a \
+            pane selects it. If this assertion starts failing, that work has landed \
+            and this test should assert both are files.
+            """
+        )
     }
 }

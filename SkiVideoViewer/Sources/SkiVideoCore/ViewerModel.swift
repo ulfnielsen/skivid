@@ -51,9 +51,15 @@ public final class ViewerModel: ObservableObject {
     private var clipCache: ClipCache?
 
     @Published public private(set) var isUsingRemoteLibrary = false
-    /// True while the current clip's bytes are being fetched. The view shows
+    /// True while any clip's bytes are being fetched. The view shows
     /// progress instead of an empty player.
     @Published public private(set) var isPreparingClip = false
+    /// How many fetches are in flight. A count rather than a bare flag:
+    /// with two overlapping fetches — a coach reselecting while the first is
+    /// still downloading, which is exactly what plan 3's fetch-on-select
+    /// produces — whichever finished first would clear the flag while the
+    /// other was still running, showing neither a spinner nor a clip.
+    private var preparingCount = 0
 
     /// Mirrors the cache for synchronous reads. `currentPlaybackURL` and
     /// `comparisonLibrary` are computed properties a SwiftUI view reads
@@ -192,7 +198,15 @@ public final class ViewerModel: ObservableObject {
     }
 
     private func cachedRemoteURL(for file: RemoteFile) -> URL? {
-        materialisedByFileID[file.id]
+        guard let url = materialisedByFileID[file.id] else { return nil }
+        // The mirror can outlive the bytes. Eviction deletes a clip's file
+        // whenever a later download pushes the cache over budget, and iOS may
+        // purge Caches outright — `ClipCache.cachedURL` guards exactly this and
+        // says so. Without the same guard here a view gets a `file://` URL that
+        // looks valid and points at nothing, which shows an error where the
+        // design promises progress.
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 
     public var comparisonLibrary: [ComparisonAthleteChoice] {
@@ -303,8 +317,12 @@ public final class ViewerModel: ObservableObject {
         // coach moved on while this clip was downloading.
         let videoAtRequest = currentVideo
 
+        preparingCount += 1
         isPreparingClip = true
-        defer { isPreparingClip = false }
+        defer {
+            preparingCount -= 1
+            isPreparingClip = preparingCount > 0
+        }
         status = "Fetching \(file.name)…"
         let source = try await remoteProvider.downloadSource(for: file)
         materialisedByFileID[file.id] = try await clipCache.materialize(file, source: source)
