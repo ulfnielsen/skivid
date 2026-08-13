@@ -161,6 +161,37 @@ final class AlignmentTrackTests: XCTestCase {
         }
     }
 
+    /// Two local clips whose paths differ only by characters that a lossy
+    /// escaping would fold together must not name the same sidecar. Paired
+    /// against the same remote clip they both land in the keyed store, and a
+    /// collision there means one coach's alignment silently overwrites
+    /// another's — no error, no warning, just the wrong track.
+    func testLocalPathsThatFoldAlikeDoNotShareAKeyedSidecar() {
+        withTemporaryKeyedStore { _ in
+            let remote = ClipIdentity.remote(provider: "gdrive", fileID: "R")
+            let spaced = ClipIdentity(URL(fileURLWithPath: "/Ski Team 2026/run.mp4"))
+            let scored = ClipIdentity(URL(fileURLWithPath: "/Ski_Team_2026/run.mp4"))
+            XCTAssertNotEqual(
+                AlignmentTrackStore.sidecarURL(left: spaced, right: remote),
+                AlignmentTrackStore.sidecarURL(left: scored, right: remote)
+            )
+        }
+    }
+
+    /// A path deep enough that escaping it whole would breach the 255-byte
+    /// limit on a filename component must still produce a usable name.
+    func testADeepLocalPathStillProducesAUsableFilename() {
+        withTemporaryKeyedStore { _ in
+            let deep = ClipIdentity(URL(fileURLWithPath:
+                "/" + Array(repeating: "averylongfoldername", count: 40).joined(separator: "/")
+                    + "/run.mp4"))
+            let url = AlignmentTrackStore.sidecarURL(
+                left: deep, right: .remote(provider: "gdrive", fileID: "R")
+            )
+            XCTAssertLessThan(url.lastPathComponent.utf8.count, 255)
+        }
+    }
+
     func testRemotePairRoundTrips() throws {
         try withTemporaryKeyedStore { _ in
             let left = ClipIdentity.remote(provider: "gdrive", fileID: "L")

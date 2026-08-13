@@ -18,41 +18,35 @@ public enum AlignmentTrackStore {
     /// folder never held. Such pairs go to the keyed store, named from both
     /// identities so the two spellings cannot collide.
     public static func sidecarURL(left: ClipIdentity, right: ClipIdentity) -> URL {
-        if case let .local(leftClip) = left, case let .local(rightClip) = right {
-            let leftStem = leftClip.deletingPathExtension().lastPathComponent
-            let rightStem = rightClip.deletingPathExtension().lastPathComponent
-            return leftClip.deletingLastPathComponent()
+        if let pair = localPair(left, right) {
+            let leftStem = pair.left.deletingPathExtension().lastPathComponent
+            let rightStem = pair.right.deletingPathExtension().lastPathComponent
+            return pair.left.deletingLastPathComponent()
                 .appendingPathComponent("\(leftStem)--\(rightStem)")
                 .appendingPathExtension(fileExtension)
         }
         return ClipIdentity.keyedStoreRoot
-            .appendingPathComponent("\(pairKey(left))--\(pairKey(right))")
+            .appendingPathComponent("\(left.pairKey)--\(right.pairKey)")
             .appendingPathExtension(fileExtension)
     }
 
-    /// Whether this pair belongs in the keyed store rather than beside the
-    /// left clip. The rule lives here alone — `sidecarURL` and `save` both ask
-    /// it, so neither can drift from the other.
-    private static func isKeyed(left: ClipIdentity, right: ClipIdentity) -> Bool {
-        if case .local = left, case .local = right { return false }
-        return true
+    /// The two clips when *both* are local — the only case that files beside
+    /// the footage. Nil means the pair belongs in the keyed store.
+    ///
+    /// One function rather than a predicate plus a separate pattern match:
+    /// `sidecarURL` needs the URLs and `save` needs only the decision, and
+    /// deriving them separately is how the two drift apart.
+    private static func localPair(
+        _ left: ClipIdentity, _ right: ClipIdentity
+    ) -> (left: URL, right: URL)? {
+        guard case let .local(leftClip) = left,
+              case let .local(rightClip) = right
+        else { return nil }
+        return (leftClip, rightClip)
     }
 
     public static func sidecarURL(left: URL, right: URL) -> URL {
         sidecarURL(left: ClipIdentity(left), right: ClipIdentity(right))
-    }
-
-    /// A local half of a mixed pair still needs a name in the keyed store, and
-    /// its stem alone is not unique across a library. The full path, escaped
-    /// by the same rule `ClipIdentity` uses for ids, is.
-    private static func pairKey(_ identity: ClipIdentity) -> String {
-        if let key = identity.storeKey { return key }
-        guard case let .local(clip) = identity else { return "unkeyed" }
-        return "local-" + String(clip.path.map { character in
-            character.isLetter || character.isNumber || character == "-"
-                ? character
-                : "_"
-        })
     }
 
     /// The stored track, or nil when there is none or it cannot be read.
@@ -88,8 +82,9 @@ public enum AlignmentTrackStore {
     ) throws {
         let url = sidecarURL(left: left, right: right)
         // Only the keyed store can be missing. A footage folder exists by
-        // definition — the clip is in it.
-        if isKeyed(left: left, right: right) {
+        // definition — the clip is in it. Asks `localPair`, the same function
+        // `sidecarURL` decided with, so the two cannot disagree.
+        if localPair(left, right) == nil {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )

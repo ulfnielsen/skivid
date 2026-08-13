@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// What a clip *is*, independent of where its bytes currently sit.
@@ -26,8 +27,31 @@ public enum ClipIdentity: Hashable, Sendable {
     /// rather than each of them re-matching on the case.
     public var storeKey: String? {
         switch self {
-        case .local:
-            return nil
+        case .local: return nil
+        case .remote: return pairKey
+        }
+    }
+
+    /// A filesystem-safe name for this identity that is safe to *combine* with
+    /// another into one filename.
+    ///
+    /// Defined for local identities too, unlike `storeKey`, because a pair can
+    /// straddle the two: comparing a cloud clip against one on disk files the
+    /// track under both halves.
+    ///
+    /// The local half is a digest of the path, not an escaped copy of it.
+    /// Escaping is lossy — every character outside `[A-Za-z0-9-]` becomes `_`,
+    /// so `/Ski Team 2026/run.mp4` and `/Ski_Team_2026/run.mp4` would name the
+    /// same file and one alignment track would silently overwrite the other's.
+    /// A digest also bounds the length, which an escaped absolute path does
+    /// not: a deep path can exceed a filesystem's 255-byte name limit.
+    public var pairKey: String {
+        switch self {
+        case let .local(clip):
+            let digest = SHA256.hash(data: Data(clip.path.utf8))
+            return "local-" + digest.prefix(8)
+                .map { String(format: "%02x", $0) }
+                .joined()
         case let .remote(provider, fileID):
             return "\(Self.escape(provider))-\(Self.escape(fileID))"
         }
