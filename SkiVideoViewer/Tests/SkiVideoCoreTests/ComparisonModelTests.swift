@@ -1790,6 +1790,112 @@ final class ComparisonBoundsTests: XCTestCase {
         XCTAssertNotEqual(model.rightPlayer.rate, 1)
     }
 
+    // MARK: - Playing from the end of a clip
+
+    /// An unsynced side rewinds to its own zero, and only that side moves.
+    func testPlayingAnUnsyncedClipAtItsEndRewindsThatSideAlone() throws {
+        let model = try makeRealMediaModel(leftSeconds: 2, rightSeconds: 6)
+        model.seek(.left, to: 99)
+        settle(model)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 2, accuracy: 0.05,
+                       "precondition: the left clip must be parked at its end")
+
+        model.toggleIndividual(.left)
+        XCTAssertGreaterThan(model.leftPlayer.rate, 0,
+                             "play at the end must start playback rather than do nothing")
+        waitUntil("the left playhead must have been rewound") {
+            model.leftPlayer.currentTime().seconds < 0.5
+        }
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 0, accuracy: 0.05,
+                       "the other side must not have been moved")
+        XCTAssertEqual(model.rightPlayer.rate, 0, "nor started")
+    }
+
+    /// The tortoise button on one unsynced side, same dead end.
+    func testSlowMotionOnAnUnsyncedClipAtItsEndRewindsIt() throws {
+        let model = try makeRealMediaModel(leftSeconds: 2, rightSeconds: 6)
+        model.seek(.right, to: 99)
+        settle(model)
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 6, accuracy: 0.05,
+                       "precondition: the right clip must be parked at its end")
+
+        model.playIndividual(.right, rate: 0.25)
+        XCTAssertEqual(model.rightPlayer.rate, 0.25, accuracy: 0.01,
+                       "quarter speed at the end must start playback rather than do nothing")
+        waitUntil("the right playhead must have been rewound") {
+            model.rightPlayer.currentTime().seconds < 0.5
+        }
+    }
+
+    /// **The synced case, and the reason it is not "seek both to zero".**
+    ///
+    /// The offset between the two sync points *is* the alignment the operator
+    /// established — it is the whole product of this screen. Rewinding both
+    /// clips to their own zeros would discard it silently, leaving `isSynced`
+    /// true over a pair that no longer lines up. `returnToSyncPoints()` is the
+    /// existing single place that comes back to the alignment, normalisation
+    /// included, so this uses it.
+    ///
+    /// The 2s offset assertion is what separates the two behaviours: seeking
+    /// both to zero flattens it to 0.
+    func testPlayingASyncedPairAtTheEndReturnsToTheSyncPointsRatherThanZero() throws {
+        let model = try makeRealMediaModel(leftSeconds: 4, rightSeconds: 6)
+        waitUntilReadyToPlay(model)
+        model.applySync(left: 1, right: 3)
+        settle(model)
+        XCTAssertTrue(model.isSynced, "precondition: the pair must be locked")
+
+        // Run the locked pair off the end without waiting for real playback.
+        // `seekSynced` moves both and clamps each at its own duration, which is
+        // exactly where playing to the end leaves them.
+        model.seekSynced(by: 10)
+        settle(model)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 4, accuracy: 0.05,
+                       "precondition: the left clip must be at its end")
+        XCTAssertEqual(model.rightPlayer.currentTime().seconds, 6, accuracy: 0.05,
+                       "precondition: the right clip must be at its end")
+
+        model.applyTransport(.playPause)
+        waitUntil("the synced pair must start playing rather than sit dead at the end") {
+            model.leftPlayer.rate > 0 && model.rightPlayer.rate > 0
+        }
+        model.pauseBoth()
+        settle(model)
+
+        let left = model.leftPlayer.currentTime().seconds
+        let right = model.rightPlayer.currentTime().seconds
+        XCTAssertEqual(right - left, 2, accuracy: 0.25,
+                       "the 2s alignment offset must survive the rewind — seeking both clips to "
+                           + "their own zeros would flatten it to 0")
+        XCTAssertLessThan(left, 2.5, "the pair must have come back from the end")
+        XCTAssertGreaterThan(left, 0.5,
+                             "returning to the sync points is not returning to zero")
+    }
+
+    /// The guard on the other side: a locked pair paused midway must carry on
+    /// from where it is, not snap back to the sync points every time the
+    /// operator presses play.
+    func testPlayingASyncedPairMidClipDoesNotReturnToTheSyncPoints() throws {
+        let model = try makeRealMediaModel(leftSeconds: 6, rightSeconds: 8)
+        waitUntilReadyToPlay(model)
+        model.applySync(left: 1, right: 3)
+        settle(model)
+        model.seekSynced(by: 2)
+        settle(model)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 3, accuracy: 0.05,
+                       "precondition: parked 2s past the left sync point")
+
+        model.applyTransport(.playPause)
+        waitUntil("the pair must start playing") {
+            model.leftPlayer.rate > 0 && model.rightPlayer.rate > 0
+        }
+        model.pauseBoth()
+        settle(model)
+        XCTAssertGreaterThan(model.leftPlayer.currentTime().seconds, 2.5,
+                             "playing from mid-clip must continue from there, not jump back to "
+                                 + "the 1s sync point")
+    }
+
     // MARK: - Fixtures
 
     /// Two loaded clips whose durations the model has actually observed. The

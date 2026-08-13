@@ -355,6 +355,7 @@ public final class ViewerModel: ObservableObject {
         guard currentVideo != nil else { return }
         endSlowMotion()
         if player.rate == 0 {
+            rewindIfAtEnd()
             player.playImmediately(atRate: 1)
             status = "Playing"
         } else {
@@ -386,9 +387,34 @@ public final class ViewerModel: ObservableObject {
             togglePlayback()
         case .slow:
             guard currentVideo != nil else { return }
+            // The same dead end as `togglePlayback`, by a different door: this
+            // branch has no toggle in front of it, so it never even asks
+            // whether the player is stopped — it just calls `playImmediately`,
+            // which at the end of a clip does nothing.
+            rewindIfAtEnd()
             player.playImmediately(atRate: 0.25)
             status = "Quarter speed"
         }
+    }
+
+    /// Back to the first frame when play is asked for at the end of the clip.
+    ///
+    /// Called from both places that start the viewer from a stopped state, and
+    /// deliberately not from `seek`/`scrub`: this is "play means play", not a
+    /// bound. See `AVPlayer.isAtEndOfClip` for the measurements behind the
+    /// tolerance, and for why no completion handler is needed here — the
+    /// `playImmediately` that follows in the same turn starts correctly against
+    /// an un-awaited seek.
+    ///
+    /// `currentTime` is written straight away rather than left to the periodic
+    /// observer, which runs at 0.1s and would otherwise leave the scrubber thumb
+    /// sitting at the end for a visible moment after the picture restarted.
+    /// `scrub(to:)` writes it for the same reason.
+    private func rewindIfAtEnd() {
+        guard player.isAtEndOfClip else { return }
+        player.currentItem?.cancelPendingSeeks()
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+        currentTime = 0
     }
 
     /// Absolute seek, for the scrubber. `cancelPendingSeeks` first so a drag

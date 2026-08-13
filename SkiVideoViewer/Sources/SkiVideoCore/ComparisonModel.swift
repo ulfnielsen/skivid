@@ -543,6 +543,7 @@ public final class ComparisonModel: ObservableObject {
         clearSync(message: "Alignment changed. Set sync points again when ready.")
         let player = player(for: side)
         if player.rate == 0 {
+            rewindIfAtEnd(player)
             player.playImmediately(atRate: 1)
         } else {
             player.pause()
@@ -556,6 +557,7 @@ public final class ComparisonModel: ObservableObject {
             return
         }
         let player = player(for: side)
+        rewindIfAtEnd(player)
         player.playImmediately(atRate: rate)
         status = "Playing \(side == .left ? "left" : "right") at \(String(format: "%.2g", rate))×"
     }
@@ -805,14 +807,44 @@ public final class ComparisonModel: ObservableObject {
             status = "Set the sync points first."
             return
         }
+        // **"Rewind" for a locked pair means the sync points, not zero.** The
+        // offset between them *is* the alignment the operator established, and
+        // seeking both clips to their own zeros would discard it while leaving
+        // `isSynced` true over a pair that no longer lines up — the same silent
+        // misalignment `normalizeSyncPoints` exists to prevent, arriving by a
+        // different route. `returnToSyncPoints()` is the one place that comes
+        // back to the alignment, `normalizeSyncPoints()` included, so it is
+        // reused rather than restated.
+        //
+        // *Either* side being at its end is enough. The two clips are rarely
+        // the same length, so the pair routinely runs out one side first; that
+        // side is then stuck while the other still has room, and starting from
+        // there would play them apart.
+        let rewound = leftPlayer.isAtEndOfClip || rightPlayer.isAtEndOfClip
+        if rewound { returnToSyncPoints() }
         leftPlayer.pause()
         rightPlayer.pause()
         playbackGeneration += 1
         let requestedGeneration = playbackGeneration
         let clock = CMClockGetHostTimeClock()
         let startTime = CMClockGetTime(clock) + CMTime(seconds: 0.12, preferredTimescale: 600)
-        leftPlayer.setRate(rate, time: leftPlayer.currentTime(), atHostTime: startTime)
-        rightPlayer.setRate(rate, time: rightPlayer.currentTime(), atHostTime: startTime)
+        // **The start times come from the sync points after a rewind, never
+        // from `currentTime()`, and that is a measured hazard rather than a
+        // tidy-up.** `AVPlayer.seek` is not synchronously visible: measured
+        // immediately after `seek(.zero)` on a clip parked at its 2.000s end,
+        // `currentTime()` still read 2.000000, and only reached 0 about a
+        // millisecond later. `setRate(_:time:atHostTime:)` *sets* the playhead
+        // to the `time` it is given, so feeding it that stale read would park
+        // the pair straight back on the end the rewind had just left — the bug
+        // this method is being fixed for, restored one line below the fix.
+        //
+        // Reading `leftSyncPoint`/`rightSyncPoint` after `returnToSyncPoints()`
+        // is also what makes this agree with `normalizeSyncPoints()`, which may
+        // have slid both points during that call.
+        let leftStart = rewound ? leftSyncPoint : leftPlayer.currentTime()
+        let rightStart = rewound ? rightSyncPoint : rightPlayer.currentTime()
+        leftPlayer.setRate(rate, time: leftStart, atHostTime: startTime)
+        rightPlayer.setRate(rate, time: rightStart, atHostTime: startTime)
         status = rate == 1 ? "Playing together" : "Slow motion together · \(String(format: "%.2g", rate))×"
         // Some file/decoder combinations do not accept a scheduled start until
         // their timebase is fully ready. Fall back to an immediate paired start.
@@ -1012,6 +1044,19 @@ public final class ComparisonModel: ObservableObject {
         let shift = CMTime(seconds: delta, preferredTimescale: 600)
         leftSyncPoint = leftSyncPoint + shift
         rightSyncPoint = rightSyncPoint + shift
+    }
+
+    /// One *unsynced* side back to its own first frame when play is asked for
+    /// at the end of it.
+    ///
+    /// Only legal while aligning, and only ever called from the two per-side
+    /// methods after they have fallen through their `isSynced` branches. A
+    /// locked pair must never rewind a side on its own — that is precisely the
+    /// desync the screen exists to prevent — so the synced answer lives in
+    /// `playSynced`, which returns to the sync points instead.
+    private func rewindIfAtEnd(_ player: AVPlayer) {
+        guard player.isAtEndOfClip else { return }
+        seek(player, to: 0)
     }
 
     private func seek(_ player: AVPlayer, to seconds: Double) {

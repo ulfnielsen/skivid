@@ -196,15 +196,53 @@ struct ViewerPane: View {
             }
     }
 
-    private var caption: some View {
+    /// The athlete and the clip, over the letterbox.
+    ///
+    /// **It was `.white.opacity(0.85)` with a `.shadow(radius: 2)` and no
+    /// background, and against a bright snowy frame that is white-on-white.**
+    /// The operator sent a screenshot in which both lines were barely
+    /// discernible. A shadow separates light text from a *dark* backdrop; it has
+    /// nothing to work with when the backdrop is snow, which is most of what
+    /// this app ever shows.
+    ///
+    /// **A `.thinMaterial` capsule rather than a solid dark pill, to match what
+    /// is already on screen.** The zoom chip sits in the opposite corner of this
+    /// same pane in a `.thinMaterial` capsule, and the comparison panes'
+    /// filename chip (`ClipSourceMenu`, `.overlayChip`) and
+    /// `ComparisonStatusChip` both use the same treatment. A second, solid
+    /// look for the same class of floating label would read as a different kind
+    /// of thing. The shadow goes with the change: the material is the
+    /// separation now, and a shadow under a blurred capsule only muddies its
+    /// edge.
+    ///
+    /// The type steps up with it — `.title3` semibold for the athlete, who is
+    /// the thing a coach scanning a wall of runs is looking for, and
+    /// `.subheadline` for the clip line, which was `.caption` and read as fine
+    /// print at a metre from the screen.
+    ///
+    /// **`.allowsHitTesting(false)` is load-bearing, not defensive.** The whole
+    /// pane is one big play/pause tap target; a caption that claimed hits would
+    /// eat the gesture wherever it sits. Giving it a background makes the size
+    /// of what it would have eaten visible for the first time, which is a reason
+    /// to keep the modifier rather than to reconsider it. The status chip
+    /// opposite carries it for the same reason; the zoom chip deliberately does
+    /// not, because it is a control — see `zoomChip(in:)`.
+    ///
+    /// Internal rather than private so `ViewerCaptionLayoutTests` can measure
+    /// the capsule the shipped view builds instead of a copy of it that could
+    /// drift from it. `ClipSourceMenu.spokenLabel` is internal for the same
+    /// reason.
+    var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(athleteName)
-                .font(.headline)
+                .font(.title3.weight(.semibold))
             Text(model.clipDescription)
-                .font(.caption)
+                .font(.subheadline)
         }
-        .foregroundStyle(.white.opacity(0.85))
-        .shadow(radius: 2)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.thinMaterial, in: Capsule())
         .padding(12)
         .allowsHitTesting(false)
     }

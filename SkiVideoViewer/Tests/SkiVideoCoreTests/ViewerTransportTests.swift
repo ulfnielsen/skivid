@@ -272,6 +272,74 @@ final class ViewerTransportTests: XCTestCase {
         waitUntil("isPlaying must be true at quarter speed") { model.isPlaying }
     }
 
+    // MARK: - Playing from the end of a clip
+
+    /// **The dead end.** `AVPlayer` will not start when the playhead is already
+    /// at the end, and nothing here observed `AVPlayerItemDidPlayToEndTime` or
+    /// set `actionAtItemEnd`, so Space at the end of a run did nothing at all.
+    /// The operator reported it as the app going dead.
+    ///
+    /// Measured on this fixture before the fix: with the playhead parked at the
+    /// end, `playImmediately(atRate: 1)` moved it 0.000125s and left `rate` at
+    /// 0. `seek(.zero)` followed by `playImmediately` in the same turn reaches
+    /// `rate == 1` synchronously — so the rewind needs no completion handler.
+    func testPlayingAtTheEndOfTheClipRewindsAndPlays() throws {
+        let model = try makeLoadedModel(seconds: 2)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        model.togglePlayback()
+        waitUntil("the clip must run all the way to its end") {
+            model.player.rate == 0 && model.player.currentTime().seconds > 1.5
+        }
+        XCTAssertEqual(model.player.currentTime().seconds, model.duration, accuracy: 0.05,
+                       "precondition: the playhead must be parked at the end")
+
+        model.togglePlayback()
+        XCTAssertGreaterThan(model.player.rate, 0,
+                             "play at the end must start playback rather than do nothing")
+        waitUntil("the playhead must have been rewound to the start") {
+            model.player.currentTime().seconds < 0.5
+        }
+    }
+
+    /// The tortoise button is the same dead end by a different door: it calls
+    /// `playImmediately(atRate: 0.25)` with no toggle in front of it, so it
+    /// never even asks whether the player is stopped.
+    func testSlowMotionAtTheEndOfTheClipRewindsAndPlays() throws {
+        let model = try makeLoadedModel(seconds: 2)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        model.togglePlayback()
+        waitUntil("the clip must run all the way to its end") {
+            model.player.rate == 0 && model.player.currentTime().seconds > 1.5
+        }
+        XCTAssertEqual(model.player.currentTime().seconds, model.duration, accuracy: 0.05,
+                       "precondition: the playhead must be parked at the end")
+
+        model.applyTransport(.slow)
+        XCTAssertEqual(model.player.rate, 0.25, accuracy: 0.01,
+                       "quarter speed at the end must start playback rather than do nothing")
+        waitUntil("the playhead must have been rewound to the start") {
+            model.player.currentTime().seconds < 0.5
+        }
+    }
+
+    /// **The other half of the rule, and the one a too-wide tolerance breaks.**
+    /// A run paused halfway must resume from where it was; a rewind reachable
+    /// from mid-clip would silently restart every clip the operator stopped to
+    /// look at. This is what bounds the end-of-clip tolerance from above.
+    func testPlayingFromTheMiddleOfTheClipDoesNotRewind() throws {
+        let model = try makeLoadedModel(seconds: 6)
+        waitUntil("the duration must be published") { model.duration > 0 }
+        model.scrub(to: 3)
+        settle(model)
+        XCTAssertEqual(model.player.currentTime().seconds, 3, accuracy: 0.1, "precondition: parked at 3s")
+
+        model.togglePlayback()
+        XCTAssertGreaterThan(model.player.rate, 0, "precondition: playing")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertGreaterThan(model.player.currentTime().seconds, 2.5,
+                             "playing from the middle must continue from there, not restart at zero")
+    }
+
     // MARK: - helpers
 
     private func makeLoadedModel(seconds: Double) throws -> ViewerModel {
