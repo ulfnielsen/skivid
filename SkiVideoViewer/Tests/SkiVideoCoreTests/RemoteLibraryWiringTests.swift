@@ -87,7 +87,16 @@ final class RemoteLibraryWiringTests: XCTestCase {
         let (model, _, _) = self.model(files: [])
         model.openDirectory(root)
 
-        XCTAssertEqual(model.currentPlaybackURL, clip)
+        // Both sides resolved. `/var` is a symlink to `/private/var` on macOS,
+        // and `FileManager.enumerator` hands back children under the *resolved*
+        // path while a URL built by appending components keeps the unresolved
+        // one — the same measurement `VideoLibrary.scan` records where it
+        // computes `rootPaths`. Comparing the two raw would fail for a reason
+        // that has nothing to do with this task.
+        XCTAssertEqual(
+            model.currentPlaybackURL?.resolvingSymlinksInPath(),
+            clip.resolvingSymlinksInPath()
+        )
     }
 
     /// The comparison window gets the same treatment — a pane must never be

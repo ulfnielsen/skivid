@@ -299,6 +299,10 @@ public final class ViewerModel: ObservableObject {
               let file = remoteIndex.file(for: currentVideo)
         else { return }
 
+        // Captured before the await, so the reload below can tell whether the
+        // coach moved on while this clip was downloading.
+        let videoAtRequest = currentVideo
+
         isPreparingClip = true
         defer { isPreparingClip = false }
         status = "Fetching \(file.name)…"
@@ -307,12 +311,13 @@ public final class ViewerModel: ObservableObject {
         await clipCache.recordPlayback(
             of: file.identity(inProvider: remoteIndex.providerIdentifier)
         )
-        // The operator may have moved on to a different clip while this one
-        // was downloading; only push the freshly cached file into the player
-        // if it is still the one on screen.
-        if self.currentVideo == currentVideo {
-            loadCurrentVideo()
-        }
+        // The player was pointed at nothing while the bytes were arriving, so
+        // it has to be told they landed — without this the pane stays empty
+        // until the next selection change, and the clip a coach asked for
+        // never appears. Guarded against the selection having moved on during
+        // the download, which would otherwise load the wrong clip.
+        guard currentVideo == videoAtRequest else { return }
+        loadCurrentVideo()
         status = file.name
     }
 
