@@ -1402,6 +1402,9 @@ struct DriveRecord: Decodable {
     let md5Checksum: String?
     let headRevisionId: String?
     let parents: [String]?
+    /// Only requested by the change feed. The sweep filters trashed files out
+    /// server-side with `q: trashed = false`, so it never needs to read this.
+    let trashed: Bool?
 }
 
 private struct DriveFileList: Decodable {
@@ -1537,12 +1540,32 @@ Append to `Tests/SkiVideoCoreTests/RemoteLibraryIndexTests.swift`:
     /// An index written by an older build is refused, not adapted — the same
     /// rule `AlignmentTrackStore` applies to a stale track. Refusing costs one
     /// sweep; adapting silently costs a library that is subtly wrong.
-    func testAnIndexFromAnOlderVersionIsRefused() throws {
+    ///
+    /// Asserted as a *pair*, because a version-0 fixture alone proves nothing:
+    /// any payload the decoder rejects for an unrelated reason — a missing
+    /// field, a typo — makes `load` return nil too, so the test would pass
+    /// with the version check deleted. The current-version fixture is
+    /// byte-identical apart from `version`, so the only thing that can explain
+    /// one loading and the other not is the gate itself.
+    func testAnIndexFromAnOlderVersionIsRefusedWhileACurrentOneLoads() throws {
         try withTemporaryStore { root in
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            try Data(#"{"version":0,"providerIdentifier":"gdrive","files":[],"cursor":null}"#.utf8)
-                .write(to: RemoteLibraryIndex.storeURL(forRoot: "d1"))
-            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
+
+            func write(version: Int, forRoot rootID: String) throws {
+                try Data("""
+                {"version":\(version),"providerIdentifier":"gdrive","rootName":"Club",\
+                "files":[],"cursor":null}
+                """.utf8).write(to: RemoteLibraryIndex.storeURL(forRoot: rootID))
+            }
+
+            try write(version: 0, forRoot: "old")
+            try write(version: RemoteLibraryIndex.currentVersion, forRoot: "current")
+
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "old"))
+            XCTAssertNotNil(
+                RemoteLibraryIndex.load(forRoot: "current"),
+                "the fixture must be decodable, or the version test proves nothing"
+            )
         }
     }
 
@@ -1662,6 +1685,60 @@ Append to `Tests/SkiVideoCoreTests/GoogleDriveProviderTests.swift`:
         XCTAssertEqual(query["includeCorpusRemovals"], "true")
         XCTAssertEqual(query["supportsAllDrives"], "true")
         XCTAssertEqual(query["pageToken"], "t1")
+    }
+
+    /// A clip trashed in Drive must leave the library. Drive's docs define
+    /// `removed` only as "deletion or loss of access" and say nothing about
+    /// trashing, so the client treats a `trashed` file as removed rather than
+    /// betting on which way Drive reports it.
+    func testATrashedFileIsTreatedAsRemoved() async throws {
+        transport.responses = [.init(json: """
+        {"newStartPageToken":"t2","changes":[
+          {"fileId":"f1","removed":false,
+           "file":{"id":"f1","name":"run.mp4","mimeType":"video/mp4","parents":["d1"],
+                   "size":"1","headRevisionId":"r1","trashed":true}}
+        ]}
+        """)]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.removed, ["f1"])
+        XCTAssertTrue(changes.changed.isEmpty)
+    }
+
+    /// Without `trashed` in the field list Drive omits it, and a trashed clip
+    /// is indistinguishable from a live one.
+    func testTheChangeFeedAsksForTheTrashedField() async throws {
+        transport.responses = [.init(json: #"{"newStartPageToken":"t2","changes":[]}"#)]
+        _ = try await provider.changes(since: "t1", forRoot: "d1")
+        let fields = try XCTUnwrap(transport.queryItems(of: 0)["fields"])
+        XCTAssertTrue(fields.contains("trashed"), "fields is missing trashed: \(fields)")
+    }
+
+    /// A page carrying neither a next-page nor a new-start token would leave
+    /// `pageToken` unchanged and re-issue the same request forever, which is
+    /// the one way the drain loop's "bounded number of calls" claim fails.
+    func testAChangePageWithNoTokensFailsRatherThanSpinning() async {
+        transport.responses = [.init(json: #"{"changes":[]}"#)]
+        do {
+            _ = try await provider.changes(since: "t1", forRoot: "d1")
+            XCTFail("expected a page with no tokens to throw")
+        } catch {
+            XCTAssertTrue("\(error)".contains("neither"), "got \(error)")
+        }
+    }
+
+    /// A server repeating a page token is the other way that loop could spin.
+    func testARepeatedChangePageTokenFailsRatherThanSpinning() async {
+        transport.responses = [
+            .init(json: #"{"nextPageToken":"t1","changes":[]}"#),
+        ]
+        do {
+            _ = try await provider.changes(since: "t1", forRoot: "d1")
+            XCTFail("expected a repeated page token to throw")
+        } catch {
+            XCTAssertTrue("\(error)".contains("repeated"), "got \(error)")
+        }
     }
 
     func testChangesFollowTheirOwnPageTokens() async throws {
@@ -1881,16 +1958,38 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
             ]
             let page: DriveChangeList = try await get(components)
             for change in page.changes {
-                if change.removed == true || change.file == nil {
+                // `trashed` counts as removed. Google's docs define `removed`
+                // only as "removed from this list of changes, for example by
+                // deletion or loss of access" and say nothing about trashing,
+                // so this handles both readings: if Drive reports a trashed
+                // clip as an ordinary change it is caught here, and if it
+                // reports one as `removed` the first branch already had it.
+                // Getting this wrong the other way would leave a clip a coach
+                // deleted sitting in the sidebar until Drive purged it.
+                if change.removed == true || change.file == nil || change.file?.trashed == true {
                     removed.append(change.fileId)
                 } else if let record = change.file {
                     changed.append(record)
                 }
             }
             if let next = page.nextPageToken {
+                // A server repeating a token would otherwise re-issue the same
+                // request forever, which is the one way this loop's "bounded
+                // number of calls" claim could be false.
+                guard next != pageToken else {
+                    throw RemoteLibraryError.api(
+                        "Google Drive repeated a change-feed page token. Refresh again in a moment."
+                    )
+                }
                 pageToken = next
+            } else if let newStart = page.newStartPageToken {
+                nextCursor = newStart
             } else {
-                nextCursor = page.newStartPageToken
+                // Neither token: without this the loop would spin on an
+                // unchanged `pageToken`.
+                throw RemoteLibraryError.api(
+                    "Google Drive returned a change page with neither a next page nor a new start token."
+                )
             }
         }
 
@@ -1922,7 +2021,10 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
         )
     }
 
-    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents"
+    /// `trashed` is requested because the sweep excludes trashed files with
+    /// `q: trashed = false` and the change feed has no equivalent — without
+    /// the field there is no way to tell a trashed clip from a live one.
+    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents,trashed"
 }
 
 private struct DriveStartPageToken: Decodable {
