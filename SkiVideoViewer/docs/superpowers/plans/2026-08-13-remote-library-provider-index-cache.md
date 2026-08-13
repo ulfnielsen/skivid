@@ -2784,19 +2784,41 @@ final class RemoteLibraryWiringTests: XCTestCase {
         )
     }
 
-    /// The comparison window gets the same treatment — a pane must never be
-    /// handed a remote URL.
-    func testTheComparisonPickerOffersOnlyLocalURLs() async throws {
+    /// A prepared clip resolves to a file for the comparison window; an
+    /// unprepared one does not, and today the picker hands out the library URL
+    /// for it.
+    ///
+    /// That second half is pinned deliberately rather than claimed otherwise.
+    /// `ComparisonVideoChoice.playbackURL` is non-optional, so there is nothing
+    /// honest to put there until plan 3 fetches a clip when a pane selects it —
+    /// and a test asserting "only local URLs" would be false the moment a
+    /// library has more than one clip. When plan 3 lands, the second assertion
+    /// is the one that changes.
+    func testTheComparisonPickerOffersAFileOnlyForAPreparedClip() async throws {
         let (model, provider, cache) = self.model(files: [
             file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            file("b", "run2.mp4", ["Neuss 2026", "Ada"]),
         ])
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
         )
         try await model.prepareCurrentClip()
 
-        let choice = try XCTUnwrap(model.comparisonLibrary.first?.videos.first)
-        XCTAssertTrue(choice.playbackURL.isFileURL, "got \(choice.playbackURL)")
+        let choices = try XCTUnwrap(model.comparisonLibrary.first?.videos)
+        XCTAssertEqual(choices.count, 2)
+        XCTAssertTrue(
+            choices[0].playbackURL.isFileURL,
+            "the prepared clip must be a file: got \(choices[0].playbackURL)"
+        )
+        XCTAssertFalse(
+            choices[1].playbackURL.isFileURL,
+            """
+            KNOWN GAP, pinned on purpose: an unprepared clip is still offered its \
+            library URL, which no player can open. Plan 3 must fetch a clip when a \
+            pane selects it. If this assertion starts failing, that work has landed \
+            and this test should assert both are files.
+            """
+        )
     }
 }
 ```
@@ -2822,9 +2844,16 @@ Add:
     private var clipCache: ClipCache?
 
     @Published public private(set) var isUsingRemoteLibrary = false
-    /// True while the current clip's bytes are being fetched. The view shows
-    /// progress instead of an empty player.
+    /// True while any clip's bytes are being fetched. The view shows progress
+    /// instead of an empty player.
     @Published public private(set) var isPreparingClip = false
+
+    /// How many fetches are in flight. A count rather than a bare flag:
+    /// with two overlapping fetches — a coach reselecting while the first is
+    /// still downloading, which is exactly what plan 3's fetch-on-select
+    /// produces — whichever finished first would clear the flag while the
+    /// other was still running, showing neither a spinner nor a clip.
+    private var preparingCount = 0
 
     /// Opens a cloud library: index it, group it, show it. No bytes are
     /// fetched — a clip downloads when it is selected.
@@ -2872,8 +2901,12 @@ Add:
         // coach moved on while this clip was downloading.
         let videoAtRequest = currentVideo
 
+        preparingCount += 1
         isPreparingClip = true
-        defer { isPreparingClip = false }
+        defer {
+            preparingCount -= 1
+            isPreparingClip = preparingCount > 0
+        }
         status = "Fetching \(file.name)…"
         let source = try await remoteProvider.downloadSource(for: file)
         _ = try await clipCache.materialize(file, source: source)
@@ -2916,7 +2949,15 @@ Change `currentPlaybackURL` (`ViewerModel.swift:176-179`) to resolve through the
     private var materialisedByFileID: [String: URL] = [:]
 
     private func cachedRemoteURL(for file: RemoteFile) -> URL? {
-        materialisedByFileID[file.id]
+        guard let url = materialisedByFileID[file.id] else { return nil }
+        // The mirror can outlive the bytes. Eviction deletes a clip's file
+        // whenever a later download pushes the cache over budget, and iOS may
+        // purge Caches outright — `ClipCache.cachedURL` guards exactly this and
+        // says so. Without the same guard here a view gets a `file://` URL that
+        // looks valid and points at nothing, which shows an error where the
+        // design promises progress.
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
     }
 ```
 
@@ -2985,5 +3026,6 @@ and its synthesised URLs are all replaced rather than repaired."
 - **Sign-in.** `GoogleDriveProvider.connect` throws `.notSignedIn`. Plan 3 owns the two OAuth client registrations, `ASWebAuthenticationSession`, the loopback-versus-custom-scheme split, and the Shared Drive picker. Until then the provider takes a token closure.
 - **Prefetch.** Clips materialise on demand only. Plan 3 adds the next-two-and-previous-one policy and the compare partner.
 - **Pinning UI.** `ClipCache.pin` exists and is tested; nothing calls it yet.
+- **Fetching a clip when a comparison pane selects it.** `ComparisonVideoChoice.playbackURL` is non-optional, so an unprepared remote clip is offered its library URL, which no player can open. Pinned by `testTheComparisonPickerOffersAFileOnlyForAPreparedClip` rather than papered over. **Plan 3 must close this**, either by fetching on select or by making the URL optional and showing unready clips as unavailable.
 - **Writing analysis back to Drive.** Out of scope in the spec, and this plan adds no write scope.
 - **The `-` join in `ClipIdentity.pairKey`.** Carried deliberately from plan 1: the obvious fix would be a regression, because Drive ids are base64url and legitimately contain both `-` and `_`. The invariant is documented there.
