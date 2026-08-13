@@ -61,6 +61,15 @@ public actor ClipCache {
         let contentVersion: String?
         let bytes: Int64
         var lastUsed: Date
+        /// What eviction actually orders on.
+        ///
+        /// `lastUsed` is a wall-clock stamp kept for diagnostics and for any
+        /// later age-based policy, but it cannot order this: two clips
+        /// materialised in quick succession can share a `Date`, and `sorted`
+        /// breaks ties arbitrarily — so on a fast machine the clip a coach
+        /// just watched could be evicted instead of the oldest. A counter the
+        /// actor hands out is total by construction.
+        var useOrder: Int
         var isPinned: Bool
     }
 
@@ -70,6 +79,7 @@ public actor ClipCache {
     private var entries: [String: Entry] = [:]
     private var inFlight: [String: Task<URL, Error>] = [:]
     private let now: () -> Date
+    private var nextUseOrder: Int
 
     public init(
         root: URL,
@@ -82,6 +92,14 @@ public actor ClipCache {
         self.budget = budget
         self.now = now
         self.entries = Self.loadManifest(at: Self.manifestURL(in: root))
+        // Resume above whatever the last run reached, so ordering survives a
+        // relaunch instead of restarting and making old entries look fresh.
+        self.nextUseOrder = (self.entries.values.map(\.useOrder).max() ?? 0) + 1
+    }
+
+    private func takeUseOrder() -> Int {
+        defer { nextUseOrder += 1 }
+        return nextUseOrder
     }
 
     // MARK: - Reading
@@ -121,6 +139,7 @@ public actor ClipCache {
            version == file.contentVersion,
            FileManager.default.fileExists(atPath: fileURL(for: entry).path) {
             entries[file.id]?.lastUsed = now()
+            entries[file.id]?.useOrder = takeUseOrder()
             return fileURL(for: entry)
         }
 
@@ -156,7 +175,8 @@ public actor ClipCache {
 
         entries[file.id] = Entry(
             fileID: file.id, fileName: file.name, contentVersion: file.contentVersion,
-            bytes: file.size, lastUsed: now(), isPinned: entries[file.id]?.isPinned ?? false
+            bytes: file.size, lastUsed: now(), useOrder: takeUseOrder(),
+            isPinned: entries[file.id]?.isPinned ?? false
         )
         evictToFit()
         saveManifest()
@@ -186,6 +206,7 @@ public actor ClipCache {
     public func recordPlayback(of identity: ClipIdentity) {
         guard case let .remote(_, fileID) = identity else { return }
         entries[fileID]?.lastUsed = now()
+        entries[fileID]?.useOrder = takeUseOrder()
         saveManifest()
     }
 
@@ -220,7 +241,7 @@ public actor ClipCache {
         guard total > budget else { return }
         let candidates = entries.values
             .filter { !$0.isPinned }
-            .sorted { $0.lastUsed < $1.lastUsed }
+            .sorted { $0.useOrder < $1.useOrder }
         for entry in candidates {
             guard total > budget, entries.count > 1 else { break }
             try? FileManager.default.removeItem(at: fileURL(for: entry))

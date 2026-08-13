@@ -142,6 +142,27 @@ final class ClipCacheTests: XCTestCase {
 
     // MARK: - Eviction
 
+    /// Eviction order must not depend on the wall clock. Two clips
+    /// materialised in the same instant — plausible on a fast machine, and
+    /// certain with an in-memory downloader — would share a `Date`, and a sort
+    /// on that alone breaks ties arbitrarily. Pinning the order with a frozen
+    /// clock is what proves the counter, not the timestamp, decides.
+    func testEvictionOrderDoesNotDependOnTheClock() async throws {
+        let frozen = Date(timeIntervalSince1970: 1_754_121_660)
+        let cache = ClipCache(
+            root: root, downloader: downloader, budget: 250, now: { frozen }
+        )
+        _ = try await cache.materialize(file("a"), source: source)
+        _ = try await cache.materialize(file("b"), source: source)
+        await cache.recordPlayback(of: .remote(provider: "gdrive", fileID: "a"))
+        _ = try await cache.materialize(file("c"), source: source)
+
+        let a = await cache.cachedURL(for: .remote(provider: "gdrive", fileID: "a"))
+        let b = await cache.cachedURL(for: .remote(provider: "gdrive", fileID: "b"))
+        XCTAssertNotNil(a, "a was played most recently, even with a stopped clock")
+        XCTAssertNil(b, "b was the least recently used")
+    }
+
     func testEvictionDropsTheLeastRecentlyPlayedFirst() async throws {
         await cache.setBudget(250)
         _ = try await cache.materialize(file("a"), source: source)
