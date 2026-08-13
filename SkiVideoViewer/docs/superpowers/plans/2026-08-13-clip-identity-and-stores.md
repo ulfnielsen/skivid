@@ -242,8 +242,11 @@ Append to `Tests/SkiVideoCoreTests/ClipAnalysisStoreTests.swift`, inside the exi
         try body(root)
     }
 
-    func testRemoteSidecarLivesInTheKeyedStoreUnderItsKey() throws {
-        try withTemporaryKeyedStore { root in
+    // `withTemporaryKeyedStore` is `rethrows`, so a test whose closure calls
+    // nothing throwing must omit both `try` and `throws` — otherwise the
+    // compiler warns "no calls to throwing functions occur within 'try'".
+    func testRemoteSidecarLivesInTheKeyedStoreUnderItsKey() {
+        withTemporaryKeyedStore { root in
             let identity = ClipIdentity.remote(provider: "gdrive", fileID: "1AbC")
             let url = ClipAnalysisStore.sidecarURL(for: identity)
             XCTAssertEqual(url.deletingLastPathComponent().path, root.path)
@@ -272,8 +275,8 @@ Append to `Tests/SkiVideoCoreTests/ClipAnalysisStoreTests.swift`, inside the exi
         }
     }
 
-    func testMissingRemoteAnalysisReadsAsAbsent() throws {
-        try withTemporaryKeyedStore { _ in
+    func testMissingRemoteAnalysisReadsAsAbsent() {
+        withTemporaryKeyedStore { _ in
             XCTAssertNil(
                 ClipAnalysisStore.load(for: .remote(provider: "gdrive", fileID: "nope"))
             )
@@ -446,8 +449,11 @@ Append to the existing `final class` in `Tests/SkiVideoCoreTests/AlignmentTrackT
         try body(root)
     }
 
-    func testRemotePairLivesInTheKeyedStoreNamedFromBothSides() throws {
-        try withTemporaryKeyedStore { root in
+    // `withTemporaryKeyedStore` is `rethrows`, so a test whose closure calls
+    // nothing throwing must omit both `try` and `throws` — otherwise the
+    // compiler warns "no calls to throwing functions occur within 'try'".
+    func testRemotePairLivesInTheKeyedStoreNamedFromBothSides() {
+        withTemporaryKeyedStore { root in
             let url = AlignmentTrackStore.sidecarURL(
                 left: .remote(provider: "gdrive", fileID: "L"),
                 right: .remote(provider: "gdrive", fileID: "R")
@@ -461,8 +467,8 @@ Append to the existing `final class` in `Tests/SkiVideoCoreTests/AlignmentTrackT
     /// business beside the local clip — the track would be orphaned the moment
     /// the folder moved, and half of it describes a file that folder never
     /// held.
-    func testMixedPairGoesToTheKeyedStoreRatherThanBesideTheLocalClip() throws {
-        try withTemporaryKeyedStore { root in
+    func testMixedPairGoesToTheKeyedStoreRatherThanBesideTheLocalClip() {
+        withTemporaryKeyedStore { root in
             let url = AlignmentTrackStore.sidecarURL(
                 left: ClipIdentity(directory.appendingPathComponent("C0094.MP4")),
                 right: .remote(provider: "gdrive", fileID: "R")
