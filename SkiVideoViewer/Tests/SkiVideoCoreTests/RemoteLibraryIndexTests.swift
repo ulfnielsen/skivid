@@ -160,4 +160,138 @@ final class RemoteLibraryIndexTests: XCTestCase {
         let index = RemoteLibraryIndex(providerIdentifier: "gdrive", files: [])
         XCTAssertNil(index.file(for: URL(fileURLWithPath: "/tmp/run.mp4")))
     }
+
+    // MARK: - Persistence
+
+    private func withTemporaryStore(_ body: (URL) throws -> Void) rethrows {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let previous = RemoteLibraryIndex.storeRoot
+        RemoteLibraryIndex.storeRoot = root
+        defer {
+            RemoteLibraryIndex.storeRoot = previous
+            try? FileManager.default.removeItem(at: root)
+        }
+        try body(root)
+    }
+
+    func testAnIndexSurvivesASaveAndLoad() throws {
+        try withTemporaryStore { _ in
+            let index = RemoteLibraryIndex(
+                providerIdentifier: "gdrive",
+                files: [file("a", "run.mp4", ["E", "Ada"])],
+                cursor: "cursor-1"
+            )
+            try index.save(forRoot: "d1")
+
+            let loaded = try XCTUnwrap(RemoteLibraryIndex.load(forRoot: "d1"))
+            XCTAssertEqual(loaded.athletes.map(\.name), ["Ada"])
+            XCTAssertEqual(loaded.cursor, "cursor-1")
+            XCTAssertEqual(loaded.file(for: loaded.athletes[0].videos[0])?.id, "a")
+        }
+    }
+
+    func testTwoDrivesKeepSeparateIndexes() throws {
+        try withTemporaryStore { _ in
+            try RemoteLibraryIndex(
+                providerIdentifier: "gdrive", files: [file("a", "a.mp4", ["E", "Ada"])], cursor: nil
+            ).save(forRoot: "d1")
+            try RemoteLibraryIndex(
+                providerIdentifier: "gdrive", files: [file("b", "b.mp4", ["E", "Bea"])], cursor: nil
+            ).save(forRoot: "d2")
+
+            XCTAssertEqual(RemoteLibraryIndex.load(forRoot: "d1")?.athletes.map(\.name), ["Ada"])
+            XCTAssertEqual(RemoteLibraryIndex.load(forRoot: "d2")?.athletes.map(\.name), ["Bea"])
+        }
+    }
+
+    func testNoStoredIndexLoadsAsNil() {
+        withTemporaryStore { _ in
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "never-saved"))
+        }
+    }
+
+    /// An index written by an older build is refused, not adapted — the same
+    /// rule `AlignmentTrackStore` applies to a stale track. Refusing costs one
+    /// sweep; adapting silently costs a library that is subtly wrong.
+    func testAnIndexFromAnOlderVersionIsRefused() throws {
+        try withTemporaryStore { root in
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data(#"{"version":0,"providerIdentifier":"gdrive","files":[],"cursor":null}"#.utf8)
+                .write(to: RemoteLibraryIndex.storeURL(forRoot: "d1"))
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
+        }
+    }
+
+    func testAnUnreadableIndexLoadsAsNilRatherThanThrowing() throws {
+        try withTemporaryStore { root in
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data("not json".utf8).write(to: RemoteLibraryIndex.storeURL(forRoot: "d1"))
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
+        }
+    }
+
+    // MARK: - Applying changes
+
+    func testANewFileAppearsInTheLibrary() {
+        let index = RemoteLibraryIndex(
+            providerIdentifier: "gdrive", files: [file("a", "a.mp4", ["E", "Ada"])], cursor: "c1"
+        )
+        let refreshed = index.applying(
+            RemoteLibraryChanges(
+                changed: [file("b", "b.mp4", ["E", "Ada"])], removed: [], cursor: "c2"
+            )
+        )
+        XCTAssertEqual(refreshed.athletes[0].videos.count, 2)
+        XCTAssertEqual(refreshed.cursor, "c2")
+    }
+
+    /// The change feed is coalesced per file and replayed by id, so applying
+    /// the same change twice must not duplicate a clip.
+    func testApplyingTheSameChangeTwiceIsIdempotent() {
+        let index = RemoteLibraryIndex(providerIdentifier: "gdrive", files: [], cursor: nil)
+        let change = RemoteLibraryChanges(
+            changed: [file("a", "a.mp4", ["E", "Ada"])], removed: [], cursor: "c1"
+        )
+        XCTAssertEqual(index.applying(change).applying(change).athletes[0].videos.count, 1)
+    }
+
+    /// A rename arrives as a change to the same id. The clip must move, not
+    /// double.
+    func testARenamedFileReplacesItsOldEntry() {
+        let index = RemoteLibraryIndex(
+            providerIdentifier: "gdrive", files: [file("a", "old.mp4", ["E", "Ada"])], cursor: nil
+        )
+        let refreshed = index.applying(
+            RemoteLibraryChanges(
+                changed: [file("a", "new.mp4", ["E", "Ada"])], removed: [], cursor: "c1"
+            )
+        )
+        XCTAssertEqual(
+            refreshed.athletes[0].videos.map(\.lastPathComponent), ["new.mp4"]
+        )
+    }
+
+    func testARemovedFileLeavesTheLibrary() {
+        let index = RemoteLibraryIndex(
+            providerIdentifier: "gdrive",
+            files: [file("a", "a.mp4", ["E", "Ada"]), file("b", "b.mp4", ["E", "Ada"])],
+            cursor: nil
+        )
+        let refreshed = index.applying(
+            RemoteLibraryChanges(changed: [], removed: ["a"], cursor: "c1")
+        )
+        XCTAssertEqual(refreshed.athletes[0].videos.map(\.lastPathComponent), ["b.mp4"])
+    }
+
+    /// An athlete whose last clip goes away should not linger as an empty row.
+    func testAnAthleteWithNoClipsLeftDisappears() {
+        let index = RemoteLibraryIndex(
+            providerIdentifier: "gdrive", files: [file("a", "a.mp4", ["E", "Ada"])], cursor: nil
+        )
+        let refreshed = index.applying(
+            RemoteLibraryChanges(changed: [], removed: ["a"], cursor: "c1")
+        )
+        XCTAssertTrue(refreshed.athletes.isEmpty)
+    }
 }

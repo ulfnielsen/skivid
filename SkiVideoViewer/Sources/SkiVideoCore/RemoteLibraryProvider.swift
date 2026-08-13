@@ -71,7 +71,38 @@ public struct RemoteFolder: Hashable, Sendable {
     }
 }
 
-public struct RemoteFile: Hashable, Sendable {
+/// What a provider offers when it has a change feed a client can use.
+///
+/// Separate from `RemoteLibraryProvider` because only some providers have one:
+/// Drive and Dropbox do, an object store does not. A core method would make
+/// three implementations carry a stub that just re-enumerates, which reads as
+/// support for something that is not there. Call sites test for it:
+/// `if let incremental = provider as? IncrementallyEnumerable`.
+public protocol IncrementallyEnumerable: RemoteLibraryProvider {
+    /// The cursor to start from, obtained once when the library is first swept.
+    func startCursor(forRoot rootID: String) async throws -> String
+
+    /// Everything that changed since `cursor`, and the cursor to use next.
+    func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges
+}
+
+public struct RemoteLibraryChanges: Sendable {
+    public let changed: [RemoteFile]
+    /// File ids that left the library. **Not a licence to delete cached
+    /// bytes:** Drive reports "you lost access" and "moved to another corpus"
+    /// the same way it reports a deletion, and a coach who regains access
+    /// should not pay to download the clip again.
+    public let removed: [String]
+    public let cursor: String
+
+    public init(changed: [RemoteFile], removed: [String], cursor: String) {
+        self.changed = changed
+        self.removed = removed
+        self.cursor = cursor
+    }
+}
+
+public struct RemoteFile: Hashable, Sendable, Codable {
     public let id: String
     public let name: String
     /// Folder names from the enumerated root down to this file's parent.

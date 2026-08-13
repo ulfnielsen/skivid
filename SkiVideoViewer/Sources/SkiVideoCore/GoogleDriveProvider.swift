@@ -9,7 +9,7 @@ import Foundation
 public struct GoogleDriveProvider: RemoteLibraryProvider {
     public static let identifier = "gdrive"
 
-    private static let folderMimeType = "application/vnd.google-apps.folder"
+    static let folderMimeType = "application/vnd.google-apps.folder"
     /// Drive returns a minimal field set unless asked. Every field here is
     /// used: `headRevisionId` is the cache-validity key, `md5Checksum` the
     /// post-download check, `parents` the tree, `size` the progress bar.
@@ -228,6 +228,97 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     }
 }
 
+extension GoogleDriveProvider: IncrementallyEnumerable {
+    public func startCursor(forRoot rootID: String) async throws -> String {
+        var components = URLComponents(
+            string: "https://www.googleapis.com/drive/v3/changes/startPageToken"
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "driveId", value: rootID),
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+        ]
+        let response: DriveStartPageToken = try await get(components)
+        return response.startPageToken
+    }
+
+    public func changes(
+        since cursor: String, forRoot rootID: String
+    ) async throws -> RemoteLibraryChanges {
+        var changed: [DriveRecord] = []
+        var removed: [String] = []
+        var pageToken = cursor
+        var nextCursor: String?
+
+        // Drain until Drive hands back the token to resume from next time.
+        // Page tokens never expire, so a client that has been closed for
+        // months still resyncs in a bounded number of calls.
+        while nextCursor == nil {
+            var components = URLComponents(
+                string: "https://www.googleapis.com/drive/v3/changes"
+            )!
+            components.queryItems = [
+                URLQueryItem(name: "pageToken", value: pageToken),
+                // The *drive* log, not the user log: files moved into a shared
+                // drive stop appearing in the user log entirely.
+                URLQueryItem(name: "driveId", value: rootID),
+                URLQueryItem(name: "supportsAllDrives", value: "true"),
+                URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
+                // Without both, a removal never arrives and the sidebar keeps
+                // offering clips that are gone.
+                URLQueryItem(name: "includeRemoved", value: "true"),
+                URLQueryItem(name: "includeCorpusRemovals", value: "true"),
+                URLQueryItem(name: "pageSize", value: "1000"),
+                URLQueryItem(
+                    name: "fields",
+                    value: "nextPageToken,newStartPageToken,changes(fileId,removed,file(\(Self.changeFileFields)))"
+                ),
+            ]
+            let page: DriveChangeList = try await get(components)
+            for change in page.changes {
+                if change.removed == true || change.file == nil {
+                    removed.append(change.fileId)
+                } else if let record = change.file {
+                    changed.append(record)
+                }
+            }
+            if let next = page.nextPageToken {
+                pageToken = next
+            } else {
+                nextCursor = page.newStartPageToken
+            }
+        }
+
+        // A change gives a file id and its parents, not a path. Resolving the
+        // folder names needs the tree, which only a sweep has — so a changed
+        // file arrives with the parent chain this page could resolve, and a
+        // caller wanting more must re-sweep. In practice a new clip's folders
+        // are already in the index from the last sweep.
+        let folders = Dictionary(
+            uniqueKeysWithValues: changed
+                .filter { $0.mimeType == Self.folderMimeType }
+                .map { ($0.id, $0) }
+        )
+        return RemoteLibraryChanges(
+            changed: changed
+                .filter { $0.mimeType != Self.folderMimeType }
+                .map { record in
+                    RemoteFile(
+                        id: record.id,
+                        name: record.name,
+                        path: Self.folderPath(of: record, in: folders, rootID: rootID),
+                        size: Int64(record.size ?? "") ?? 0,
+                        contentVersion: record.headRevisionId,
+                        md5: record.md5Checksum
+                    )
+                },
+            removed: removed,
+            cursor: nextCursor ?? cursor
+        )
+    }
+
+    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents"
+}
+
 // MARK: - Wire formats
 
 struct DriveRecord: Decodable {
@@ -263,4 +354,20 @@ private struct DriveAPIError: Decodable {
     }
 
     let error: Details?
+}
+
+private struct DriveStartPageToken: Decodable {
+    let startPageToken: String
+}
+
+private struct DriveChangeList: Decodable {
+    struct Change: Decodable {
+        let fileId: String
+        let removed: Bool?
+        let file: DriveRecord?
+    }
+
+    let nextPageToken: String?
+    let newStartPageToken: String?
+    let changes: [Change]
 }

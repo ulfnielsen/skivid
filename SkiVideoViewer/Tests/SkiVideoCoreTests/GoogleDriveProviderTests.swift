@@ -244,4 +244,64 @@ final class GoogleDriveProviderTests: XCTestCase {
             XCTAssertTrue("\(error)".contains("Insufficient permissions"), "got \(error)")
         }
     }
+
+    // MARK: - The change feed
+
+    func testAFirstRefreshAsksForAStartPageToken() async throws {
+        transport.responses = [.init(json: #"{"startPageToken":"t1"}"#)]
+        let cursor = try await provider.startCursor(forRoot: "d1")
+        XCTAssertEqual(cursor, "t1")
+        XCTAssertEqual(transport.queryItems(of: 0)["driveId"], "d1")
+        XCTAssertEqual(transport.queryItems(of: 0)["supportsAllDrives"], "true")
+    }
+
+    func testChangesReportAdditionsRemovalsAndTheNextCursor() async throws {
+        transport.responses = [.init(json: """
+        {"newStartPageToken":"t2","changes":[
+          {"fileId":"f1","removed":false,
+           "file":{"id":"f1","name":"run.mp4","mimeType":"video/mp4","parents":["d1"],
+                   "size":"1","headRevisionId":"r1"}},
+          {"fileId":"f2","removed":true}
+        ]}
+        """)]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed.map(\.id), ["f1"])
+        XCTAssertEqual(changes.removed, ["f2"])
+        XCTAssertEqual(changes.cursor, "t2")
+    }
+
+    /// The drive change log must be asked for, not the user log: files moved
+    /// into a shared drive stop appearing in the user log. `includeRemoved`
+    /// and `includeCorpusRemovals` are required or a deletion never arrives.
+    func testChangesTrackTheDriveLogAndIncludeRemovals() async throws {
+        transport.responses = [.init(json: #"{"newStartPageToken":"t2","changes":[]}"#)]
+        _ = try await provider.changes(since: "t1", forRoot: "d1")
+
+        let query = transport.queryItems(of: 0)
+        XCTAssertEqual(query["driveId"], "d1")
+        XCTAssertEqual(query["includeRemoved"], "true")
+        XCTAssertEqual(query["includeCorpusRemovals"], "true")
+        XCTAssertEqual(query["supportsAllDrives"], "true")
+        XCTAssertEqual(query["pageToken"], "t1")
+    }
+
+    func testChangesFollowTheirOwnPageTokens() async throws {
+        transport.responses = [
+            .init(json: """
+            {"nextPageToken":"p2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"a.mp4","mimeType":"video/mp4","parents":["d1"],"size":"1"}}
+            ]}
+            """),
+            .init(json: #"{"newStartPageToken":"t2","changes":[]}"#),
+        ]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed.map(\.id), ["f1"])
+        XCTAssertEqual(changes.cursor, "t2")
+        XCTAssertEqual(transport.requests.count, 2)
+    }
 }

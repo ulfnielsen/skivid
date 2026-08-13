@@ -19,16 +19,20 @@ public struct RemoteLibraryIndex: Equatable {
     /// group those clips the same way the sweep that built it did.
     public let rootName: String
     public private(set) var athletes: [AthleteGroup]
+    /// Where the change feed resumes, or nil before the first sweep.
+    public private(set) var cursor: String?
 
     private var filesByURL: [URL: RemoteFile]
 
     public init(
         providerIdentifier: String,
         rootName: String = "Unsorted",
-        files: [RemoteFile]
+        files: [RemoteFile],
+        cursor: String? = nil
     ) {
         self.providerIdentifier = providerIdentifier
         self.rootName = rootName
+        self.cursor = cursor
 
         var entries: [LibraryGrouping.Entry] = []
         var filesByURL: [URL: RemoteFile] = [:]
@@ -100,4 +104,91 @@ public struct RemoteLibraryIndex: Equatable {
     /// The file a library URL stands for, or nil when the URL is not this
     /// index's — a local clip, or one indexed before a refresh dropped it.
     public func file(for url: URL) -> RemoteFile? { filesByURL[url] }
+
+    /// Bumped whenever the stored shape changes. A stored index from an older
+    /// version is refused rather than adapted, the same rule
+    /// `AlignmentTrackStore` applies to a stale track: refusing costs one
+    /// sweep, adapting silently costs a library that is subtly wrong.
+    static let currentVersion = 1
+
+    /// Where indexes are written. Application Support rather than Caches: an
+    /// index is cheap to rebuild but a purge would turn every launch into a
+    /// full sweep. Settable so tests never write to the real directory.
+    public static var storeRoot: URL = defaultStoreRoot()
+
+    private static func defaultStoreRoot() -> URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("SkiVideoViewer", isDirectory: true)
+            .appendingPathComponent("RemoteLibrary", isDirectory: true)
+    }
+
+    /// One file per root, named by a digest of the root id — see
+    /// `StorageName` for why a digest rather than the id itself.
+    static func storeURL(forRoot rootID: String) -> URL {
+        storeRoot
+            .appendingPathComponent(StorageName.forIdentifier(rootID))
+            .appendingPathExtension("skiindex.json")
+    }
+
+    public func save(forRoot rootID: String) throws {
+        let url = Self.storeURL(forRoot: rootID)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let stored = Stored(
+            version: Self.currentVersion,
+            providerIdentifier: providerIdentifier,
+            rootName: rootName,
+            files: Array(filesByURL.values).sorted { $0.id < $1.id },
+            cursor: cursor
+        )
+        try JSONEncoder().encode(stored).write(to: url, options: .atomic)
+    }
+
+    /// The stored index, or nil when there is none, it cannot be read, or it
+    /// was written by an older version. All three mean the same thing to the
+    /// caller: sweep the drive.
+    public static func load(forRoot rootID: String) -> RemoteLibraryIndex? {
+        guard let data = try? Data(contentsOf: storeURL(forRoot: rootID)),
+              let stored = try? JSONDecoder().decode(Stored.self, from: data),
+              stored.version >= currentVersion
+        else { return nil }
+        return RemoteLibraryIndex(
+            providerIdentifier: stored.providerIdentifier,
+            rootName: stored.rootName,
+            files: stored.files,
+            cursor: stored.cursor
+        )
+    }
+
+    /// The index this one becomes after a refresh.
+    ///
+    /// Upsert by file id, so replaying a change is harmless — Drive's log is
+    /// coalesced per file and a resumed cursor can hand back one already
+    /// applied. A rename arrives as a change to the same id, so it replaces
+    /// rather than duplicates.
+    public func applying(_ changes: RemoteLibraryChanges) -> RemoteLibraryIndex {
+        var byID = Dictionary(
+            filesByURL.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+        )
+        for file in changes.changed { byID[file.id] = file }
+        for id in changes.removed { byID.removeValue(forKey: id) }
+        return RemoteLibraryIndex(
+            providerIdentifier: providerIdentifier,
+            rootName: rootName,
+            files: Array(byID.values),
+            cursor: changes.cursor
+        )
+    }
+
+    private struct Stored: Codable {
+        let version: Int
+        let providerIdentifier: String
+        let rootName: String
+        let files: [RemoteFile]
+        let cursor: String?
+    }
 }
