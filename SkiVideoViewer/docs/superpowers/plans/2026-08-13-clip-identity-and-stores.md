@@ -109,6 +109,7 @@ Expected: FAIL to compile, `cannot find 'ClipIdentity' in scope`.
 Create `Sources/SkiVideoCore/ClipIdentity.swift`:
 
 ```swift
+import CryptoKit
 import Foundation
 
 /// What a clip *is*, independent of where its bytes currently sit.
@@ -137,8 +138,31 @@ public enum ClipIdentity: Hashable, Sendable {
     /// rather than each of them re-matching on the case.
     public var storeKey: String? {
         switch self {
-        case .local:
-            return nil
+        case .local: return nil
+        case .remote: return pairKey
+        }
+    }
+
+    /// A filesystem-safe name for this identity that is safe to *combine* with
+    /// another into one filename.
+    ///
+    /// Defined for local identities too, unlike `storeKey`, because a pair can
+    /// straddle the two: comparing a cloud clip against one on disk files the
+    /// track under both halves.
+    ///
+    /// The local half is a digest of the path, not an escaped copy of it.
+    /// Escaping is lossy — every character outside `[A-Za-z0-9-]` becomes `_`,
+    /// so `/Ski Team 2026/run.mp4` and `/Ski_Team_2026/run.mp4` would name the
+    /// same file and one alignment track would silently overwrite the other's.
+    /// A digest also bounds the length, which an escaped absolute path does
+    /// not: a deep path can exceed a filesystem's 255-byte name limit.
+    public var pairKey: String {
+        switch self {
+        case let .local(clip):
+            let digest = SHA256.hash(data: Data(clip.path.utf8))
+            return "local-" + digest.prefix(8)
+                .map { String(format: "%02x", $0) }
+                .joined()
         case let .remote(provider, fileID):
             return "\(Self.escape(provider))-\(Self.escape(fileID))"
         }
@@ -477,6 +501,37 @@ Append to the existing `final class` in `Tests/SkiVideoCoreTests/AlignmentTrackT
         }
     }
 
+    /// Two local clips whose paths differ only by characters that a lossy
+    /// escaping would fold together must not name the same sidecar. Paired
+    /// against the same remote clip they both land in the keyed store, and a
+    /// collision there means one coach's alignment silently overwrites
+    /// another's — no error, no warning, just the wrong track.
+    func testLocalPathsThatFoldAlikeDoNotShareAKeyedSidecar() {
+        withTemporaryKeyedStore { _ in
+            let remote = ClipIdentity.remote(provider: "gdrive", fileID: "R")
+            let spaced = ClipIdentity(URL(fileURLWithPath: "/Ski Team 2026/run.mp4"))
+            let scored = ClipIdentity(URL(fileURLWithPath: "/Ski_Team_2026/run.mp4"))
+            XCTAssertNotEqual(
+                AlignmentTrackStore.sidecarURL(left: spaced, right: remote),
+                AlignmentTrackStore.sidecarURL(left: scored, right: remote)
+            )
+        }
+    }
+
+    /// A path deep enough that escaping it whole would breach the 255-byte
+    /// limit on a filename component must still produce a usable name.
+    func testADeepLocalPathStillProducesAUsableFilename() {
+        withTemporaryKeyedStore { _ in
+            let deep = ClipIdentity(URL(fileURLWithPath:
+                "/" + Array(repeating: "averylongfoldername", count: 40).joined(separator: "/")
+                    + "/run.mp4"))
+            let url = AlignmentTrackStore.sidecarURL(
+                left: deep, right: .remote(provider: "gdrive", fileID: "R")
+            )
+            XCTAssertLessThan(url.lastPathComponent.utf8.count, 255)
+        }
+    }
+
     func testRemotePairRoundTrips() throws {
         try withTemporaryKeyedStore { _ in
             let left = ClipIdentity.remote(provider: "gdrive", fileID: "L")
@@ -540,41 +595,35 @@ In `Sources/SkiVideoCore/AlignmentTrackStore.swift`, replace `sidecarURL`, `load
     /// folder never held. Such pairs go to the keyed store, named from both
     /// identities so the two spellings cannot collide.
     public static func sidecarURL(left: ClipIdentity, right: ClipIdentity) -> URL {
-        if case let .local(leftClip) = left, case let .local(rightClip) = right {
-            let leftStem = leftClip.deletingPathExtension().lastPathComponent
-            let rightStem = rightClip.deletingPathExtension().lastPathComponent
-            return leftClip.deletingLastPathComponent()
+        if let pair = localPair(left, right) {
+            let leftStem = pair.left.deletingPathExtension().lastPathComponent
+            let rightStem = pair.right.deletingPathExtension().lastPathComponent
+            return pair.left.deletingLastPathComponent()
                 .appendingPathComponent("\(leftStem)--\(rightStem)")
                 .appendingPathExtension(fileExtension)
         }
         return ClipIdentity.keyedStoreRoot
-            .appendingPathComponent("\(pairKey(left))--\(pairKey(right))")
+            .appendingPathComponent("\(left.pairKey)--\(right.pairKey)")
             .appendingPathExtension(fileExtension)
     }
 
-    /// Whether this pair belongs in the keyed store rather than beside the
-    /// left clip. The rule lives here alone — `sidecarURL` and `save` both ask
-    /// it, so neither can drift from the other.
-    private static func isKeyed(left: ClipIdentity, right: ClipIdentity) -> Bool {
-        if case .local = left, case .local = right { return false }
-        return true
+    /// The two clips when *both* are local — the only case that files beside
+    /// the footage. Nil means the pair belongs in the keyed store.
+    ///
+    /// One function rather than a predicate plus a separate pattern match:
+    /// `sidecarURL` needs the URLs and `save` needs only the decision, and
+    /// deriving them separately is how the two drift apart.
+    private static func localPair(
+        _ left: ClipIdentity, _ right: ClipIdentity
+    ) -> (left: URL, right: URL)? {
+        guard case let .local(leftClip) = left,
+              case let .local(rightClip) = right
+        else { return nil }
+        return (leftClip, rightClip)
     }
 
     public static func sidecarURL(left: URL, right: URL) -> URL {
         sidecarURL(left: ClipIdentity(left), right: ClipIdentity(right))
-    }
-
-    /// A local half of a mixed pair still needs a name in the keyed store, and
-    /// its stem alone is not unique across a library. The full path, escaped
-    /// by the same rule `ClipIdentity` uses for ids, is.
-    private static func pairKey(_ identity: ClipIdentity) -> String {
-        if let key = identity.storeKey { return key }
-        guard case let .local(clip) = identity else { return "unkeyed" }
-        return "local-" + String(clip.path.map { character in
-            character.isLetter || character.isNumber || character == "-"
-                ? character
-                : "_"
-        })
     }
 
     /// The stored track, or nil when there is none or it cannot be read.
@@ -610,8 +659,9 @@ In `Sources/SkiVideoCore/AlignmentTrackStore.swift`, replace `sidecarURL`, `load
     ) throws {
         let url = sidecarURL(left: left, right: right)
         // Only the keyed store can be missing. A footage folder exists by
-        // definition — the clip is in it.
-        if isKeyed(left: left, right: right) {
+        // definition — the clip is in it. Asks `localPair`, the same function
+        // `sidecarURL` decided with, so the two cannot disagree.
+        if localPair(left, right) == nil {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )
