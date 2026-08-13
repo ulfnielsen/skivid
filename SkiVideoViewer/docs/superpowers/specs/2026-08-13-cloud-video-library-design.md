@@ -282,7 +282,16 @@ public enum ClipIdentity: Hashable, Sendable {
 Local clips keep writing sidecars beside the footage — that portability is a
 deliberate design choice `ClipAnalysisStore` documents, and it stays. Cloud clips
 get an identity-keyed store under Application Support. `AlignmentTrackStore`
-takes the same treatment for its clip *pairs*.
+takes the same treatment for its clip *pairs*, with one rule worth stating
+because comparison can straddle the two: a pair sits beside the left clip only
+when **both** sides are local; any pair with a remote side goes to the
+identity-keyed store.
+
+> This does **not** make analysis survive a local clip being renamed or moved.
+> A sidecar beside the footage is orphaned by a rename whatever the store is
+> keyed on, and surviving that would need content-hash or inode keying — a
+> different feature, not in scope. An earlier draft of this spec claimed
+> otherwise in its delivery order; the claim was wrong.
 
 **Not in this work:** writing sidecars back to Drive so coaches share each
 other's analysis. It needs a write scope, conflict handling, and turns the app
@@ -389,8 +398,9 @@ Drive entry point and switches over once:
 1. ~~**Measure** whether the current playback URL works.~~ **Done 2026-08-13** —
    it does not; see the table above. `GoogleDriveSupport`'s media path is
    replaced outright rather than refactored.
-2. **`ClipIdentity` and the stores.** Independent of everything cloud, testable
-   on its own, and it fixes analysis surviving a rename of a *local* clip.
+2. **`ClipIdentity` and the stores.** Independent of everything cloud and
+   testable on its own: it gives cloud clips somewhere to keep analysis, and
+   leaves local behaviour byte-for-byte as it is.
 3. **Provider protocol, `GoogleOAuth` split, `GoogleDriveProvider`.** The
    existing sheet keeps working against the new provider.
 4. **`RemoteLibraryIndex`** — sweep, tree reconstruction, changes cursor.
