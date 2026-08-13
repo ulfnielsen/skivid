@@ -73,8 +73,17 @@ enum GoogleOAuth {
     /// Stands in for the loopback port in `redirectURI(for:)`. The redirect
     /// URI has to be built before the listener that owns the real port
     /// exists — it is a query parameter of the authorization URL, and the
-    /// listener is what assigns the port in the first place — so the
-    /// presenter substitutes this token for the real port once it has one.
+    /// listener is what assigns the port in the first place — so whichever
+    /// presenter drives the flow through this function is expected to
+    /// substitute the real port for this token before using the result.
+    ///
+    /// No presenter does that substitution yet: `redirectURI(for:)` is not on
+    /// the live path, and `AppKitOAuthPresenter` builds its own loopback URI
+    /// directly (`AppKitOAuthPresenter.swift`). Task 3 routes `authorize`'s
+    /// redirect through this function, at which point the substitution
+    /// becomes the presenter's job — and `authorize` refuses a redirect URI
+    /// that still carries this token, below, so a presenter that forgets
+    /// fails loudly instead of sending Google a URL it can never match.
     static let loopbackPortPlaceholder = "PORT"
 
     /// The redirect URI Google should send its authorization response to.
@@ -91,9 +100,29 @@ enum GoogleOAuth {
         }
     }
 
+    /// Rejects a redirect URI that still carries the loopback port
+    /// placeholder. A presenter driving the flow through `redirectURI(for:)`
+    /// is expected to substitute its listener's real port before handing the
+    /// result back; one that forgot would otherwise send Google a
+    /// `redirect_uri` it can never match, which surfaces as an opaque
+    /// "redirect mismatch" rather than as the bug it is. `authorize` calls
+    /// this on whatever redirect URI it is given, whatever its source.
+    ///
+    /// A free function rather than inline in `authorize` so it is testable
+    /// without going through the Keychain lookup `authorize` starts with.
+    static func requireCompleteRedirectURI(_ redirectURI: String) throws {
+        guard !redirectURI.contains(loopbackPortPlaceholder) else {
+            throw DriveError.oauthCallback(
+                "Sign-in could not start: the redirect address was not completed with a port."
+            )
+        }
+    }
+
     /// Maps the callback's `error` query parameter to the specific case it
     /// names, so a coach sees why sign-in failed rather than a generic
-    /// message. Returns nil when the callback carries no error.
+    /// message. Returns nil both when the callback carries no error and when
+    /// it carries one this does not map (`access_denied`, for instance) — the
+    /// caller falls back to a generic message for those, not to success.
     static func error(fromCallback url: URL) -> DriveError? {
         guard let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "error" })?.value
@@ -124,6 +153,7 @@ enum GoogleOAuth {
         }
 
         let redirectURI = try await presenter.prepareRedirectURI()
+        try requireCompleteRedirectURI(redirectURI)
         let state = try randomURLSafeString(byteCount: 24)
         let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()

@@ -65,8 +65,11 @@ final class GoogleOAuthTests: XCTestCase {
     // Needed now so Task 7's iOS presenter has a shared, tested place to build
     // its custom-scheme redirect, rather than each platform reimplementing the
     // format. The loopback case cannot know its real port here — only a
-    // running listener does — so it carries a documented placeholder that the
-    // presenter substitutes once the listener has one.
+    // running listener does — so it carries a documented placeholder that a
+    // presenter driving the flow through this function is expected to
+    // substitute once its listener has a port. No presenter does that yet:
+    // `AppKitOAuthPresenter` builds its own loopback URI directly, and this
+    // function is not yet on the live path (Task 3).
 
     /// A custom-scheme redirect is fully determined by configuration, so it
     /// can be built without a listener.
@@ -93,5 +96,36 @@ final class GoogleOAuthTests: XCTestCase {
             GoogleOAuth.redirectURI(for: configuration(secret: "shh")),
             "http://127.0.0.1:PORT"
         )
+    }
+
+    /// Nothing currently produces a redirect URI carrying the placeholder —
+    /// `authorize` takes its redirect from the presenter, not from
+    /// `redirectURI(for:)` — but a future presenter (Task 3) that forgot the
+    /// substitution would hand `authorize` exactly this string, and Google
+    /// would answer with an opaque "redirect_uri_mismatch" rather than naming
+    /// the real bug. `authorize` calls `requireCompleteRedirectURI` on
+    /// whatever the presenter returns, before it is ever sent to Google.
+    ///
+    /// Calls the guard directly rather than through `authorize`, which starts
+    /// with a Keychain lookup — tests here may not touch the real Keychain.
+    ///
+    /// Fails without the guard: the call would return normally instead of
+    /// throwing, so `XCTAssertThrowsError` would have no error to inspect.
+    func testARedirectURIStillCarryingThePortPlaceholderIsRefused() {
+        XCTAssertThrowsError(
+            try GoogleOAuth.requireCompleteRedirectURI("http://127.0.0.1:PORT")
+        ) { error in
+            guard let driveError = error as? DriveError, case let .oauthCallback(message) = driveError else {
+                return XCTFail("expected .oauthCallback naming the missing port, got \(error)")
+            }
+            XCTAssertTrue(message.lowercased().contains("port"), "got \(message)")
+        }
+    }
+
+    /// A real, substituted redirect URI must pass through untouched — pins
+    /// that the guard checks for the placeholder specifically, not anything
+    /// that merely looks like a loopback address.
+    func testACompletedRedirectURIIsNotRefused() {
+        XCTAssertNoThrow(try GoogleOAuth.requireCompleteRedirectURI("http://127.0.0.1:54321"))
     }
 }
