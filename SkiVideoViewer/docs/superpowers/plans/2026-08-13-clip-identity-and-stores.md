@@ -714,21 +714,45 @@ Both models currently hold clip `URL`s and will keep doing so until plan 2 intro
 Add to `Tests/SkiVideoCoreTests/SubjectSessionModelTests.swift`, inside the existing class:
 
 ```swift
-    /// The model must reach the store through an identity, so that a library
-    /// yielding remote clips needs no change here. Asserted by pointing the
-    /// keyed store somewhere empty and confirming a *local* clip is still
-    /// found — i.e. the model did not start writing everything to the key
-    /// store by mistake.
-    func testSubjectSessionStillUsesTheFootageFolderForALocalClip() throws {
+    /// A *local* clip's analysis must never route to the keyed store, and the
+    /// model must keep reaching the stores through an identity.
+    ///
+    /// Drives both call sites this task changes — `loadStored` reads,
+    /// `confirm` writes — with the keyed store pointed at a directory that
+    /// does not exist, so a stray write there shows up as that directory
+    /// appearing. Asserting on `ClipAnalysisStore` directly would prove
+    /// nothing about the model: it is the model's two calls that are being
+    /// switched over, so the model is what the test has to drive.
+    ///
+    /// This is the assertion the pre-existing round-trip tests cannot make.
+    /// `testAStoredAnalysisIsReusedWithoutAnalysingAgain` and
+    /// `testConfirmingAPickWritesItToTheSidecar` would both still pass if the
+    /// model *also* wrote a copy into the keyed store.
+    func testTheModelNeverTouchesTheKeyedStoreForALocalClip() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let previous = ClipIdentity.keyedStoreRoot
         ClipIdentity.keyedStoreRoot = root
-        defer { ClipIdentity.keyedStoreRoot = previous }
+        defer {
+            ClipIdentity.keyedStoreRoot = previous
+            try? FileManager.default.removeItem(at: root)
+        }
 
         try ClipAnalysisStore.save(analysis(subject: nil), for: clip())
-        XCTAssertNotNil(ClipAnalysisStore.load(for: ClipIdentity(clip())))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        let session = SubjectSessionModel()
+
+        XCTAssertNotNil(session.loadStored(for: clip()))
+        try session.confirm(
+            segmentIDs: [1],
+            runStart: .started(time: 4.42, baseline: 1.12, threshold: 2.02),
+            for: clip()
+        )
+
+        XCTAssertEqual(ClipAnalysisStore.load(for: clip())?.subject?.segmentIDs, [1])
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: root.path),
+            "a local clip's analysis must stay beside the footage"
+        )
     }
 ```
 
@@ -737,9 +761,9 @@ Add to `Tests/SkiVideoCoreTests/SubjectSessionModelTests.swift`, inside the exis
 Run:
 ```bash
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift test --filter testSubjectSessionStillUsesTheFootageFolderForALocalClip
+  swift test --filter testTheModelNeverTouchesTheKeyedStoreForALocalClip
 ```
-Expected: **PASS**. This is a characterisation test, not a red test — it pins behaviour that must survive Step 3. Note it in the commit message as such; a reviewer seeing a test that never failed should be told why.
+Expected: **PASS**. This is a characterisation test, not a red test — it pins behaviour that must survive Step 3, and it passes before the change because the URL-taking store API already delegates to `.local`. Note it in the commit message as such; a reviewer seeing a test that never failed should be told why.
 
 - [ ] **Step 3: Change the call sites**
 
