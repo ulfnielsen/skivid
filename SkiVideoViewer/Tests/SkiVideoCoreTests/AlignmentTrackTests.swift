@@ -215,6 +215,11 @@ final class AlignmentTrackTests: XCTestCase {
         }
     }
 
+    /// This cannot fail today: `sidecarURL(left: URL, right: URL)` is defined
+    /// as `sidecarURL(left: ClipIdentity(left), right: ClipIdentity(right))`,
+    /// so the two sides are the same call. It only guards against a future
+    /// rewrite of the URL overload into a parallel code path that quietly
+    /// stops agreeing with the identity one.
     func testTwoLocalIdentitiesResolveToTheSameSidecarAsTheURLAPI() {
         let left = directory.appendingPathComponent("C0094.MP4")
         let right = directory.appendingPathComponent("C0092.MP4")
@@ -224,5 +229,20 @@ final class AlignmentTrackTests: XCTestCase {
             ),
             AlignmentTrackStore.sidecarURL(left: left, right: right)
         )
+    }
+
+    /// The mixed pair's write path, not just its placement: `save` has to
+    /// create the keyed store directory for a pair that still carries a local
+    /// URL, which is the one case `localPair` rejects while a footage folder
+    /// is nonetheless in hand.
+    func testMixedPairRoundTripsThroughTheKeyedStore() throws {
+        try withTemporaryKeyedStore { _ in
+            let left = ClipIdentity(directory.appendingPathComponent("C0094.MP4"))
+            let right = ClipIdentity.remote(provider: "gdrive", fileID: "R")
+            try AlignmentTrackStore.save(track(), left: left, right: right)
+            XCTAssertEqual(
+                AlignmentTrackStore.load(left: left, right: right)?.samples.count, 2
+            )
+        }
     }
 }

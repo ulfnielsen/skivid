@@ -23,12 +23,12 @@ final class ClipIdentityTests: XCTestCase {
         XCTAssertEqual(identity.storeKey, "gdrive-1AbC")
     }
 
-    func testRemoteIdentityKeyEscapesPathSeparators() {
+    func testRemoteIdentityKeyEscapesPathSeparators() throws {
         // Drive ids are URL-safe base64 today, but nothing in this type may
         // assume that: a "/" reaching the filename would silently write into a
         // sibling directory, or fail.
         let identity = ClipIdentity.remote(provider: "gdrive", fileID: "a/b..c")
-        let key = try! XCTUnwrap(identity.storeKey)
+        let key = try XCTUnwrap(identity.storeKey)
         XCTAssertFalse(key.contains("/"))
         XCTAssertFalse(key.contains(".."))
     }

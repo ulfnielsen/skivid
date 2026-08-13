@@ -8,13 +8,21 @@ import Foundation
 /// path at all — only the provider that owns it and that provider's stable
 /// file id — so anything derived from it has to be keyed rather than placed.
 public enum ClipIdentity: Hashable, Sendable {
+    /// Always standardised — construct through `init(_:)` rather than writing
+    /// `.local(url)`, or two spellings of one path become two identities with
+    /// two sidecars.
     case local(URL)
     case remote(provider: String, fileID: String)
 
     /// The identity of a clip the app already holds as a file.
     ///
     /// Standardised, so `/a/./b.mp4` and `/a/b.mp4` are one identity rather
-    /// than two sidecars.
+    /// than two sidecars. Standardising consults the filesystem, not just the
+    /// text of the URL — `/private/tmp/X` resolves to `/tmp/X` when `X`
+    /// exists on disk and stays unchanged when it does not — so this type is
+    /// not a pure function of the URL alone. Local placement does not care
+    /// (same inode either way), but a future index that persists this type
+    /// across launches would see the difference.
     public init(_ clip: URL) {
         self = .local(clip.standardizedFileURL)
     }
@@ -40,11 +48,21 @@ public enum ClipIdentity: Hashable, Sendable {
     /// track under both halves.
     ///
     /// The local half is a digest of the path, not an escaped copy of it.
-    /// Escaping is lossy — every character outside `[A-Za-z0-9-]` becomes `_`,
-    /// so `/Ski Team 2026/run.mp4` and `/Ski_Team_2026/run.mp4` would name the
-    /// same file and one alignment track would silently overwrite the other's.
-    /// A digest also bounds the length, which an escaped absolute path does
-    /// not: a deep path can exceed a filesystem's 255-byte name limit.
+    /// Escaping is lossy — distinct paths can fold to one name, since
+    /// `escape` maps every character it does not pass through to the same
+    /// `_` — so `/Ski Team 2026/run.mp4` and `/Ski_Team_2026/run.mp4` would
+    /// name the same file and one alignment track would silently overwrite
+    /// the other's. A digest also bounds the length, which an escaped
+    /// absolute path does not: a deep path can exceed a filesystem's
+    /// 255-byte name limit.
+    ///
+    /// The remote half's join relies on an invariant `pairKey` cannot check:
+    /// `provider` is a compile-time constant under this project's control,
+    /// not user input, and must never be the literal `"local"` (or its key
+    /// would be indistinguishable from a local digest) and must never
+    /// contain `-` (joining with `-` is not injective — `("gdrive","AB-C")`
+    /// and `("gdrive-AB","C")` both key `gdrive-AB-C`). `fileID` may contain
+    /// `-` freely; only `provider` carries this restriction.
     public var pairKey: String {
         switch self {
         case let .local(clip):
@@ -57,12 +75,18 @@ public enum ClipIdentity: Hashable, Sendable {
         }
     }
 
-    /// Anything that is not unreserved-URL-safe becomes an underscore.
+    /// Anything that is not a letter, a number, or `-` becomes an underscore.
     ///
-    /// Drive's file ids are URL-safe base64 today and would survive
-    /// unescaped, but a key is a *filename*: one "/" in an id that a future
-    /// provider hands back would write outside the store, and ".." would climb
-    /// out of it. Escaping here costs nothing and removes the question.
+    /// "Letter" and "number" mean `Character.isLetter`/`.isNumber`, which are
+    /// Unicode-wide — not `[A-Za-z0-9]` — so this is not unreserved-URL-safe:
+    /// `escape("café été")` is `café_été`, with the accented letters passing
+    /// through untouched. That is fine for this use: the goal is only to keep
+    /// path-breaking characters out of a filename, not to produce an ASCII or
+    /// URL-safe string. Drive's file ids are URL-safe base64 today and would
+    /// survive unescaped, but a key is a *filename*: one "/" in an id that a
+    /// future provider hands back would write outside the store, and ".."
+    /// would climb out of it. Escaping here costs nothing and removes the
+    /// question.
     private static func escape(_ value: String) -> String {
         String(value.map { character in
             character.isLetter || character.isNumber || character == "-"

@@ -150,6 +150,11 @@ final class ClipAnalysisStoreTests: XCTestCase {
 
     /// The URL-taking API is the identity-taking one with `.local` supplied —
     /// not a second implementation that could drift from it.
+    ///
+    /// This cannot fail today: `sidecarURL(for: URL)` is defined as
+    /// `sidecarURL(for: ClipIdentity(clip))`, so the two sides are the same
+    /// call. It only guards against a future rewrite of the URL overload into
+    /// a parallel code path that quietly stops agreeing with the identity one.
     func testLocalIdentityResolvesToTheSameSidecarAsTheURLAPI() {
         XCTAssertEqual(
             ClipAnalysisStore.sidecarURL(for: ClipIdentity(clip())),

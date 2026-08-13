@@ -5,7 +5,9 @@ import Foundation
 /// A sidecar rather than a library index or an application-support cache
 /// because it travels with the footage: copy an athlete's folder to another
 /// machine and the analysis goes with it, and the file stays readable and
-/// correctable by hand.
+/// correctable by hand. That is true for local clips; an identity with no
+/// folder of its own — a remote clip — has nowhere to sit beside, so it
+/// falls back to the keyed store under `ClipIdentity.keyedStoreRoot`.
 public enum ClipAnalysisStore {
     public static let fileExtension = "skianalysis.json"
 
@@ -20,10 +22,8 @@ public enum ClipAnalysisStore {
         case let .local(clip):
             return clip.deletingPathExtension().appendingPathExtension(fileExtension)
         case .remote:
-            // Non-nil for every case that reaches here; `.local` returned above.
-            let key = identity.storeKey ?? "unkeyed"
             return ClipIdentity.keyedStoreRoot
-                .appendingPathComponent(key)
+                .appendingPathComponent(identity.pairKey)
                 .appendingPathExtension(fileExtension)
         }
     }

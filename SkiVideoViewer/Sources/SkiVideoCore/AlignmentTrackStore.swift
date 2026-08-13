@@ -5,7 +5,10 @@ import Foundation
 /// A track describes a *pair*, so it cannot live in either clip's own
 /// sidecar — the way `ClipAnalysisStore` shapes a single clip's sidecar.
 /// Instead it sits beside the **left** clip, named after both stems so it
-/// cannot collide with another pair that happens to share a left clip.
+/// cannot collide with another pair that happens to share a left clip. That
+/// placement only applies when *both* sides are local: a pair with a remote
+/// side, or an identity with no folder of its own, has nowhere to sit beside
+/// and falls back to the keyed store under `ClipIdentity.keyedStoreRoot`.
 public enum AlignmentTrackStore {
     public static let fileExtension = "skialignment.json"
 
