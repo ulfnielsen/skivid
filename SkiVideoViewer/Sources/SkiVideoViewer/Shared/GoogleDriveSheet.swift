@@ -45,15 +45,21 @@ struct GoogleDriveSheet: View {
 
     private var signInSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Sign in with the club's Google account to see the Shared Drives it can open.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Sign in with Google") {
-                    Task { await model.signIn(with: GoogleDriveSheet.makeProvider()) }
+            if let provider = GoogleDriveSheet.makeProvider() {
+                Text("Sign in with the club's Google account to see the Shared Drives it can open.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Sign in with Google") {
+                        Task { await model.signIn(with: provider) }
+                    }
+                    .keyboardShortcut(.defaultAction)
                 }
-                .keyboardShortcut(.defaultAction)
+            } else {
+                Text(GoogleClientSecretsLoader.missingConfigurationMessage)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -72,21 +78,14 @@ struct GoogleDriveSheet: View {
 
     /// A Desktop OAuth client, using the loopback redirect
     /// `AppKitOAuthPresenter` already implements — see the design spec's
-    /// "Two OAuth clients, two redirect strategies".
-    ///
-    /// The id and secret below are placeholders. This app has no registered
-    /// Google Cloud client yet: the plan's "Setup this plan needs from a
-    /// human" step asks for a Desktop client in a project owned by the
-    /// club's Workspace organisation, and sign-in cannot succeed until that
-    /// client's real id and secret replace these. Until then, tapping
-    /// "Sign in with Google" reaches Google and is refused as a
-    /// misconfigured client — a config gap, not a code path this task can
-    /// exercise or fix.
-    private static func makeProvider() -> GoogleDriveProvider {
-        GoogleDriveProvider(configuration: GoogleOAuthConfiguration(
-            clientID: "REPLACE-WITH-MACOS-CLIENT-ID.apps.googleusercontent.com",
-            clientSecret: "REPLACE-WITH-MACOS-CLIENT-SECRET",
-            redirectKind: .loopback
-        ))
+    /// "Two OAuth clients, two redirect strategies". The client's id and
+    /// secret come from `GoogleClientSecretsLoader`, which reads them from a
+    /// `client_secret_*.json` on disk rather than a literal in source — see
+    /// that type for where it looks. Nil when it finds none, so
+    /// `signInSection` can say so instead of offering a button that reaches
+    /// Google only to be refused as a misconfigured client.
+    private static func makeProvider() -> GoogleDriveProvider? {
+        guard let configuration = GoogleClientSecretsLoader.load() else { return nil }
+        return GoogleDriveProvider(configuration: configuration)
     }
 }
