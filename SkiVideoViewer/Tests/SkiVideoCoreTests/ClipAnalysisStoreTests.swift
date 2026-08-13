@@ -73,4 +73,81 @@ final class ClipAnalysisStoreTests: XCTestCase {
 
         XCTAssertThrowsError(try ClipAnalysisStore.save(sample, for: clip()))
     }
+
+    // MARK: - Identity-keyed storage
+
+    /// Points the keyed store at a temporary directory for one test and puts
+    /// it back afterwards, so a test run never writes into real Application
+    /// Support and two tests cannot see each other's sidecars.
+    private func withTemporaryKeyedStore(_ body: (URL) throws -> Void) rethrows {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let previous = ClipIdentity.keyedStoreRoot
+        ClipIdentity.keyedStoreRoot = root
+        defer {
+            ClipIdentity.keyedStoreRoot = previous
+            try? FileManager.default.removeItem(at: root)
+        }
+        try body(root)
+    }
+
+    func testRemoteSidecarLivesInTheKeyedStoreUnderItsKey() throws {
+        try withTemporaryKeyedStore { root in
+            let identity = ClipIdentity.remote(provider: "gdrive", fileID: "1AbC")
+            let url = ClipAnalysisStore.sidecarURL(for: identity)
+            XCTAssertEqual(url.deletingLastPathComponent().path, root.path)
+            XCTAssertEqual(url.lastPathComponent, "gdrive-1AbC.skianalysis.json")
+        }
+    }
+
+    func testRemoteAnalysisRoundTrips() throws {
+        try withTemporaryKeyedStore { _ in
+            let identity = ClipIdentity.remote(provider: "gdrive", fileID: "1AbC")
+            try ClipAnalysisStore.save(sample, for: identity)
+            XCTAssertEqual(ClipAnalysisStore.load(for: identity)?.parameters.fps, 25)
+        }
+    }
+
+    /// The store directory does not exist on a fresh install. Saving has to
+    /// create it rather than throw, or the first analysis a coach ever runs on
+    /// a cloud clip is lost.
+    func testSavingRemoteAnalysisCreatesTheStoreDirectory() throws {
+        try withTemporaryKeyedStore { root in
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+            try ClipAnalysisStore.save(
+                sample, for: .remote(provider: "gdrive", fileID: "1AbC")
+            )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        }
+    }
+
+    func testMissingRemoteAnalysisReadsAsAbsent() throws {
+        try withTemporaryKeyedStore { _ in
+            XCTAssertNil(
+                ClipAnalysisStore.load(for: .remote(provider: "gdrive", fileID: "nope"))
+            )
+        }
+    }
+
+    /// Two providers that happen to issue the same file id must not share a
+    /// sidecar.
+    func testRemoteAnalysisIsScopedToItsProvider() throws {
+        try withTemporaryKeyedStore { _ in
+            try ClipAnalysisStore.save(
+                sample, for: .remote(provider: "gdrive", fileID: "shared")
+            )
+            XCTAssertNil(
+                ClipAnalysisStore.load(for: .remote(provider: "dropbox", fileID: "shared"))
+            )
+        }
+    }
+
+    /// The URL-taking API is the identity-taking one with `.local` supplied —
+    /// not a second implementation that could drift from it.
+    func testLocalIdentityResolvesToTheSameSidecarAsTheURLAPI() {
+        XCTAssertEqual(
+            ClipAnalysisStore.sidecarURL(for: ClipIdentity(clip())),
+            ClipAnalysisStore.sidecarURL(for: clip())
+        )
+    }
 }
