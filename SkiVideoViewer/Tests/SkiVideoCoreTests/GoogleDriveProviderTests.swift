@@ -11,6 +11,68 @@ final class GoogleDriveProviderTests: XCTestCase {
         provider = GoogleDriveProvider(transport: transport, token: { "test-token" })
     }
 
+    // MARK: - Sign-in fixture
+
+    /// `setUp`'s `provider` is built from a `token:` closure that always
+    /// answers — the seam plan 2's tests use to stay off the network. These
+    /// sign-in tests need the opposite: a provider actually wired to
+    /// `GoogleOAuth`, starting with no stored credential. A second factory
+    /// rather than changing `setUp`, so the pre-existing tests above keep
+    /// their fixture untouched.
+    private func makeOAuthBackedProvider() -> GoogleDriveProvider {
+        GoogleDriveProvider(
+            configuration: GoogleOAuthConfiguration(
+                clientID: "test-client.apps.googleusercontent.com",
+                clientSecret: nil,
+                redirectKind: .loopback
+            ),
+            transport: transport,
+            tokenStore: InMemoryOAuthTokenStore()
+        )
+    }
+
+    // MARK: - Sign-in
+
+    /// `connect` must run the flow and leave the provider able to authorize —
+    /// asserted by a subsequent request carrying the bearer token, not by
+    /// `connect` merely returning. A no-op `connect` would pass the second
+    /// check alone.
+    /// `@MainActor` because `FakeOAuthPresenter` is — it stands in for
+    /// `ASWebAuthenticationSession`/`AppKitOAuthPresenter`, both UI-bound.
+    @MainActor
+    func testConnectLeavesTheProviderAbleToAuthorizeRequests() async throws {
+        provider = makeOAuthBackedProvider()
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:1/?code=abc&state=STATE")!
+        transport.responses = [
+            .init(json: #"{"access_token":"at-1","refresh_token":"rt-1"}"#),
+            .init(json: #"{"drives":[]}"#),
+        ]
+
+        try await provider.connect(presenter: presenter)
+        _ = try await provider.roots()
+
+        XCTAssertEqual(
+            transport.requests.last?.value(forHTTPHeaderField: "Authorization"),
+            "Bearer at-1"
+        )
+    }
+
+    /// Before `connect`, a request must fail rather than go out unauthenticated
+    /// — an unauthenticated Drive media request comes back as an HTML block
+    /// page, which is a far worse thing to debug.
+    func testAnUnconnectedProviderRefusesToRequestAnything() async {
+        provider = makeOAuthBackedProvider()
+        do {
+            _ = try await provider.roots()
+            XCTFail("expected .notSignedIn")
+        } catch let error as RemoteLibraryError {
+            XCTAssertEqual(error, .notSignedIn)
+        } catch {
+            XCTFail("expected RemoteLibraryError, got \(error)")
+        }
+    }
+
     // MARK: - Credentials
 
     /// Measured 2026-08-13: a query-string token on `alt=media` is refused

@@ -68,7 +68,50 @@ final class FakeOAuthPresenter: OAuthPresenter {
         guard let callbackToReturn else {
             throw NSError(domain: "FakeOAuthPresenter", code: 1)
         }
-        return callbackToReturn
+        return Self.reflectingState(from: authorizationURL, onto: callbackToReturn)
+    }
+
+    /// A real browser redirect echoes back whatever `state` Google was sent —
+    /// `authorize` generates a fresh random one on every call and rejects a
+    /// callback that doesn't carry it back, as its CSRF check. A test fixing
+    /// `callbackToReturn`'s `state` to a literal ahead of time cannot know
+    /// that value, so this substitutes the real one in, the way an actual
+    /// redirect would, and leaves everything else about `callbackToReturn`
+    /// untouched.
+    private static func reflectingState(from authorizationURL: URL, onto callback: URL) -> URL {
+        guard let realState = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "state" })?.value,
+            var components = URLComponents(url: callback, resolvingAgainstBaseURL: false)
+        else {
+            return callback
+        }
+        var items = components.queryItems ?? []
+        if let index = items.firstIndex(where: { $0.name == "state" }) {
+            items[index] = URLQueryItem(name: "state", value: realState)
+        } else {
+            items.append(URLQueryItem(name: "state", value: realState))
+        }
+        components.queryItems = items
+        return components.url ?? callback
+    }
+}
+
+/// Stands in for `KeychainTokenStore`, so a `GoogleDriveProvider` built from a
+/// `GoogleOAuthConfiguration` — `connect`, and requests made before it — never
+/// touches the real login Keychain in a test.
+final class InMemoryOAuthTokenStore: OAuthTokenStore, @unchecked Sendable {
+    private var storage: [String: String] = [:]
+
+    func load(account: String) -> String? {
+        storage[account]
+    }
+
+    func save(_ token: String, account: String) throws {
+        storage[account] = token
+    }
+
+    func remove(account: String) {
+        storage[account] = nil
     }
 }
 

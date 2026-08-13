@@ -139,16 +139,26 @@ enum GoogleOAuth {
         }
     }
 
+    /// `transport` and `tokenStore` default to the real network and the real
+    /// Keychain, so a production call site names neither. Both are seams
+    /// `GoogleDriveProvider`'s tests use to keep this off the network and out
+    /// of the login Keychain: measured directly — a first draft that let this
+    /// function reach the real `KeychainTokenStore` from a test took 3 seconds
+    /// to fail (`SecItemCopyMatching` against the actual Keychain).
     static func authorize(
         configuration: GoogleOAuthConfiguration,
-        presenter: OAuthPresenter
+        presenter: OAuthPresenter,
+        transport: HTTPTransport = URLSessionTransport(),
+        tokenStore: OAuthTokenStore = KeychainTokenStore()
     ) async throws -> String {
-        if let refreshToken = KeychainTokenStore.load(account: configuration.clientID) {
+        if let refreshToken = tokenStore.load(account: configuration.clientID) {
             do {
-                return try await refreshAccessToken(refreshToken: refreshToken, configuration: configuration)
+                return try await refreshAccessToken(
+                    refreshToken: refreshToken, configuration: configuration, transport: transport
+                )
             } catch {
                 // A revoked or expired refresh token should not permanently prevent a new sign-in.
-                KeychainTokenStore.remove(account: configuration.clientID)
+                tokenStore.remove(account: configuration.clientID)
             }
         }
 
@@ -199,35 +209,42 @@ enum GoogleOAuth {
                 "redirect_uri": redirectURI,
                 "grant_type": "authorization_code",
                 "code_verifier": verifier,
-            ]
+            ],
+            transport: transport
         )
         guard let refreshToken = token.refreshToken else {
             throw DriveError.tokenExchange("Google did not return a refresh token. Try connecting again.")
         }
-        try KeychainTokenStore.save(refreshToken, account: configuration.clientID)
+        try tokenStore.save(refreshToken, account: configuration.clientID)
         return token.accessToken
     }
 
     /// A fresh access token using whatever refresh token is already in the
     /// Keychain, without the interactive dance. Throws if there is none —
     /// callers that can present UI should fall back to `authorize`.
-    static func accessToken(configuration: GoogleOAuthConfiguration) async throws -> String {
-        guard let refreshToken = KeychainTokenStore.load(account: configuration.clientID) else {
+    static func accessToken(
+        configuration: GoogleOAuthConfiguration,
+        transport: HTTPTransport = URLSessionTransport(),
+        tokenStore: OAuthTokenStore = KeychainTokenStore()
+    ) async throws -> String {
+        guard let refreshToken = tokenStore.load(account: configuration.clientID) else {
             throw DriveError.tokenExchange("No stored Google sign-in to refresh. Sign in again.")
         }
-        return try await refreshAccessToken(refreshToken: refreshToken, configuration: configuration)
+        return try await refreshAccessToken(refreshToken: refreshToken, configuration: configuration, transport: transport)
     }
 
     private static func refreshAccessToken(
         refreshToken: String,
-        configuration: GoogleOAuthConfiguration
+        configuration: GoogleOAuthConfiguration,
+        transport: HTTPTransport
     ) async throws -> String {
         try await tokenRequest(
             configuration: configuration,
             values: [
                 "refresh_token": refreshToken,
                 "grant_type": "refresh_token",
-            ]
+            ],
+            transport: transport
         ).accessToken
     }
 
@@ -250,16 +267,15 @@ enum GoogleOAuth {
 
     private static func tokenRequest(
         configuration: GoogleOAuthConfiguration,
-        values: [String: String]
+        values: [String: String],
+        transport: HTTPTransport
     ) async throws -> GoogleTokenResponse {
         var request = URLRequest(url: URL(string: tokenEndpoint)!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = tokenRequestBody(values: values, configuration: configuration).data(using: .utf8)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode)
-        else {
+        let (data, response) = try await transport.data(for: request)
+        guard (200...299).contains(response.statusCode) else {
             throw GoogleAPIError.describe(
                 data: data,
                 response: response,
@@ -311,10 +327,30 @@ private struct GoogleTokenResponse: Decodable {
     }
 }
 
-private enum KeychainTokenStore {
-    private static let service = "ch.ski.video-viewer.google-drive"
+/// Where `GoogleOAuth` keeps the refresh token, abstracted so a test can
+/// supply an in-memory stand-in instead of the real Keychain. `public`
+/// because `GoogleDriveProvider`'s configuration-based initialiser — a
+/// different type, constructed from the app target — takes one too, and a
+/// public initialiser cannot have a parameter of a non-public type.
+public protocol OAuthTokenStore: Sendable {
+    func load(account: String) -> String?
+    func save(_ token: String, account: String) throws
+    func remove(account: String)
+}
 
-    static func load(account: String) -> String? {
+/// The real Keychain, behind `OAuthTokenStore`. Never constructed by a test —
+/// every test that needs a token store injects its own in-memory one instead.
+///
+/// `public`, like its `init()`: it is `GoogleDriveProvider`'s configuration
+/// initialiser's default `tokenStore` value, and a public initialiser's
+/// default argument must be built from public symbols — the same reason
+/// `OAuthTokenStore` above is public.
+public struct KeychainTokenStore: OAuthTokenStore {
+    private let service = "ch.ski.video-viewer.google-drive"
+
+    public init() {}
+
+    public func load(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -331,7 +367,7 @@ private enum KeychainTokenStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func save(_ token: String, account: String) throws {
+    public func save(_ token: String, account: String) throws {
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -350,7 +386,7 @@ private enum KeychainTokenStore {
         }
     }
 
-    static func remove(account: String) {
+    public func remove(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

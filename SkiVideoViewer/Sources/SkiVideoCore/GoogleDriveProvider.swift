@@ -18,19 +18,83 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
 
     private let transport: HTTPTransport
     private let token: @Sendable () -> String?
+    /// Present only when this provider was built from a `GoogleOAuthConfiguration`
+    /// — `connect` uses it to run the flow and cache what it returns; the
+    /// `token:`-closure initialiser leaves it nil and supplies credentials
+    /// entirely on its own.
+    private let signIn: SignIn?
+
+    /// Bundles what `connect` needs and boxes the access token it obtains, so
+    /// `token` can read it back on every later request without another round
+    /// trip. A class, not a struct, because the struct around it (`Sendable`,
+    /// so it can cross actors) must stay immutable while this still gets
+    /// written once, from `connect`.
+    private final class SignIn: @unchecked Sendable {
+        let configuration: GoogleOAuthConfiguration
+        let transport: HTTPTransport
+        let tokenStore: OAuthTokenStore
+        private let lock = NSLock()
+        private var accessToken: String?
+
+        init(configuration: GoogleOAuthConfiguration, transport: HTTPTransport, tokenStore: OAuthTokenStore) {
+            self.configuration = configuration
+            self.transport = transport
+            self.tokenStore = tokenStore
+        }
+
+        func currentAccessToken() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return accessToken
+        }
+
+        func store(_ newAccessToken: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            accessToken = newAccessToken
+        }
+    }
 
     /// `token` is read per request rather than captured once, so a refresh
-    /// between calls is picked up without rebuilding the provider.
+    /// between calls is picked up without rebuilding the provider. Plan 2's
+    /// tests build a provider this way, with a token available from the
+    /// start; `connect` on a provider built this way has nothing to run and
+    /// refuses.
     public init(transport: HTTPTransport = URLSessionTransport(), token: @escaping @Sendable () -> String?) {
         self.transport = transport
         self.token = token
+        self.signIn = nil
+    }
+
+    /// The production path: `connect` runs the real Google sign-in flow and
+    /// every request after it authorizes with what that flow obtained.
+    /// `tokenStore` defaults to the real Keychain; a test supplies its own
+    /// in-memory one so `connect` never touches it.
+    public init(
+        configuration: GoogleOAuthConfiguration,
+        transport: HTTPTransport = URLSessionTransport(),
+        tokenStore: OAuthTokenStore = KeychainTokenStore()
+    ) {
+        let signIn = SignIn(configuration: configuration, transport: transport, tokenStore: tokenStore)
+        self.transport = transport
+        self.token = { signIn.currentAccessToken() }
+        self.signIn = signIn
     }
 
     public func connect(presenter: OAuthPresenter) async throws {
-        // Sign-in lands in plan 3, which owns the client registration and the
-        // two platform redirect paths. Until then the token closure supplies
-        // credentials obtained elsewhere.
-        throw RemoteLibraryError.notSignedIn
+        guard let signIn else {
+            // Built from the `token:` closure, which already supplies
+            // credentials obtained elsewhere — there is no flow for this
+            // initialiser to run.
+            throw RemoteLibraryError.notSignedIn
+        }
+        let accessToken = try await GoogleOAuth.authorize(
+            configuration: signIn.configuration,
+            presenter: presenter,
+            transport: signIn.transport,
+            tokenStore: signIn.tokenStore
+        )
+        signIn.store(accessToken)
     }
 
     public func roots() async throws -> [RemoteFolder] {
