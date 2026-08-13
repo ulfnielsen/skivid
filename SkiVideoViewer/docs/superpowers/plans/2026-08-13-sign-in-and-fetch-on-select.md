@@ -931,7 +931,33 @@ env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 Expected: FAIL — nothing fetches, so `requestedFileIDs` is empty.
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3: Make a stale token survive the download too**
+
+Task 3 gave the provider a 401-and-refresh retry, but only for the API calls it makes itself. The **bytes** are fetched by `ClipCache`'s downloader, outside the provider — `downloadSource(for:)` hands over whatever token is cached, and a 401 there becomes a plain failure with no refresh.
+
+That leaves the original defect on the path that matters most. A coach reviewing for over an hour can list the library fine and fail to open a clip, which is the same "token expires mid-session and cannot be replaced" this whole design exists to escape.
+
+Where fetching is triggered — `prepareCurrentClip` — treat an unauthorised download as retryable exactly once:
+
+```swift
+        // Task 3's refresh covers the provider's own requests; the bytes are
+        // fetched by the cache, which has no provider to ask. So a download
+        // refused for credentials is retried once with a freshly minted
+        // source. Once, not in a loop: a second refusal is a real failure,
+        // and retrying it forever would hammer Drive with a bad token.
+        do {
+            materialisedByFileID[file.id] = try await clipCache.materialize(file, source: source)
+        } catch RemoteLibraryError.unauthorised {
+            let retried = try await remoteProvider.downloadSource(for: file)
+            materialisedByFileID[file.id] = try await clipCache.materialize(file, source: retried)
+        }
+```
+
+This needs `RemoteLibraryError` to carry an `unauthorised` case and `URLSessionClipDownloader` to throw it on a 401 rather than folding it into `.api`. Add both.
+
+Test it with a downloader that refuses once and succeeds after: assert the clip ends up cached, and that exactly two download attempts were made. **A test asserting only that it eventually succeeded would pass without any retry**, so assert the attempt count.
+
+- [ ] **Step 4: Write minimal implementation**
 
 In `ViewerModel`, after any change of selection (`changeVideo`, `changeAthlete`, `selectAthlete`), start a fetch of the current clip and a prefetch of its neighbours:
 
@@ -954,7 +980,7 @@ For the comparison pane, give `ComparisonModel.load(_:side:)` an overload taking
 
 Also remove the corresponding entry from the plan-2 document's "What this plan deliberately does not do" list, so the two documents do not disagree.
 
-- [ ] **Step 4: Run the suite and commit**
+- [ ] **Step 5: Run the suite and commit**
 
 ```bash
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test 2>&1 | tail -5
