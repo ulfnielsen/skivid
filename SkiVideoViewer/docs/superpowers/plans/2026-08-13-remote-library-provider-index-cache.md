@@ -10,6 +10,25 @@
 
 This is plan 2 of 3 from `docs/superpowers/specs/2026-08-13-cloud-video-library-design.md`, covering its delivery-order steps 3–5. Plan 1 (`2026-08-13-clip-identity-and-stores.md`) is complete and provides `ClipIdentity`. Plan 3 covers the sign-in UI, the Shared Drive picker, prefetch, and the iPad OAuth path.
 
+> **Executed 2026-08-13, `cd6e894..992139c`.** Every one of the seven tasks
+> turned up at least one defect inherited verbatim from the code blocks below;
+> none was an implementation failure. The code as *shipped* differs from this
+> document wherever a fix landed — the amendment commits carry the reasoning,
+> and `git log` on `Sources/SkiVideoCore` is the authority, not this plan.
+>
+> Four of those defects were tests whose fixtures were too small to express the
+> failing case: one file where two were needed, two clips in the same folder
+> when the point was folder ordering, a version fixture that failed to decode
+> before reaching the version check, and a one-clip comparison library. The
+> final whole-branch review then found three Critical defects none of the
+> task-scoped reviews could see, by compiling and running the branch's code
+> rather than reading it.
+>
+> **If you are writing a plan like this one:** a fixture that cannot distinguish
+> the right answer from the wrong one is the failure mode to watch for, and a
+> doc comment asserting a property is the second — this plan produced five
+> comments that claimed things the code beneath them did not do.
+
 ## Global Constraints
 
 - **The test command is NOT plain `swift test`.** `xcode-select -p` points at `/Library/Developer/CommandLineTools`, which ships no XCTest, so bare `swift test` fails with `error: no such module 'XCTest'` before running anything. Every command here is prefixed:
