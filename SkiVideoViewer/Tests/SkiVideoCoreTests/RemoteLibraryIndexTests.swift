@@ -43,6 +43,17 @@ final class RemoteLibraryIndexTests: XCTestCase {
         XCTAssertEqual(url.host, "1A_bC-dEf")
     }
 
+    /// An id that cannot form a URL host must still produce a *unique* URL.
+    /// Sharing one fallback URL would drop every such clip but the last, and
+    /// leave duplicate rows pointing at it.
+    func testIDsThatCannotFormAHostStillGetDistinctURLs() {
+        let a = RemoteLibraryIndex.libraryURL(
+            for: file("bad id one", "run.mp4", ["E", "Ada"]), providerIdentifier: "gdrive")
+        let b = RemoteLibraryIndex.libraryURL(
+            for: file("bad id two", "run.mp4", ["E", "Ada"]), providerIdentifier: "gdrive")
+        XCTAssertNotEqual(a, b)
+    }
+
     // MARK: - Grouping
 
     func testAthleteAndEventComeFromTheLastTwoPathComponents() {
@@ -88,18 +99,29 @@ final class RemoteLibraryIndexTests: XCTestCase {
         XCTAssertEqual(index.athletes.map(\.event), ["Neuss 2026"])
     }
 
-    /// Within an athlete, clips sort by folder path then name — the local
+    /// Within an athlete, clips sort by folder path *before* name — the local
     /// scanner's order, which the old flat URL could not produce.
-    func testClipsSortByFolderPathThenName() {
+    ///
+    /// The two clips group together (the rule reads the two folders nearest
+    /// the clip, so both are event "E", athlete "Ada") but sit in different
+    /// folders. `/Archive/E/Ada/z.mp4` sorts before `/E/Ada/a.mp4` on path
+    /// while sorting *after* it on name, so this test fails under any
+    /// filename-only ordering — which is exactly what the old synthesised URL
+    /// produced, and the defect this task exists to fix.
+    ///
+    /// Verified against Foundation: path order gives ["z.mp4", "a.mp4"],
+    /// filename order gives ["a.mp4", "z.mp4"].
+    func testClipsSortByFolderPathBeforeName() {
         let index = RemoteLibraryIndex(
             providerIdentifier: "gdrive",
             files: [
-                file("c", "b.mp4", ["E", "Ada"]),
                 file("a", "a.mp4", ["E", "Ada"]),
+                file("z", "z.mp4", ["Archive", "E", "Ada"]),
             ]
         )
+        XCTAssertEqual(index.athletes.count, 1, "both clips belong to one athlete")
         XCTAssertEqual(
-            index.athletes[0].videos.map(\.lastPathComponent), ["a.mp4", "b.mp4"]
+            index.athletes[0].videos.map(\.lastPathComponent), ["z.mp4", "a.mp4"]
         )
     }
 

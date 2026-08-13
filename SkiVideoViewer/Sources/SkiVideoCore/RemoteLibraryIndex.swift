@@ -80,12 +80,21 @@ public struct RemoteLibraryIndex: Equatable {
         components.host = file.id
         components.path = "/" + (file.path + [file.name]).joined(separator: "/")
         if let url = components.url { return url }
-        // Unreachable for Drive, whose ids are base64url and whose names are
-        // percent-encoded by URLComponents. A provider that broke that
-        // assumption would otherwise crash on a force-unwrap; this keeps the
-        // clip out of the library instead, where the id still makes it unique.
-        return URL(string: "\(providerIdentifier)://\(file.id)")
-            ?? URL(fileURLWithPath: "/dev/null")
+
+        // Drive ids are base64url and always form a host, but an id carrying a
+        // space, ":", "\", "[" or "]" makes URLComponents refuse. Digesting it
+        // gives a host that is always URL-safe and still unique per file, so
+        // the clip stays in the library instead of colliding with every other
+        // unbuildable one. Nothing parses this host back — `file(for:)` is a
+        // dictionary lookup — so a digest reads as badly and works as well.
+        components.host = StorageName.forIdentifier(file.id)
+        if let url = components.url { return url }
+
+        // Reaching here means the *scheme* is unusable, which is a provider
+        // bug rather than bad data: identifiers are compile-time constants.
+        // Still per-file unique, because the alternative is two clips sharing
+        // one URL and one of them vanishing from the sidebar.
+        return URL(fileURLWithPath: "/\(StorageName.forIdentifier(file.id))")
     }
 
     /// The file a library URL stands for, or nil when the URL is not this
