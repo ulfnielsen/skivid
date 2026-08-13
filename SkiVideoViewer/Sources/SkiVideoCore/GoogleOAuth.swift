@@ -179,6 +179,24 @@ enum GoogleOAuth {
     }
 }
 
+private struct GoogleAPIError: Decodable {
+    struct Details: Decodable {
+        let code: Int?
+        let message: String?
+        let status: String?
+    }
+
+    let error: Details?
+
+    static func describe(data: Data, response: URLResponse, action: String) -> DriveError {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode
+        let decoded = try? JSONDecoder().decode(GoogleAPIError.self, from: data)
+        let message = decoded?.error?.message ?? "No detail returned by Google."
+        let status = statusCode.map { " (HTTP \($0))" } ?? ""
+        return .api("Google Drive could not \(action)\(status): \(message)")
+    }
+}
+
 private struct GoogleTokenResponse: Decodable {
     let accessToken: String
     let refreshToken: String?

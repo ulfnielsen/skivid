@@ -167,7 +167,7 @@ struct GoogleDriveClient {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode)
         else {
-            throw GoogleAPIError.describe(
+            throw DriveClientAPIError.describe(
                 data: data,
                 response: response,
                 action: "open this Shared Drive folder"
@@ -201,7 +201,7 @@ struct GoogleDriveClient {
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode)
             else {
-                throw GoogleAPIError.describe(
+                throw DriveClientAPIError.describe(
                     data: data,
                     response: response,
                     action: "list this Shared Drive folder"
@@ -242,7 +242,11 @@ private struct DriveFile: Decodable {
     var canDownload: Bool { capabilities?.canDownload ?? false }
 }
 
-struct GoogleAPIError: Decodable {
+/// A private copy for the client this file still holds. The shared original
+/// moved to GoogleOAuth.swift; this whole file is deleted in a later task, so
+/// duplicating six lines for its remaining life beats widening the moved type's
+/// access to serve code that is going away.
+private struct DriveClientAPIError: Decodable {
     struct Details: Decodable {
         let code: Int?
         let message: String?
@@ -253,7 +257,7 @@ struct GoogleAPIError: Decodable {
 
     static func describe(data: Data, response: URLResponse, action: String) -> DriveError {
         let statusCode = (response as? HTTPURLResponse)?.statusCode
-        let decoded = try? JSONDecoder().decode(GoogleAPIError.self, from: data)
+        let decoded = try? JSONDecoder().decode(DriveClientAPIError.self, from: data)
         let message = decoded?.error?.message ?? "No detail returned by Google."
         let status = statusCode.map { " (HTTP \($0))" } ?? ""
         return .api("Google Drive could not \(action)\(status): \(message)")
