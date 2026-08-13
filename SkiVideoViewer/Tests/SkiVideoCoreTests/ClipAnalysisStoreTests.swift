@@ -91,8 +91,11 @@ final class ClipAnalysisStoreTests: XCTestCase {
         try body(root)
     }
 
-    func testRemoteSidecarLivesInTheKeyedStoreUnderItsKey() throws {
-        try withTemporaryKeyedStore { root in
+    // `withTemporaryKeyedStore` is `rethrows`, so a test whose closure calls
+    // nothing throwing must omit both `try` and `throws` — otherwise the
+    // compiler warns "no calls to throwing functions occur within 'try'".
+    func testRemoteSidecarLivesInTheKeyedStoreUnderItsKey() {
+        withTemporaryKeyedStore { root in
             let identity = ClipIdentity.remote(provider: "gdrive", fileID: "1AbC")
             let url = ClipAnalysisStore.sidecarURL(for: identity)
             XCTAssertEqual(url.deletingLastPathComponent().path, root.path)
@@ -121,8 +124,11 @@ final class ClipAnalysisStoreTests: XCTestCase {
         }
     }
 
-    func testMissingRemoteAnalysisReadsAsAbsent() throws {
-        try withTemporaryKeyedStore { _ in
+    // `withTemporaryKeyedStore` is `rethrows`, so a test whose closure calls
+    // nothing throwing must omit both `try` and `throws` — otherwise the
+    // compiler warns "no calls to throwing functions occur within 'try'".
+    func testMissingRemoteAnalysisReadsAsAbsent() {
+        withTemporaryKeyedStore { _ in
             XCTAssertNil(
                 ClipAnalysisStore.load(for: .remote(provider: "gdrive", fileID: "nope"))
             )
