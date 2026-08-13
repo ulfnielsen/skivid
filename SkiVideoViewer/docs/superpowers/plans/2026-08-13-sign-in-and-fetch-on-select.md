@@ -2,17 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **INCOMPLETE — do not execute past Task 3.** Tasks 1–3 are specified at full
-> resolution: exact code, exact test bodies. **Tasks 4–7 describe their tests in
-> prose only** and are not yet executable to this repo's standard.
+> **A note on the tests below, and why they read the way they do.** Across
+> plans 1 and 2, five tests passed while being unable to fail — every one from
+> a fixture too small to express the case it claimed to test: one file for a
+> mid-stream failure, two clips in one folder for a folder-ordering test, a
+> version fixture that failed to decode before reaching the version check, a
+> one-clip library for a picker invariant, and a characterisation test that
+> never instantiated the model it characterised.
 >
-> That distinction matters more here than it usually would. Across plans 1 and
-> 2, five tests passed while being unable to fail, every one of them from a
-> fixture *I* wrote being too small to express the case it claimed to test. An
-> outline saying "assert prefetch reaches the neighbours" is exactly the shape
-> that produced those. Finish tasks 4–7 to the resolution of tasks 1–3 —
-> including, for each test, the sentence naming what implementation change would
-> make it fail — before dispatching them.
+> So several tests here carry a sentence naming the implementation change that
+> would make them fail, and several use deliberately awkward fixtures — five
+> clips rather than two, two drives rather than one, an assertion that a clip
+> was *not* fetched. Those are the requirement, not decoration. If a fixture
+> here looks larger than it needs to be, that is the reason.
 
 **Goal:** A coach opens the app, signs in with their club Google account, picks the Shared Drive from a list, clicks a clip, and reviews it — with analysis filed where it survives.
 
@@ -470,20 +472,167 @@ Commit message subject: `Make signing in the thing that authorizes a request`.
 
 The sheet stops asking for a client-secret file and a pasted folder id. It offers one button, then a list.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Extend the fake so a sign-in can fail**
 
-Create `Tests/SkiVideoViewerTests/SignInWiringTests.swift` with tests that:
+`FakeRemoteProvider` currently always connects. Add to it:
 
-- After `signIn()`, `availableRoots` holds what the provider's `roots()` returned — with **two** roots in the fixture, so a implementation returning only the first cannot pass.
-- `chooseRoot(_:)` opens that root's library and fills the sidebar.
-- A `connect` that throws `.notInOrganisation` leaves `signInError` carrying that case's message and `availableRoots` empty — asserted on the specific message, so a generic error cannot satisfy it.
-- Signing in does **not** download anything: assert the fake downloader recorded no requests. This is what keeps a 74 GB library from being fetched on connect.
+```swift
+    /// Thrown by `connect`, so a test can exercise a refused sign-in without
+    /// a network or a real Google account.
+    var connectError: Error?
+```
 
-- [ ] **Step 2: Implement, run, commit**
+and make `connect` throw it before incrementing the counter.
 
-The sheet shows: a **Sign in with Google** button while `availableRoots` is empty; the list of drives once it is not; and `signInError` inline when set. `ContentView`'s toolbar label becomes **Open Club Library…**.
+- [ ] **Step 2: Write the failing test**
 
-Commit message subject: `Offer the drives a coach can see, instead of asking for an id`.
+Create `Tests/SkiVideoViewerTests/SignInWiringTests.swift`:
+
+```swift
+import XCTest
+@testable import SkiVideoCore
+
+@MainActor
+final class SignInWiringTests: XCTestCase {
+    /// Two drives, not one. An implementation that returned only the first —
+    /// or that stopped at the first page — passes a single-drive fixture, and
+    /// a club with an archive drive would silently see half its footage.
+    func testSigningInOffersEveryDriveTheAccountCanSee() async throws {
+        let (model, provider, _) = try remoteModel(files: [])
+        provider.rootsToReturn = [
+            RemoteFolder(id: "d1", name: "Club Footage"),
+            RemoteFolder(id: "d2", name: "Archive"),
+        ]
+
+        await model.signIn(with: provider)
+
+        XCTAssertEqual(model.availableRoots.map(\.name), ["Club Footage", "Archive"])
+        XCTAssertNil(model.signInError)
+    }
+
+    func testChoosingADriveFillsTheSidebar() async throws {
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+        ])
+        await model.signIn(with: provider)
+
+        await model.chooseRoot(RemoteFolder(id: "d1", name: "Club"), cache: cache)
+
+        XCTAssertEqual(model.athletes.map(\.name), ["Ada"])
+    }
+
+    /// An account outside the club's Workspace is refused outright by Google —
+    /// there is no request-access prompt — so the message must name the
+    /// account, not say "sign-in failed". Asserted on the specific wording:
+    /// a generic error string cannot satisfy it.
+    func testAnAccountOutsideTheClubGetsThatMessageNotAGenericFailure() async throws {
+        let (model, provider, _) = try remoteModel(files: [])
+        provider.connectError = DriveError.notInOrganisation
+
+        await model.signIn(with: provider)
+
+        let message = try XCTUnwrap(model.signInError)
+        XCTAssertTrue(message.lowercased().contains("account"), "got \(message)")
+        XCTAssertTrue(model.availableRoots.isEmpty, "a refused sign-in must offer nothing")
+    }
+
+    /// Signing in must not fetch a single byte. The library is 74 GB; an
+    /// implementation that materialised eagerly would download it on connect.
+    /// Asserted on the downloader, which is the only thing that can tell.
+    func testSigningInAndChoosingADriveDownloadsNothing() async throws {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"]),
+        ])
+        await model.signIn(with: provider)
+        await model.chooseRoot(RemoteFolder(id: "d1", name: "Club"), cache: cache)
+
+        XCTAssertEqual(
+            downloader.requestedFileIDs, [],
+            "listing a library must not fetch its clips"
+        )
+    }
+}
+```
+
+> `remoteModelWithDownloader(files:)` returns the same tuple as `remoteModel` plus the `FakeClipDownloader`, so a test can assert on what was fetched. Add it to `RemoteLibraryTestSupport.swift` (Task 1) and have `remoteModel` call through to it.
+
+- [ ] **Step 3: Run test to verify it fails**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter SignInWiringTests
+```
+Expected: FAIL to compile — `value of type 'ViewerModel' has no member 'signIn'`.
+
+- [ ] **Step 4: Write minimal implementation**
+
+Add to `ViewerModel`:
+
+```swift
+    /// The drives sign-in found, or empty before signing in and after a
+    /// failure. The sheet shows a button while this is empty and a list once
+    /// it is not, so the two states need no separate flag.
+    @Published public private(set) var availableRoots: [RemoteFolder] = []
+    /// Why the last sign-in failed, for the sheet to show inline. Nil clears
+    /// it on the next attempt.
+    @Published public private(set) var signInError: String?
+
+    /// Signs in and asks which drives this account can see. Fetches nothing:
+    /// the library is gigabytes and a coach has picked no clip yet.
+    public func signIn(with provider: any RemoteLibraryProvider) async {
+        signInError = nil
+        do {
+            try await provider.connect(presenter: oauthPresenter)
+            availableRoots = try await provider.roots()
+            remoteProvider = provider
+            status = availableRoots.isEmpty
+                ? "No shared drives are visible to this account."
+                : "Choose a drive"
+        } catch {
+            availableRoots = []
+            signInError = error.localizedDescription
+            status = "Could not sign in"
+        }
+    }
+
+    /// Opens the chosen drive's library. Separate from `signIn` because a
+    /// coach in several drives picks one, and because the picker must be able
+    /// to reappear without signing in again.
+    public func chooseRoot(_ root: RemoteFolder, cache: ClipCache) async {
+        guard let remoteProvider else { return }
+        do {
+            try await openRemoteLibrary(provider: remoteProvider, root: root, cache: cache)
+            availableRoots = []
+        } catch {
+            signInError = error.localizedDescription
+        }
+    }
+```
+
+- [ ] **Step 5: Rewrite the sheet**
+
+`Sources/SkiVideoViewer/Shared/GoogleDriveSheet.swift` becomes: a **Sign in with Google** button while `model.availableRoots.isEmpty`; a list of drive names once it is not, each choosing that root and dismissing; `model.signInError` shown inline in red when set. No text field of any kind — the client-secret path and the pasted folder id are both gone.
+
+In `ContentView.swift`, the toolbar label becomes **Open Club Library…**.
+
+The sheet needs a `ClipCache` to pass to `chooseRoot`. Construct one where `ContentView` builds the model, with the budget from the spec — 20 GB on macOS, 5 GB on iPadOS — and hand it down. Put the cache root under `Caches` and the pinned root under Application Support, as `ClipCache` documents.
+
+- [ ] **Step 6: Run the suite and commit**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test 2>&1 | tail -5
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build 2>&1 | tail -3
+git add -A SkiVideoViewer/Sources SkiVideoViewer/Tests
+git commit -m "Offer the drives a coach can see, instead of asking for an id
+
+The sheet asked for an OAuth client-secret file and a pasted folder id, which
+meant only the person who set it up could ever connect. It now signs in and
+lists the drives the account can actually see.
+
+Listing fetches nothing. The library is 74 GB and the coach has not chosen a
+clip yet, so a connect that materialised eagerly would download all of it."
+```
 
 ---
 
@@ -495,18 +644,176 @@ Commit message subject: `Offer the drives a coach can see, instead of asking for
 
 Plan 2 built `RemoteLibraryIndex.save`/`load`/`applying` and the changes cursor, and nothing calls them.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Make the fake incremental**
 
-Tests that:
-- Opening a root twice sweeps **once**: assert the provider's enumeration count, with the second open served from the stored index.
-- A stored index plus a change adding a file shows the new clip without a re-sweep — the fake provider must adopt `IncrementallyEnumerable` for this, which is also the first real exercise of that protocol.
-- **A removal does not delete cached bytes.** Materialise a clip, apply a change removing it, and assert the file is still on disk. This is the rule plan 2 documented and nothing yet enforces: Drive reports lost access and a corpus move identically to a deletion.
+`FakeRemoteProvider` must adopt `IncrementallyEnumerable` — this is also the protocol's first exercise by anything but its own unit tests. Add to `Tests/SkiVideoCoreTests/FakeRemoteProvider.swift`:
 
-- [ ] **Step 2: Implement, run, commit**
+```swift
+extension FakeRemoteProvider: IncrementallyEnumerable {
+    func startCursor(forRoot rootID: String) async throws -> String {
+        cursorsIssued += 1
+        return "cursor-\(cursorsIssued)"
+    }
 
-`openRemoteLibrary` loads a stored index first; if one exists and the provider is `IncrementallyEnumerable`, refresh via `changes(since:forRoot:)` and save; otherwise sweep, take a start cursor, and save.
+    func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges {
+        changesRequestedSince.append(cursor)
+        return pendingChanges ?? RemoteLibraryChanges(changed: [], removed: [], cursor: cursor)
+    }
+}
+```
 
-Commit message subject: `Ask what changed instead of listing the drive again`.
+with stored properties `var cursorsIssued = 0`, `private(set) var changesRequestedSince: [String] = []`, `var pendingChanges: RemoteLibraryChanges?`, and an `private(set) var enumerateCallCount = 0` incremented in `enumerate`.
+
+- [ ] **Step 2: Write the failing test**
+
+Append to `Tests/SkiVideoViewerTests/SignInWiringTests.swift`:
+
+```swift
+    // MARK: - Relaunch
+
+    /// The whole point of the cursor: a second open must not list the drive
+    /// again. Asserted on the enumeration count, which is the only thing that
+    /// distinguishes "loaded the stored index" from "swept and got the same
+    /// answer" — the sidebar looks identical either way.
+    func testOpeningTheSameDriveTwiceSweepsOnce() async throws {
+        try withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            XCTAssertEqual(provider.enumerateCallCount, 1)
+            XCTAssertEqual(provider.changesRequestedSince.count, 1, "the second open asks for a delta")
+            XCTAssertEqual(model.athletes.map(\.name), ["Ada"])
+        }
+    }
+
+    /// A clip uploaded while the app was closed appears without a re-sweep.
+    /// The new clip is what proves the change was applied rather than the
+    /// stored index simply reloaded.
+    func testAClipAddedInDriveAppearsFromTheChangeFeed() async throws {
+        try withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            provider.pendingChanges = RemoteLibraryChanges(
+                changed: [remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"])],
+                removed: [], cursor: "cursor-2"
+            )
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            XCTAssertEqual(provider.enumerateCallCount, 1, "still no re-sweep")
+            XCTAssertEqual(
+                model.athletes.first?.videos.map(\.lastPathComponent),
+                ["run1.mp4", "run2.mp4"]
+            )
+        }
+    }
+
+    /// A `removed` change must drop the clip from the library and leave its
+    /// bytes alone. Drive reports lost access and a corpus move exactly as it
+    /// reports a deletion, so a coach who regains access must not pay to
+    /// download a clip that never left the disk.
+    ///
+    /// Fails if the removal path calls anything on the cache: the assertion is
+    /// on the file existing, which only survives if nothing deleted it.
+    func testARemovedClipLeavesTheLibraryButNotTheDisk() async throws {
+        try withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+                remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+            try await model.prepareCurrentClip()
+            let cached = try XCTUnwrap(model.currentPlaybackURL)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+
+            provider.pendingChanges = RemoteLibraryChanges(
+                changed: [], removed: ["a"], cursor: "cursor-2"
+            )
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            XCTAssertEqual(
+                model.athletes.first?.videos.map(\.lastPathComponent), ["run2.mp4"],
+                "the removed clip leaves the sidebar"
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: cached.path),
+                "its bytes must stay: Drive reports lost access the same way"
+            )
+        }
+    }
+```
+
+> `withTemporaryIndexStore` points `RemoteLibraryIndex.storeRoot` at a temp directory and restores it in `defer`, exactly as `RemoteLibraryIndexTests` does. Put it in `RemoteLibraryTestSupport.swift` and have both suites use the one copy — it exists in three places already, which the plan-2 reviews flagged.
+
+- [ ] **Step 3: Run test to verify it fails**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter SignInWiringTests
+```
+Expected: FAIL — `enumerateCallCount` is 2, because nothing loads or saves an index yet.
+
+- [ ] **Step 4: Write minimal implementation**
+
+In `ViewerModel.openRemoteLibrary`, before sweeping:
+
+```swift
+        // A stored index plus a cursor makes a relaunch a delta. Page tokens
+        // never expire and Drive coalesces its change log per file, so an app
+        // closed for months still resyncs in a bounded number of calls — where
+        // a re-sweep would list the whole drive every time.
+        var index = RemoteLibraryIndex.load(forRoot: root.id)
+        if let stored = index,
+           let cursor = stored.cursor,
+           let incremental = provider as? IncrementallyEnumerable {
+            let changes = try await incremental.changes(since: cursor, forRoot: root.id)
+            // Bytes are never deleted here. A `removed` change means the clip
+            // left *this library*, which Drive also reports for lost access
+            // and a corpus move — evicting on it would make a coach pay to
+            // re-download a clip that never went anywhere.
+            index = stored.applying(changes)
+        } else if index == nil {
+            var files: [RemoteFile] = []
+            for try await file in provider.enumerate(root) { files.append(file) }
+            var swept = RemoteLibraryIndex(
+                providerIdentifier: type(of: provider).identifier,
+                rootName: root.name, files: files
+            )
+            if let incremental = provider as? IncrementallyEnumerable {
+                swept = swept.withCursor(try await incremental.startCursor(forRoot: root.id))
+            }
+            index = swept
+        }
+```
+
+then use that index for the rest of the method and `try? index?.save(forRoot: root.id)` before returning — a failure to persist is a slower next launch, not a reason to refuse the library the coach can already see.
+
+`RemoteLibraryIndex` needs a `withCursor(_:)` returning a copy carrying it; `applying` already sets one.
+
+- [ ] **Step 5: Run the suite and commit**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test 2>&1 | tail -5
+git add -A SkiVideoViewer/Sources SkiVideoViewer/Tests
+git commit -m "Ask what changed instead of listing the drive again
+
+Plan 2 built the index persistence and the change cursor and called neither, so
+every launch swept the whole drive. A second open now drains changes.list from
+the stored cursor instead.
+
+A removal drops the clip from the sidebar and leaves its bytes alone. Drive
+reports lost access and a corpus move exactly as it reports a deletion, and a
+coach who regains access should not pay to download a clip that never left."
+```
 
 ---
 
@@ -522,15 +829,146 @@ Commit message subject: `Ask what changed instead of listing the drive again`.
 
 - [ ] **Step 1: Write the failing test**
 
-Tests that:
-- Changing the selected clip fetches it without anything else asking.
-- Selecting a clip in a comparison pane fetches *that* clip — closing the gap `testTheComparisonPickerOffersAFileOnlyForAPreparedClip` pins. **That test's second assertion must be inverted as part of this task**, and its "KNOWN GAP" message deleted; say so in your report.
-- Prefetch reaches the next two and previous one **and no further**: a five-clip athlete with the middle selected must leave clip five unfetched. A test that only asserts neighbours *were* fetched would pass if the implementation fetched everything.
-- Moving the selection twice quickly does not leave `isPreparingClip` stuck, and loads the clip that was selected last.
+Create `Tests/SkiVideoViewerTests/FetchOnSelectTests.swift`:
 
-- [ ] **Step 2: Implement, run, commit**
+```swift
+import XCTest
+@testable import SkiVideoCore
 
-Commit message subject: `Fetch the clip a coach just asked for, and the ones they are about to`.
+@MainActor
+final class FetchOnSelectTests: XCTestCase {
+    private func fiveClips() -> [RemoteFile] {
+        (1...5).map { remoteFile("f\($0)", "run\($0).mp4", ["Neuss 2026", "Ada"]) }
+    }
+
+    /// Selecting a clip is what asks for it. Nothing else in the app calls
+    /// `prepareCurrentClip`, so without this a coach clicks a clip and watches
+    /// an empty pane forever.
+    func testChangingTheSelectedClipFetchesIt() async throws {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+
+        _ = model.changeVideo(by: 1)
+        try await model.settleFetches()
+
+        XCTAssertTrue(
+            downloader.requestedFileIDs.contains("f2"),
+            "got \(downloader.requestedFileIDs)"
+        )
+    }
+
+    /// Prefetch reaches the next two and the previous one — and stops.
+    /// Selecting clip 3 of 5 must leave clip 5 alone. A test asserting only
+    /// that the neighbours *were* fetched would pass an implementation that
+    /// fetched the whole athlete, which on a 74 GB library is the difference
+    /// between a warm cache and a flooded connection.
+    func testPrefetchReachesTheNeighboursAndNoFurther() async throws {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+
+        _ = model.changeVideo(by: 2)          // now on run3
+        try await model.settleFetches()
+
+        let fetched = Set(downloader.requestedFileIDs)
+        XCTAssertTrue(fetched.isSuperset(of: ["f2", "f3", "f4"]), "got \(fetched)")
+        XCTAssertFalse(fetched.contains("f5"), "prefetch reached too far: \(fetched)")
+    }
+
+    /// A comparison pane must fetch the clip it was given. This closes the gap
+    /// plan 2 pinned deliberately: before this, a pane was handed the raw
+    /// library URL and could open nothing.
+    func testChoosingAClipForAComparisonPaneFetchesIt() async throws {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        let choice = try XCTUnwrap(model.comparisonLibrary.first?.videos.last)
+
+        let comparison = ComparisonModel()
+        await comparison.load(choice, side: .left, fetching: model)
+
+        XCTAssertTrue(downloader.requestedFileIDs.contains("f5"), "got \(downloader.requestedFileIDs)")
+        XCTAssertEqual(comparison.playbackURL(for: .left)?.isFileURL, true)
+    }
+
+    /// Moving twice quickly must load what was selected *last*, not whichever
+    /// download happened to finish last. The gate holds the first fetch open
+    /// past the second selection, which is the ordering that would otherwise
+    /// leave the wrong clip on screen.
+    func testMovingTwiceQuicklyLoadsTheClipSelectedLast() async throws {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        downloader.shouldWait = true
+
+        _ = model.changeVideo(by: 1)          // run2, blocked
+        _ = model.changeVideo(by: 1)          // run3, blocked
+        downloader.release("f2")              // the stale one finishes first
+        downloader.release("f3")
+        try await model.settleFetches()
+
+        XCTAssertEqual(model.currentPlaybackURL?.lastPathComponent.contains("f3"), true,
+                       "got \(String(describing: model.currentPlaybackURL))")
+        XCTAssertFalse(model.isPreparingClip, "the flag must clear once both finish")
+    }
+}
+```
+
+> `settleFetches()` is a test-facing seam: `ViewerModel` starts fetches in detached tasks, and a test needs to await them. Add it as an internal (not public) method that awaits the outstanding fetch tasks, and say in your report how you implemented it. **Do not use `Task.sleep`** — plan 2 already carries one timing-dependent test and a second would be worse.
+>
+> `comparison.playbackURL(for:)` may not exist; if `ComparisonModel` exposes the per-side URL under another name, use that and say so.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter FetchOnSelectTests
+```
+Expected: FAIL — nothing fetches, so `requestedFileIDs` is empty.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `ViewerModel`, after any change of selection (`changeVideo`, `changeAthlete`, `selectAthlete`), start a fetch of the current clip and a prefetch of its neighbours:
+
+```swift
+    /// The clips worth having before they are asked for: the two a coach is
+    /// about to step forward onto, and the one behind them. Bounded on
+    /// purpose — the library is 74 GB, and "fetch the whole athlete" is a
+    /// flooded connection on a hill.
+    private func neighboursToPrefetch() -> [RemoteFile] {
+        guard let athlete = currentAthlete, let remoteIndex else { return [] }
+        return [videoIndex - 1, videoIndex + 1, videoIndex + 2]
+            .filter { athlete.videos.indices.contains($0) }
+            .compactMap { remoteIndex.file(for: athlete.videos[$0]) }
+    }
+```
+
+Prefetch must not block the selected clip: start it after `prepareCurrentClip` has begun, and let `ClipCache`'s coalescing handle a clip that is both prefetched and selected.
+
+For the comparison pane, give `ComparisonModel.load(_:side:)` an overload taking the model that can fetch, so choosing a clip materialises it before loading. Then **invert the second assertion of `testTheComparisonPickerOffersAFileOnlyForAPreparedClip`** and delete its "KNOWN GAP" message — the gap is closed. Say so explicitly in your report; that is a deliberate change to a pre-existing test whose subject changed, not a test edited to pass.
+
+Also remove the corresponding entry from the plan-2 document's "What this plan deliberately does not do" list, so the two documents do not disagree.
+
+- [ ] **Step 4: Run the suite and commit**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test 2>&1 | tail -5
+git add -A SkiVideoViewer/Sources SkiVideoViewer/Tests SkiVideoViewer/docs
+git commit -m "Fetch the clip a coach just asked for, and the ones they are about to
+
+Nothing called prepareCurrentClip, so clicking a clip showed an empty pane.
+Selection now fetches, and reaches one clip back and two forward — bounded,
+because the library is 74 GB and fetching a whole athlete on a hill is worse
+than waiting two seconds.
+
+A comparison pane fetches the clip it is given, which closes the gap plan 2
+pinned: before this, a pane was handed a library URL it could not open."
+```
 
 ---
 
@@ -543,15 +981,121 @@ Commit message subject: `Fetch the clip a coach just asked for, and the ones the
 
 `ASWebAuthenticationSession` hands off to a system browser, which is what Google requires: embedded webviews are blocked with `disallowed_useragent`, `WKWebView` named explicitly.
 
-- [ ] **Step 1: Implement and verify**
+- [ ] **Step 1: Write the failing test**
 
-`prepareRedirectURI()` returns the reverse-DNS scheme (`com.googleusercontent.apps.NNN:/oauth2redirect`) rather than a loopback URL — loopback is blocked for iOS clients. `authorize` presents an `ASWebAuthenticationSession` with that callback scheme.
+Only the redirect construction is testable without a browser and a human. Create `Tests/SkiVideoViewerTests/IOSRedirectTests.swift`:
 
-Register the scheme in `project.yml` under the iPad target's `CFBundleURLTypes`, then `cd SkiVideoViewer && xcodegen generate` and run `scripts/ipad-smoke.sh`.
+```swift
+import XCTest
+@testable import SkiVideoCore
 
-> **This task cannot be verified end to end without a second Google Cloud OAuth client** of type iOS, registered against bundle id `ch.ski.video-viewer.ipad`. If that does not exist yet, implement and unit-test the redirect construction, and **report the task as blocked on that registration** rather than claiming it works.
+final class IOSRedirectTests: XCTestCase {
+    /// An iOS client's redirect is its client id reversed, and Google matches
+    /// it exactly. Built from the id rather than written out twice, so the two
+    /// cannot drift.
+    ///
+    /// Fails if the reversal is wrong or the path is dropped — asserted on the
+    /// whole string, not on a prefix.
+    func testTheRedirectIsTheReversedClientIDWithACallbackPath() {
+        let configuration = GoogleOAuthConfiguration(
+            clientID: "123-abc.apps.googleusercontent.com",
+            clientSecret: nil,
+            redirectKind: .customScheme("com.googleusercontent.apps.123-abc")
+        )
+        XCTAssertEqual(
+            GoogleOAuth.redirectURI(for: configuration),
+            "com.googleusercontent.apps.123-abc:/oauth2redirect"
+        )
+    }
 
-Commit message subject: `Sign in on iPad, where loopback is not allowed`.
+    /// macOS keeps the loopback form. Loopback is blocked for iOS clients and
+    /// a custom scheme is not offered to Desktop clients, so the two platforms
+    /// genuinely differ and this pins that they do.
+    func testALoopbackConfigurationStillProducesALoopbackRedirect() {
+        let configuration = GoogleOAuthConfiguration(
+            clientID: "123.apps.googleusercontent.com",
+            clientSecret: "shh",
+            redirectKind: .loopback
+        )
+        XCTAssertTrue(
+            GoogleOAuth.redirectURI(for: configuration).hasPrefix("http://127.0.0.1"),
+            "got \(GoogleOAuth.redirectURI(for: configuration))"
+        )
+    }
+
+    /// The scheme the app registers must be the one the flow asks Google to
+    /// redirect to. These are declared in two different files — `project.yml`
+    /// and the configuration — and nothing but this connects them.
+    func testTheRegisteredSchemeMatchesTheConfiguredOne() throws {
+        let projectYML = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().appendingPathComponent("project.yml"),
+            encoding: .utf8
+        )
+        let scheme = IOSOAuthPresenter.callbackScheme
+        XCTAssertTrue(
+            projectYML.contains(scheme),
+            "project.yml does not register \(scheme); a redirect Google accepts would never reach the app"
+        )
+    }
+}
+```
+
+> `GoogleOAuth.redirectURI(for:)` for the loopback case needs a port, which only a running listener has. Either give it a placeholder the presenter substitutes, or take the port as a parameter — pick one and say which. `#filePath` navigation in the third test assumes the test file sits at `Tests/SkiVideoViewerTests/`; adjust the number of `deletingLastPathComponent()` calls if it does not resolve, and confirm by asserting the file exists before reading it.
+
+- [ ] **Step 2: Implement**
+
+Replace `Sources/SkiVideoViewer/iOS/UnavailableOAuthPresenter.swift` with `IOSOAuthPresenter.swift`:
+
+```swift
+import AuthenticationServices
+import Foundation
+import SkiVideoCore
+
+/// Signs in on iPad.
+///
+/// `ASWebAuthenticationSession` rather than a webview inside the app: Google
+/// blocks authorization requests from embedded webviews with
+/// `disallowed_useragent`, naming WKWebView explicitly. And a custom scheme
+/// rather than the Mac's loopback listener, because loopback redirects have
+/// been blocked for iOS OAuth clients since 21 October 2022.
+@MainActor
+final class IOSOAuthPresenter: NSObject, OAuthPresenter {
+    /// Must match the scheme registered in `project.yml`, or Google redirects
+    /// to something the app never receives. Pinned by `IOSRedirectTests`.
+    static let callbackScheme = "com.googleusercontent.apps.REPLACE-WITH-IOS-CLIENT-ID"
+    …
+}
+```
+
+Register the same scheme in `project.yml` under the iPad target's `CFBundleURLTypes`, then `cd SkiVideoViewer && xcodegen generate`.
+
+- [ ] **Step 3: Verify what can be verified, and say what cannot**
+
+```bash
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter IOSRedirectTests
+cd SkiVideoViewer && xcodegen generate && cd ..
+./SkiVideoViewer/scripts/ipad-smoke.sh
+```
+
+> **This task cannot be verified end to end without an iOS-type Google Cloud OAuth client** registered against bundle id `ch.ski.video-viewer.ipad`. Until that exists, `callbackScheme` holds a placeholder and no real sign-in can succeed. Implement, unit-test the redirect construction, run the smoke script — and then **report the task as BLOCKED on that registration**. Do not report it as done, and do not substitute a plausible-looking client id.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A SkiVideoViewer/Sources SkiVideoViewer/Tests SkiVideoViewer/project.yml
+git commit -m "Sign in on iPad, where loopback is not allowed
+
+Loopback redirects have been blocked for iOS OAuth clients since October 2022,
+and Google refuses an authorization request from an embedded webview outright,
+naming WKWebView. So iPad gets a custom scheme and ASWebAuthenticationSession
+rather than the Mac's loopback listener.
+
+The scheme is declared in two files that nothing else connects, so a test reads
+project.yml and checks they agree — a mismatch would send Google's redirect
+somewhere the app never sees it."
+```
 
 ---
 
