@@ -14,14 +14,26 @@ import Foundation
 func remoteModel(
     files: [RemoteFile]
 ) throws -> (ViewerModel, FakeRemoteProvider, ClipCache) {
+    let (model, provider, cache, _) = try remoteModelWithDownloader(files: files)
+    return (model, provider, cache)
+}
+
+/// Same as `remoteModel`, plus the `FakeClipDownloader` behind the cache, so a
+/// test can assert on what was actually fetched — not just what the model's
+/// published state claims.
+@MainActor
+func remoteModelWithDownloader(
+    files: [RemoteFile]
+) throws -> (ViewerModel, FakeRemoteProvider, ClipCache, FakeClipDownloader) {
     let provider = FakeRemoteProvider(files: files)
+    let downloader = FakeClipDownloader()
     let cache = ClipCache(
-        root: try freshTemporaryDirectory(), downloader: FakeClipDownloader(), budget: 1_000_000
+        root: try freshTemporaryDirectory(), downloader: downloader, budget: 1_000_000
     )
     let model = ViewerModel(
         input: FakeInputSource(), folderPicker: FakeFolderPicker(), oauthPresenter: FakeOAuthPresenter()
     )
-    return (model, provider, cache)
+    return (model, provider, cache, downloader)
 }
 
 /// A `ViewerModel` over a local directory holding one clip, loose at the top

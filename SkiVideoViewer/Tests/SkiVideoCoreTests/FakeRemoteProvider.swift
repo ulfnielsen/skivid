@@ -14,6 +14,9 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     var errorAfter: Int?
     var downloadURL = URL(string: "https://example.invalid/bytes")!
     var headers: [String: String] = ["Authorization": "Bearer test"]
+    /// Thrown by `connect`, so a test can exercise a refused sign-in without
+    /// a network or a real Google account.
+    var connectError: Error?
     private(set) var connectCallCount = 0
     private(set) var downloadSourceCallCount = 0
 
@@ -22,6 +25,9 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     }
 
     func connect(presenter: OAuthPresenter) async throws {
+        if let connectError {
+            throw connectError
+        }
         connectCallCount += 1
     }
 

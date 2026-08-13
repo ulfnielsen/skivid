@@ -51,6 +51,13 @@ public final class ViewerModel: ObservableObject {
     private var clipCache: ClipCache?
 
     @Published public private(set) var isUsingRemoteLibrary = false
+    /// The drives sign-in found, or empty before signing in and after a
+    /// failure. The sheet shows a button while this is empty and a list once
+    /// it is not, so the two states need no separate flag.
+    @Published public private(set) var availableRoots: [RemoteFolder] = []
+    /// Why the last sign-in failed, for the sheet to show inline. Nil clears
+    /// it on the next attempt.
+    @Published public private(set) var signInError: String?
     /// True while any clip's bytes are being fetched. No view reads this
     /// yet — plan 3 is what puts a spinner on screen instead of an empty
     /// player — but the flag and the counter behind it are exercised by
@@ -283,6 +290,37 @@ public final class ViewerModel: ObservableObject {
         input.setEnabled(enabled)
         if !enabled {
             endSlowMotion()
+        }
+    }
+
+    /// Signs in and asks which drives this account can see. Fetches nothing:
+    /// the library is gigabytes and a coach has picked no clip yet.
+    public func signIn(with provider: any RemoteLibraryProvider) async {
+        signInError = nil
+        do {
+            try await provider.connect(presenter: oauthPresenter)
+            availableRoots = try await provider.roots()
+            remoteProvider = provider
+            status = availableRoots.isEmpty
+                ? "No shared drives are visible to this account."
+                : "Choose a drive"
+        } catch {
+            availableRoots = []
+            signInError = error.localizedDescription
+            status = "Could not sign in"
+        }
+    }
+
+    /// Opens the chosen drive's library. Separate from `signIn` because a
+    /// coach in several drives picks one, and because the picker must be able
+    /// to reappear without signing in again.
+    public func chooseRoot(_ root: RemoteFolder, cache: ClipCache) async {
+        guard let remoteProvider else { return }
+        do {
+            try await openRemoteLibrary(provider: remoteProvider, root: root, cache: cache)
+            availableRoots = []
+        } catch {
+            signInError = error.localizedDescription
         }
     }
 

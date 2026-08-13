@@ -6,6 +6,12 @@ struct ContentView: View {
     let initialDirectory: URL?
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
+    /// Backs the Google Drive sheet's `chooseRoot`. A `@State`, not a plain
+    /// `let`: the actor must survive `ContentView`'s `body` re-evaluating —
+    /// which happens on every `ViewerModel` publish, including the playback
+    /// clock — or a download in flight would lose its cache the moment a
+    /// clip started playing.
+    @State private var clipCache = ContentView.makeClipCache()
     /// The platform's Compare and Sort presentation. macOS opens windows; iPad
     /// uses a full-screen cover for Compare only. Each screen is gated by its
     /// own flag, so a platform that cannot present one hides just that button
@@ -59,7 +65,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $isShowingGoogleDriveSheet) {
-            GoogleDriveSheet(model: model, isPresented: $isShowingGoogleDriveSheet)
+            GoogleDriveSheet(model: model, isPresented: $isShowingGoogleDriveSheet, cache: clipCache)
         }
         .alert(
             "Could Not Open Videos",
@@ -122,7 +128,7 @@ struct ContentView: View {
             Button {
                 isShowingGoogleDriveSheet = true
             } label: {
-                Label("Open Google Drive…", systemImage: "externaldrive.connected.to.line.below")
+                Label("Open Club Library…", systemImage: "externaldrive.connected.to.line.below")
             }
         }
         ToolbarItem {
@@ -239,6 +245,32 @@ struct ContentView: View {
         #if os(iOS)
         .toolbar { toolbarContent }
         #endif
+    }
+
+    /// Ordinary cached clips live under `Caches`, so the OS may reclaim them
+    /// under storage pressure — correct for a cache, and what matters most on
+    /// an iPad. Budget is the design spec's default: 20 GB on macOS, 5 GB on
+    /// iPadOS, since a full-size iPad's storage is far smaller than a Mac's.
+    ///
+    /// `ClipCache`'s current API takes a single `root:` — there is no second
+    /// parameter for the spec's separate, backup-excluded
+    /// `Application Support/PinnedClips` location pinned clips are meant to
+    /// live in. Adding one belongs to `ClipCache.swift`, which is outside
+    /// this task's file list; pinning has no control that calls it yet
+    /// regardless (see "What this plan does not do"), so nothing here
+    /// regresses by leaving pinned and ordinary clips sharing one root.
+    private static func makeClipCache() -> ClipCache {
+        let fileManager = FileManager.default
+        let cachesDirectory = (try? fileManager.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )) ?? fileManager.temporaryDirectory
+        let root = cachesDirectory.appendingPathComponent("CloudClips", isDirectory: true)
+        #if os(iOS)
+        let budget: Int64 = 5_000_000_000
+        #else
+        let budget: Int64 = 20_000_000_000
+        #endif
+        return ClipCache(root: root, downloader: URLSessionClipDownloader(), budget: budget)
     }
 
     private func emptyState(
