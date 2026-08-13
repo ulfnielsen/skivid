@@ -56,7 +56,38 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(transport.queryItems(of: 0)["pageSize"], "100")
     }
 
+    /// 100 is the API's maximum page size, so an account in more drives than
+    /// that needs paging — the same silent truncation `pageSize` guards
+    /// against, one level up.
+    func testRootsFollowsItsOwnPageTokens() async throws {
+        transport.responses = [
+            .init(json: #"{"nextPageToken":"p2","drives":[{"id":"d1","name":"One"}]}"#),
+            .init(json: #"{"drives":[{"id":"d2","name":"Two"}]}"#),
+        ]
+
+        let roots = try await provider.roots()
+
+        XCTAssertEqual(roots.map(\.id), ["d1", "d2"])
+        XCTAssertEqual(transport.queryItems(of: 1)["pageToken"], "p2")
+    }
+
     // MARK: - The sweep
+
+    /// The `fields` list is the only thing that makes Drive return
+    /// `headRevisionId` and `md5Checksum` at all, and the cache's validity
+    /// check and integrity check depend on them. A typo would compile, pass
+    /// every other test — the fake answers regardless of what was asked — and
+    /// silently break re-download detection against the real API.
+    func testTheSweepAsksForTheFieldsTheCacheDependsOn() async throws {
+        transport.responses = [.init(json: #"{"files":[]}"#)]
+        for try await _ in provider.enumerate(RemoteFolder(id: "d1", name: "Club")) {}
+
+        let fields = try XCTUnwrap(transport.queryItems(of: 0)["fields"])
+        for required in ["id", "name", "mimeType", "size", "md5Checksum", "headRevisionId", "parents"] {
+            XCTAssertTrue(fields.contains(required), "fields is missing \(required): \(fields)")
+        }
+        XCTAssertTrue(fields.contains("incompleteSearch"), "fields is missing incompleteSearch")
+    }
 
     /// One flat query per drive, not one request per folder. The folder tree
     /// is rebuilt here from each file's `parents`.

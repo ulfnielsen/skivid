@@ -39,8 +39,15 @@ public protocol RemoteLibraryProvider: Sendable {
     /// Interactive sign-in. Implementations persist their own refresh token.
     func connect(presenter: OAuthPresenter) async throws
 
-    /// The top-level containers this account can see — each Shared Drive, and
-    /// My Drive. One element is a fine answer.
+    /// The top-level containers this provider can enumerate. One element is a
+    /// fine answer.
+    ///
+    /// For Google Drive that means the account's Shared Drives, and
+    /// deliberately not My Drive: a Shared Drive lists in one flat
+    /// `corpora=drive` sweep, My Drive needs a different query shape
+    /// altogether, and the club's footage lives in a Shared Drive. An
+    /// implementation that cannot enumerate a container must not list it —
+    /// a root that yields nothing is worse than a root that is absent.
     func roots() async throws -> [RemoteFolder]
 
     /// Every descendant *file* of `folder`, streamed so a large library can

@@ -34,19 +34,36 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     }
 
     public func roots() async throws -> [RemoteFolder] {
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/drives")!
-        components.queryItems = [
-            // The default is 10, which would silently truncate the picker for
-            // an account in more drives than that.
-            URLQueryItem(name: "pageSize", value: "100"),
-        ]
-        let page: DriveListOfDrives = try await get(components)
-        return page.drives.map { RemoteFolder(id: $0.id, name: $0.name) }
+        var found: [RemoteFolder] = []
+        var pageToken: String?
+        repeat {
+            var components = URLComponents(string: "https://www.googleapis.com/drive/v3/drives")!
+            components.queryItems = [
+                // The default is 10, which would silently truncate the picker
+                // for an account in more drives than that. 100 is the maximum,
+                // so the paging below is what actually removes the ceiling.
+                URLQueryItem(name: "pageSize", value: "100"),
+            ]
+            if let pageToken {
+                components.queryItems?.append(URLQueryItem(name: "pageToken", value: pageToken))
+            }
+            let page: DriveListOfDrives = try await get(components)
+            found.append(contentsOf: page.drives.map { RemoteFolder(id: $0.id, name: $0.name) })
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+        return found
     }
 
+    /// Every video in one Shared Drive.
+    ///
+    /// `folder` must be a root from `roots()` — its id is used as `driveId`,
+    /// so a subfolder would be rejected by the API. Filtering to a subtree is
+    /// the index's job, done in memory against the parents graph, because
+    /// Drive has no recursive-subtree query and one whole-drive sweep costs
+    /// the same as one folder listing.
     public func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     let records = try await sweep(driveID: folder.id)
                     let folders = Dictionary(
@@ -55,6 +72,7 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                             .map { ($0.id, $0) }
                     )
                     for record in records where record.mimeType != Self.folderMimeType {
+                        try Task.checkCancellation()
                         continuation.yield(
                             RemoteFile(
                                 id: record.id,
@@ -71,6 +89,12 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                     continuation.finish(throwing: error)
                 }
             }
+            // A consumer that stops iterating — the view torn down, the coach
+            // picking a different drive — must stop the sweep with it.
+            // Without this the task pages on to the end of a thousand-clip
+            // drive, spending the operator's bandwidth on a stream nobody is
+            // listening to.
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -98,6 +122,9 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         var records: [DriveRecord] = []
         var pageToken: String?
         repeat {
+            // Checked per page, so abandoning a browse stops the sweep at the
+            // next page boundary rather than at the end of the drive.
+            try Task.checkCancellation()
             var components = URLComponents(
                 string: "https://www.googleapis.com/drive/v3/files"
             )!
@@ -143,9 +170,12 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         of record: DriveRecord, in folders: [String: DriveRecord], rootID: String
     ) -> [String] {
         var names: [String] = []
+        // `seen` is what terminates this: each folder id can be consumed once,
+        // so the walk is bounded by the number of known folders whether or not
+        // the parent links form a cycle.
         var seen: Set<String> = []
         var current = record.parents?.first
-        while let id = current, id != rootID, !seen.contains(id), names.count <= folders.count {
+        while let id = current, id != rootID, !seen.contains(id) {
             seen.insert(id)
             guard let folder = folders[id] else { break }
             names.append(folder.name)
@@ -222,6 +252,7 @@ private struct DriveListOfDrives: Decodable {
         let name: String
     }
 
+    let nextPageToken: String?
     let drives: [Drive]
 }
 
