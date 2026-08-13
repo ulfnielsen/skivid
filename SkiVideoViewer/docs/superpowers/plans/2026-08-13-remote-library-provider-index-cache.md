@@ -249,8 +249,15 @@ public protocol RemoteLibraryProvider: Sendable {
     /// Interactive sign-in. Implementations persist their own refresh token.
     func connect(presenter: OAuthPresenter) async throws
 
-    /// The top-level containers this account can see — each Shared Drive, and
-    /// My Drive. One element is a fine answer.
+    /// The top-level containers this provider can enumerate. One element is a
+    /// fine answer.
+    ///
+    /// For Google Drive that means the account's Shared Drives, and
+    /// deliberately not My Drive: a Shared Drive lists in one flat
+    /// `corpora=drive` sweep, My Drive needs a different query shape
+    /// altogether, and the club's footage lives in a Shared Drive. An
+    /// implementation that cannot enumerate a container must not list it —
+    /// a root that yields nothing is worse than a root that is absent.
     func roots() async throws -> [RemoteFolder]
 
     /// Every descendant *file* of `folder`, streamed so a large library can
@@ -917,7 +924,38 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(transport.queryItems(of: 0)["pageSize"], "100")
     }
 
+    /// 100 is the API's maximum page size, so an account in more drives than
+    /// that needs paging — the same silent truncation `pageSize` guards
+    /// against, one level up.
+    func testRootsFollowsItsOwnPageTokens() async throws {
+        transport.responses = [
+            .init(json: #"{"nextPageToken":"p2","drives":[{"id":"d1","name":"One"}]}"#),
+            .init(json: #"{"drives":[{"id":"d2","name":"Two"}]}"#),
+        ]
+
+        let roots = try await provider.roots()
+
+        XCTAssertEqual(roots.map(\.id), ["d1", "d2"])
+        XCTAssertEqual(transport.queryItems(of: 1)["pageToken"], "p2")
+    }
+
     // MARK: - The sweep
+
+    /// The `fields` list is the only thing that makes Drive return
+    /// `headRevisionId` and `md5Checksum` at all, and the cache's validity
+    /// check and integrity check depend on them. A typo would compile, pass
+    /// every other test — the fake answers regardless of what was asked — and
+    /// silently break re-download detection against the real API.
+    func testTheSweepAsksForTheFieldsTheCacheDependsOn() async throws {
+        transport.responses = [.init(json: #"{"files":[]}"#)]
+        for try await _ in provider.enumerate(RemoteFolder(id: "d1", name: "Club")) {}
+
+        let fields = try XCTUnwrap(transport.queryItems(of: 0)["fields"])
+        for required in ["id", "name", "mimeType", "size", "md5Checksum", "headRevisionId", "parents"] {
+            XCTAssertTrue(fields.contains(required), "fields is missing \(required): \(fields)")
+        }
+        XCTAssertTrue(fields.contains("incompleteSearch"), "fields is missing incompleteSearch")
+    }
 
     /// One flat query per drive, not one request per folder. The folder tree
     /// is rebuilt here from each file's `parents`.
@@ -1160,19 +1198,36 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     }
 
     public func roots() async throws -> [RemoteFolder] {
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/drives")!
-        components.queryItems = [
-            // The default is 10, which would silently truncate the picker for
-            // an account in more drives than that.
-            URLQueryItem(name: "pageSize", value: "100"),
-        ]
-        let page: DriveListOfDrives = try await get(components)
-        return page.drives.map { RemoteFolder(id: $0.id, name: $0.name) }
+        var found: [RemoteFolder] = []
+        var pageToken: String?
+        repeat {
+            var components = URLComponents(string: "https://www.googleapis.com/drive/v3/drives")!
+            components.queryItems = [
+                // The default is 10, which would silently truncate the picker
+                // for an account in more drives than that. 100 is the maximum,
+                // so the paging below is what actually removes the ceiling.
+                URLQueryItem(name: "pageSize", value: "100"),
+            ]
+            if let pageToken {
+                components.queryItems?.append(URLQueryItem(name: "pageToken", value: pageToken))
+            }
+            let page: DriveListOfDrives = try await get(components)
+            found.append(contentsOf: page.drives.map { RemoteFolder(id: $0.id, name: $0.name) })
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+        return found
     }
 
+    /// Every video in one Shared Drive.
+    ///
+    /// `folder` must be a root from `roots()` — its id is used as `driveId`,
+    /// so a subfolder would be rejected by the API. Filtering to a subtree is
+    /// the index's job, done in memory against the parents graph, because
+    /// Drive has no recursive-subtree query and one whole-drive sweep costs
+    /// the same as one folder listing.
     public func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     let records = try await sweep(driveID: folder.id)
                     let folders = Dictionary(
@@ -1181,6 +1236,7 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                             .map { ($0.id, $0) }
                     )
                     for record in records where record.mimeType != Self.folderMimeType {
+                        try Task.checkCancellation()
                         continuation.yield(
                             RemoteFile(
                                 id: record.id,
@@ -1197,6 +1253,12 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                     continuation.finish(throwing: error)
                 }
             }
+            // A consumer that stops iterating — the view torn down, the coach
+            // picking a different drive — must stop the sweep with it.
+            // Without this the task pages on to the end of a thousand-clip
+            // drive, spending the operator's bandwidth on a stream nobody is
+            // listening to.
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -1224,6 +1286,9 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         var records: [DriveRecord] = []
         var pageToken: String?
         repeat {
+            // Checked per page, so abandoning a browse stops the sweep at the
+            // next page boundary rather than at the end of the drive.
+            try Task.checkCancellation()
             var components = URLComponents(
                 string: "https://www.googleapis.com/drive/v3/files"
             )!
@@ -1269,9 +1334,12 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         of record: DriveRecord, in folders: [String: DriveRecord], rootID: String
     ) -> [String] {
         var names: [String] = []
+        // `seen` is what terminates this: each folder id can be consumed once,
+        // so the walk is bounded by the number of known folders whether or not
+        // the parent links form a cycle.
         var seen: Set<String> = []
         var current = record.parents?.first
-        while let id = current, id != rootID, !seen.contains(id), names.count <= folders.count {
+        while let id = current, id != rootID, !seen.contains(id) {
             seen.insert(id)
             guard let folder = folders[id] else { break }
             names.append(folder.name)
@@ -1348,6 +1416,7 @@ private struct DriveListOfDrives: Decodable {
         let name: String
     }
 
+    let nextPageToken: String?
     let drives: [Drive]
 }
 
