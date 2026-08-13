@@ -37,23 +37,36 @@ hour, `AVPlayer` re-requests ranges for the whole life of an `AVPlayerItem`
 including on every seek, and there is no supported way to swap the URL under a
 live item.
 
-**That URL may already be failing.** Google's system-parameters table no longer
-lists `access_token` at all. Two independent checks against the live API found
-that on the `alt=media` path a query-string token is *not accepted as a
-credential* — the request is served as anonymous, and anonymous media requests
-receive Google's HTML anti-abuse interstitial (HTTP 403, "your computer or
-network may be sending automated queries"), while the identical request with an
-`Authorization: Bearer` header authenticates normally. The metadata path still
-honours the query parameter, which would produce exactly the observed
-symptom: folder listing works, playback does not.
+**That URL is already failing — measured, not predicted.** Google's
+system-parameters table no longer lists `access_token` at all, and on the
+`alt=media` path a query-string token is not accepted as a credential.
 
-> **Unverified, and worth one measurement before Task 1.** The above was
-> reproduced with a *bogus* token, so it establishes how Google answers an
-> unauthenticated media request, not that a valid query-string token fails.
-> Run the A/B against a real token and a real file — same file id, token in
-> query versus token in header — and record both responses here. If playback is
-> already broken, this work is a replacement rather than a repair, and none of
-> `DriveMedia` needs preserving.
+Measured 2026-08-13 against the real library, using a valid refreshed token and
+one real file (`C0197.MP4`, 7.0 MB). Everything held constant except where the
+token sits — same file id, same `Range: bytes=0-63`:
+
+| | Token in `Authorization` header | Token in query string |
+| --- | --- | --- |
+| Status | **206** Partial Content | **403** |
+| Content-Type | `video/mp4` | `text/html` |
+| Body | MP4 bytes, `\x00\x00\x00\x14ftypqt` | `<title>Sorry...</title>` anti-abuse page |
+
+The metadata path still honours the query parameter — `files.list` returned 200
+in the same run — which is exactly the observed symptom: the sidebar populates
+and playback does not. So this work is a **replacement, not a repair**: no part
+of `DriveMedia` needs preserving.
+
+Two further things fell out of the same measurement, both previously
+unverified. `alt=media` does honour `Range`, returning a genuine **206**. And
+both `headRevisionId` and `md5Checksum` are present on real video records, so
+the cache-validity key and the integrity check described below are actually
+available rather than assumed.
+
+> Scope note: the measurement used a `drive.file`-scoped token, the one
+> `upload_to_drive.py` already holds. Scope governs *which* files a token can
+> reach, not where the credential may be presented, so the A/B is unaffected —
+> but the production app will use `drive.readonly`, and no one should read this
+> table as evidence about scopes.
 
 ## The decision: download, don't stream
 
@@ -373,9 +386,9 @@ One spec, but not one landing. The pieces interlock — a browsable library that
 cannot play is not worth shipping — so the plan stages them behind the existing
 Drive entry point and switches over once:
 
-1. **Measure.** Settle whether the current playback URL works (Risk 1). Nothing
-   below depends on the answer, but it decides how much of `GoogleDriveSupport`
-   survives Task 2.
+1. ~~**Measure** whether the current playback URL works.~~ **Done 2026-08-13** —
+   it does not; see the table above. `GoogleDriveSupport`'s media path is
+   replaced outright rather than refactored.
 2. **`ClipIdentity` and the stores.** Independent of everything cloud, testable
    on its own, and it fixes analysis surviving a rename of a *local* clip.
 3. **Provider protocol, `GoogleOAuth` split, `GoogleDriveProvider`.** The
@@ -392,8 +405,10 @@ second OAuth client registration, so it can lag without blocking macOS.
 
 ## Risks and open questions
 
-1. **Whether Drive playback is broken today.** One measurement, described above,
-   before Task 1. It changes how much of `GoogleDriveSupport` is worth keeping.
+1. ~~Whether Drive playback is broken today.~~ **Resolved 2026-08-13: it is.**
+   Query-string tokens are refused on `alt=media` with a 403 HTML interstitial
+   while the header form returns 206 and real bytes. No longer a risk, and the
+   reason the media path is replaced rather than repaired.
 2. **The Internal audience is a hard wall.** A parent or guest coach on personal
    Gmail receives an `org_internal` error, not a request-access prompt. If
    external viewers are ever needed the architecture changes completely — the
