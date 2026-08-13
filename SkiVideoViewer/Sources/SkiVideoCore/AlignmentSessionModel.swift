@@ -205,8 +205,23 @@ public final class AlignmentSessionModel: ObservableObject {
     /// folded into `.failed`. The pass costs the operator fifteen seconds of
     /// waiting; an unwritable footage folder is a persistence problem, not an
     /// alignment failure, and it must not cost them the result.
+    ///
+    /// `left`/`right` say where to *read the frames from* — the pass needs real
+    /// pixels, cloud clip or not, so it always takes URLs. `leftIdentity`/
+    /// `rightIdentity` say what to *file the result under*, and are required
+    /// rather than defaulted: an optional that quietly fell back to
+    /// `ClipIdentity(left)`/`ClipIdentity(right)` would re-create, for any
+    /// caller that forgot to pass one, exactly the defect this parameter pair
+    /// exists to remove — silently, and only for a cloud pair, which is the
+    /// hardest case to notice. For a cloud pair the two answers genuinely
+    /// differ: the URLs are cache paths, the identities are the clips
+    /// themselves, and only the identities are safe to key a sidecar on. Every
+    /// caller has to have both — `ComparisonView.computeAlignment()` does,
+    /// being the only production caller — so there is nothing an omitted
+    /// identity could mean here.
     public func compute(
         left: URL, right: URL,
+        leftIdentity: ClipIdentity, rightIdentity: ClipIdentity,
         leftStart: TimeInterval, rightStart: TimeInterval
     ) async {
         cancel()
@@ -234,7 +249,7 @@ public final class AlignmentSessionModel: ObservableObject {
                 isStale = false
                 do {
                     try AlignmentTrackStore.save(
-                        result, left: ClipIdentity(left), right: ClipIdentity(right)
+                        result, left: leftIdentity, right: rightIdentity
                     )
                 } catch {
                     saveWarning = "\(left.lastPathComponent): \(error). "

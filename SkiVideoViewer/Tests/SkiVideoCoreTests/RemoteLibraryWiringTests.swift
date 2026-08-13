@@ -3,6 +3,11 @@ import XCTest
 
 @MainActor
 final class RemoteLibraryWiringTests: XCTestCase {
+    /// Only the two tests that need a directory of their own — a nested local
+    /// library and a second, custom-downloader `ClipCache` — still use this.
+    /// Every test that just needs a `ViewerModel` over a fake remote library
+    /// gets its own fresh directory from `remoteModel(files:)` instead, in
+    /// `RemoteLibraryTestSupport.swift`.
     private var root: URL!
 
     override func setUpWithError() throws {
@@ -14,25 +19,10 @@ final class RemoteLibraryWiringTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private func model(files: [RemoteFile]) -> (ViewerModel, FakeRemoteProvider, ClipCache) {
-        let provider = FakeRemoteProvider(files: files)
-        let cache = ClipCache(root: root, downloader: FakeClipDownloader(), budget: 1_000_000)
-        let model = ViewerModel(
-            input: FakeInputSource(),
-            folderPicker: FakeFolderPicker(),
-            oauthPresenter: FakeOAuthPresenter()
-        )
-        return (model, provider, cache)
-    }
-
-    private func file(_ id: String, _ name: String, _ path: [String]) -> RemoteFile {
-        RemoteFile(id: id, name: name, path: path, size: 100, contentVersion: "v1", md5: nil)
-    }
-
     func testOpeningARemoteLibraryFillsTheSidebar() async throws {
-        let (model, provider, cache) = self.model(files: [
-            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
-            file("b", "run1.mp4", ["Neuss 2026", "Bea"]),
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            remoteFile("b", "run1.mp4", ["Neuss 2026", "Bea"]),
         ])
 
         try await model.openRemoteLibrary(
@@ -46,8 +36,8 @@ final class RemoteLibraryWiringTests: XCTestCase {
     /// The heart of this plan: what playback receives is an ordinary file, not
     /// an HTTPS URL with a token in it.
     func testThePlaybackURLIsALocalFileNotARemoteURL() async throws {
-        let (model, provider, cache) = self.model(files: [
-            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
         ])
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
@@ -64,8 +54,8 @@ final class RemoteLibraryWiringTests: XCTestCase {
     /// Before the bytes land there is nothing to play. The model must say it
     /// is working rather than hand back a URL to a file that is not there.
     func testAClipNotYetOnDiskReportsThatItIsBeingPrepared() async throws {
-        let (model, provider, cache) = self.model(files: [
-            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
         ])
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
@@ -84,7 +74,9 @@ final class RemoteLibraryWiringTests: XCTestCase {
         let clip = directory.appendingPathComponent("run1.mp4")
         try Data().write(to: clip)
 
-        let (model, _, _) = self.model(files: [])
+        let model = ViewerModel(
+            input: FakeInputSource(), folderPicker: FakeFolderPicker(), oauthPresenter: FakeOAuthPresenter()
+        )
         model.openDirectory(root)
 
         // Both sides resolved. `/var` is a symlink to `/private/var` on macOS,
@@ -110,9 +102,9 @@ final class RemoteLibraryWiringTests: XCTestCase {
     /// library has more than one clip. When plan 3 lands, the second assertion
     /// is the one that changes.
     func testTheComparisonPickerOffersAFileOnlyForAPreparedClip() async throws {
-        let (model, provider, cache) = self.model(files: [
-            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
-            file("b", "run2.mp4", ["Neuss 2026", "Ada"]),
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"]),
         ])
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
@@ -141,8 +133,8 @@ final class RemoteLibraryWiringTests: XCTestCase {
     /// under a still-valid manifest entry. The comparison picker must fall
     /// back the same way rather than handing out a `file://` URL to nothing.
     func testTheComparisonPickerFallsBackWhenTheCachedFileHasBeenEvicted() async throws {
-        let (model, provider, cache) = self.model(files: [
-            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
         ])
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
@@ -169,8 +161,8 @@ final class RemoteLibraryWiringTests: XCTestCase {
         downloader.shouldWait = true
         let cache = ClipCache(root: root, downloader: downloader, budget: 1_000_000)
         let provider = FakeRemoteProvider(files: [
-            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
-            file("b", "run2.mp4", ["Neuss 2026", "Ada"]),
+            remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"]),
         ])
         let model = ViewerModel(
             input: FakeInputSource(), folderPicker: FakeFolderPicker(),

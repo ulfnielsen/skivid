@@ -374,7 +374,11 @@ final class AlignmentSessionModelTests: XCTestCase {
         }
         defer { subscription.cancel() }
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
 
         guard case let .ready(result) = session.state else {
             return XCTFail("expected ready, got \(session.state)")
@@ -394,9 +398,60 @@ final class AlignmentSessionModelTests: XCTestCase {
         let expected = healthyTrack()
         let session = AlignmentSessionModel(compute: { _, _, _, _, _ in expected })
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
 
         XCTAssertEqual(AlignmentTrackStore.load(left: left, right: right), expected)
+        XCTAssertNil(session.saveWarning)
+    }
+
+    /// The round trip `loadStoredAlignment()`/`computeAlignment()` perform for a
+    /// **cloud** pair: `left`/`right` here stand in for cache paths — wherever a
+    /// cloud clip's bytes happen to be sitting — while `leftIdentity`/
+    /// `rightIdentity` are the pair's real identities. `compute` must file the
+    /// track under the identities, not under `ClipIdentity(left)`/
+    /// `ClipIdentity(right)`, which are always `.local` and describe the cache
+    /// path rather than the clip: writing there and then reading back through
+    /// `loadStored(left:right:...)` — keyed on the real identities, exactly as
+    /// `ComparisonView.loadStoredAlignment()` already does — would find nothing.
+    ///
+    /// Points `ClipIdentity.keyedStoreRoot` at a temp directory, the same way
+    /// `SubjectSessionModelTests.testTheModelNeverTouchesTheKeyedStoreForALocalClip`
+    /// does: a `.remote` identity has no folder of its own, so both the correct
+    /// write and (were it reached) an incorrect fallback write would otherwise
+    /// land under the real Application Support directory.
+    func testASuccessfulPassForACloudPairFilesTheTrackUnderItsIdentityNotItsCachePath() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let previousKeyedStoreRoot = ClipIdentity.keyedStoreRoot
+        ClipIdentity.keyedStoreRoot = root
+        defer {
+            ClipIdentity.keyedStoreRoot = previousKeyedStoreRoot
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let expected = healthyTrack()
+        let session = AlignmentSessionModel(compute: { _, _, _, _, _ in expected })
+        let leftIdentity = ClipIdentity.remote(provider: "fake", fileID: "a")
+        let rightIdentity = ClipIdentity.remote(provider: "fake", fileID: "b")
+
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: leftIdentity, rightIdentity: rightIdentity,
+            leftStart: 18.56, rightStart: 4.40
+        )
+
+        let reloaded = session.loadStored(
+            left: leftIdentity, right: rightIdentity, leftStart: 18.56, rightStart: 4.40
+        )
+        XCTAssertEqual(
+            reloaded, expected,
+            "a track computed for a cloud pair must be found by the pair's own identity, "
+                + "not lost under a cache-path identity nothing will ever look up again"
+        )
         XCTAssertNil(session.saveWarning)
     }
 
@@ -411,7 +466,11 @@ final class AlignmentSessionModelTests: XCTestCase {
             [.posixPermissions: 0o555], ofItemAtPath: directory.path
         )
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
 
         guard case .ready = session.state else {
             return XCTFail("a failed write must not fail the pass; got \(session.state)")
@@ -425,7 +484,11 @@ final class AlignmentSessionModelTests: XCTestCase {
             throw CancellationError()
         })
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
 
         guard case .idle = session.state else {
             return XCTFail("a cancelled pass must return to idle, not failed; got \(session.state)")
@@ -440,7 +503,11 @@ final class AlignmentSessionModelTests: XCTestCase {
             }
         })
 
-        let running = Task { await session.compute(left: left, right: right, leftStart: 0, rightStart: 0) }
+        let running = Task { await session.compute(
+                left: left, right: right,
+                leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+                leftStart: 0, rightStart: 0
+            ) }
         try? await Task.sleep(nanoseconds: 30_000_000)
         guard case .computing = session.state else {
             return XCTFail("precondition: the pass must actually be running; got \(session.state)")
@@ -458,7 +525,11 @@ final class AlignmentSessionModelTests: XCTestCase {
         let underlying = AlignmentAnalyzer.AnalysisError.noFrames("C0094.MP4")
         let session = AlignmentSessionModel(compute: { _, _, _, _, _ in throw underlying })
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
 
         guard case let .failed(message) = session.state else {
             return XCTFail("expected failed, got \(session.state)")
@@ -473,7 +544,11 @@ final class AlignmentSessionModelTests: XCTestCase {
     func testAnUnexpectedErrorNeverLeavesStateComputing() async {
         let session = AlignmentSessionModel(compute: { _, _, _, _, _ in throw FakeUnrelatedError() })
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
 
         if case .computing = session.state {
             XCTFail("state must never be left on .computing after the pass throws")
@@ -498,10 +573,18 @@ final class AlignmentSessionModelTests: XCTestCase {
             return second
         })
 
-        let firstRun = Task { await session.compute(left: left, right: right, leftStart: 0, rightStart: 0) }
+        let firstRun = Task { await session.compute(
+                left: left, right: right,
+                leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+                leftStart: 0, rightStart: 0
+            ) }
         try? await Task.sleep(nanoseconds: 30_000_000)
 
-        await session.compute(left: left, right: right, leftStart: 18.56, rightStart: 4.40)
+        await session.compute(
+            left: left, right: right,
+            leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+            leftStart: 18.56, rightStart: 4.40
+        )
         // Let the first run's cancellation finish unwinding before asserting,
         // so a bug that lets it clobber state afterward is caught here rather
         // than racing the assertion below.

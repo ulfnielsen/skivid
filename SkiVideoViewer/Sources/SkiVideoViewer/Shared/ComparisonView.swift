@@ -258,6 +258,8 @@ struct ComparisonView: View {
         guard
             let left = clip(for: .left),
             let right = clip(for: .right),
+            let leftIdentity = model.identity(for: .left),
+            let rightIdentity = model.identity(for: .right),
             let starts = runStarts
         else { return }
         alignmentTask?.cancel()
@@ -266,8 +268,15 @@ struct ComparisonView: View {
         // itself runs off it, and the state writes land back on the actor that
         // owns them.
         alignmentTask = Task { @MainActor in
+            // `left`/`right` say where to read the frames from — a cloud clip's
+            // cache path, same as always. `leftIdentity`/`rightIdentity` say
+            // what to file the result under, so a freshly computed track for a
+            // cloud pair lands where `loadStoredAlignment()` above will actually
+            // look for it, instead of under a cache-path identity nothing reads
+            // by again.
             await alignment.compute(
                 left: left, right: right,
+                leftIdentity: leftIdentity, rightIdentity: rightIdentity,
                 leftStart: starts.left, rightStart: starts.right
             )
         }

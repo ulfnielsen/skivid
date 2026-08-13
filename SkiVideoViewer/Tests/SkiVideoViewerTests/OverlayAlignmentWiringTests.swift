@@ -149,7 +149,9 @@ final class OverlayAlignmentWiringTests: XCTestCase {
         })
         let running = Task {
             await alignment.compute(
-                left: left, right: right, leftStart: 18.56, rightStart: 4.40
+                left: left, right: right,
+                leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+                leftStart: 18.56, rightStart: 4.40
             )
         }
         try await Task.sleep(nanoseconds: 40_000_000)
@@ -236,7 +238,11 @@ final class OverlayAlignmentWiringTests: XCTestCase {
             }
         })
         let running = Task {
-            await computing.compute(left: left, right: right, leftStart: 0, rightStart: 0)
+            await computing.compute(
+                left: left, right: right,
+                leftIdentity: ClipIdentity(left), rightIdentity: ClipIdentity(right),
+                leftStart: 0, rightStart: 0
+            )
         }
         try await Task.sleep(nanoseconds: 40_000_000)
         guard case .computing = computing.state else {
