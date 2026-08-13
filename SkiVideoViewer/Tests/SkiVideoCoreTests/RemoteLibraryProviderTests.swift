@@ -43,17 +43,29 @@ final class RemoteLibraryProviderTests: XCTestCase {
 
     /// The stream must surface a mid-enumeration failure rather than ending
     /// quietly — a sweep that stops early would silently hide half a library.
-    func testAFailingEnumerationThrowsRatherThanEndingEarly() async {
+    ///
+    /// Two files and `errorAfter = 1`, so the failure lands *part-way through*.
+    /// One file would prove only that a stream can throw, which is not the
+    /// behaviour at risk: the dangerous case is a sweep that yields some clips
+    /// and then dies, because a caller that swallowed it would show a partial
+    /// library as if it were whole. Asserting what was yielded first is what
+    /// makes this a mid-stream test rather than a "does it throw" test.
+    func testAFailingEnumerationThrowsAfterYieldingWhatItCould() async {
         let provider = FakeRemoteProvider(files: [
             RemoteFile(id: "a", name: "1.mp4", path: ["E", "A"], size: 1, contentVersion: nil, md5: nil),
+            RemoteFile(id: "b", name: "2.mp4", path: ["E", "A"], size: 2, contentVersion: nil, md5: nil),
         ])
         provider.errorAfter = 1
 
+        var seen: [String] = []
         do {
-            for try await _ in provider.enumerate(RemoteFolder(id: "root", name: "Drive")) {}
+            for try await file in provider.enumerate(RemoteFolder(id: "root", name: "Drive")) {
+                seen.append(file.id)
+            }
             XCTFail("expected the enumeration to throw")
         } catch {
             XCTAssertTrue(error is RemoteLibraryError)
         }
+        XCTAssertEqual(seen, ["a"], "the failure must come after what could be yielded, not instead of it")
     }
 }

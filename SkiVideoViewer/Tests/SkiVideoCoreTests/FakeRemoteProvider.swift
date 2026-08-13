@@ -30,7 +30,7 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error> {
         AsyncThrowingStream { continuation in
             for (offset, file) in files.enumerated() {
-                if let errorAfter, offset + 1 >= errorAfter {
+                if let errorAfter, offset >= errorAfter {
                     continuation.finish(throwing: RemoteLibraryError.api("fake enumeration failure"))
                     return
                 }
