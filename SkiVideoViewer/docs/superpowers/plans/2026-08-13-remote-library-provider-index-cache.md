@@ -2772,7 +2772,16 @@ final class RemoteLibraryWiringTests: XCTestCase {
         let (model, _, _) = self.model(files: [])
         model.openDirectory(root)
 
-        XCTAssertEqual(model.currentPlaybackURL, clip)
+        // Both sides resolved. `/var` is a symlink to `/private/var` on macOS,
+        // and `FileManager.enumerator` hands back children under the *resolved*
+        // path while a URL built by appending components keeps the unresolved
+        // one — the same measurement `VideoLibrary.scan` records where it
+        // computes `rootPaths`. Comparing the two raw would fail for a reason
+        // that has nothing to do with this task.
+        XCTAssertEqual(
+            model.currentPlaybackURL?.resolvingSymlinksInPath(),
+            clip.resolvingSymlinksInPath()
+        )
     }
 
     /// The comparison window gets the same treatment — a pane must never be
@@ -2859,6 +2868,9 @@ Add:
               let remoteIndex, let remoteProvider, let clipCache,
               let file = remoteIndex.file(for: currentVideo)
         else { return }
+        // Captured before the await, so the reload below can tell whether the
+        // coach moved on while this clip was downloading.
+        let videoAtRequest = currentVideo
 
         isPreparingClip = true
         defer { isPreparingClip = false }
@@ -2868,6 +2880,13 @@ Add:
         await clipCache.recordPlayback(
             of: file.identity(inProvider: remoteIndex.providerIdentifier)
         )
+        // The player was pointed at nothing while the bytes were arriving, so
+        // it has to be told they landed — without this the pane stays empty
+        // until the next selection change, and the clip a coach asked for
+        // never appears. Guarded against the selection having moved on during
+        // the download, which would otherwise load the wrong clip.
+        guard currentVideo == videoAtRequest else { return }
+        loadCurrentVideo()
         status = file.name
     }
 ```
@@ -2952,7 +2971,12 @@ and its synthesised URLs are all replaced rather than repaired."
 - [ ] No test writes to the real Application Support or Caches directory.
 - [ ] No pre-existing test was edited to accommodate a change.
 - [ ] `CorePurityTests` passes.
-- [ ] `grep -rn "access_token" Sources/` prints nothing.
+- [ ] No credential is ever put in a URL:
+      `grep -rn "access_token" Sources/ | grep -v "^.*://.*doc\|CodingKeys\|case accessToken\|///"` prints nothing.
+      Two benign hits survive and must not be "fixed": a doc comment recording
+      the measurement that led to this design, and `GoogleOAuth`'s `CodingKeys`
+      case for parsing Google's token JSON. What must be gone is any
+      `URLQueryItem(name: "access_token", …)`.
 - [ ] The 10 pre-existing warnings are unchanged in count and location; no new ones in the files this plan touches.
 - [ ] A local library behaves exactly as before.
 
