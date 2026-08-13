@@ -2238,6 +2238,27 @@ final class ClipCacheTests: XCTestCase {
 
     // MARK: - Eviction
 
+    /// Eviction order must not depend on the wall clock. Two clips
+    /// materialised in the same instant — plausible on a fast machine, and
+    /// certain with an in-memory downloader — would share a `Date`, and a sort
+    /// on that alone breaks ties arbitrarily. Pinning the order with a frozen
+    /// clock is what proves the counter, not the timestamp, decides.
+    func testEvictionOrderDoesNotDependOnTheClock() async throws {
+        let frozen = Date(timeIntervalSince1970: 1_754_121_660)
+        let cache = ClipCache(
+            root: root, downloader: downloader, budget: 250, now: { frozen }
+        )
+        _ = try await cache.materialize(file("a"), source: source)
+        _ = try await cache.materialize(file("b"), source: source)
+        await cache.recordPlayback(of: .remote(provider: "gdrive", fileID: "a"))
+        _ = try await cache.materialize(file("c"), source: source)
+
+        let a = await cache.cachedURL(for: .remote(provider: "gdrive", fileID: "a"))
+        let b = await cache.cachedURL(for: .remote(provider: "gdrive", fileID: "b"))
+        XCTAssertNotNil(a, "a was played most recently, even with a stopped clock")
+        XCTAssertNil(b, "b was the least recently used")
+    }
+
     func testEvictionDropsTheLeastRecentlyPlayedFirst() async throws {
         await cache.setBudget(250)
         _ = try await cache.materialize(file("a"), source: source)
@@ -2388,6 +2409,15 @@ public actor ClipCache {
         let contentVersion: String?
         let bytes: Int64
         var lastUsed: Date
+        /// What eviction actually orders on.
+        ///
+        /// `lastUsed` is a wall-clock stamp kept for diagnostics and for any
+        /// later age-based policy, but it cannot order this: two clips
+        /// materialised in quick succession can share a `Date`, and `sorted`
+        /// breaks ties arbitrarily — so on a fast machine the clip a coach
+        /// just watched could be evicted instead of the oldest. A counter the
+        /// actor hands out is total by construction.
+        var useOrder: Int
         var isPinned: Bool
     }
 
@@ -2409,6 +2439,16 @@ public actor ClipCache {
         self.budget = budget
         self.now = now
         self.entries = Self.loadManifest(at: Self.manifestURL(in: root))
+        // Resume above whatever the last run reached, so ordering survives a
+        // relaunch instead of restarting and making old entries look fresh.
+        self.nextUseOrder = (self.entries.values.map(\.useOrder).max() ?? 0) + 1
+    }
+
+    private var nextUseOrder: Int
+
+    private func takeUseOrder() -> Int {
+        defer { nextUseOrder += 1 }
+        return nextUseOrder
     }
 
     // MARK: - Reading
@@ -2448,6 +2488,7 @@ public actor ClipCache {
            version == file.contentVersion,
            FileManager.default.fileExists(atPath: fileURL(for: entry).path) {
             entries[file.id]?.lastUsed = now()
+            entries[file.id]?.useOrder = takeUseOrder()
             return fileURL(for: entry)
         }
 
@@ -2483,7 +2524,8 @@ public actor ClipCache {
 
         entries[file.id] = Entry(
             fileID: file.id, fileName: file.name, contentVersion: file.contentVersion,
-            bytes: file.size, lastUsed: now(), isPinned: entries[file.id]?.isPinned ?? false
+            bytes: file.size, lastUsed: now(), useOrder: takeUseOrder(),
+            isPinned: entries[file.id]?.isPinned ?? false
         )
         evictToFit()
         saveManifest()
@@ -2513,6 +2555,7 @@ public actor ClipCache {
     public func recordPlayback(of identity: ClipIdentity) {
         guard case let .remote(_, fileID) = identity else { return }
         entries[fileID]?.lastUsed = now()
+        entries[fileID]?.useOrder = takeUseOrder()
         saveManifest()
     }
 
@@ -2547,7 +2590,7 @@ public actor ClipCache {
         guard total > budget else { return }
         let candidates = entries.values
             .filter { !$0.isPinned }
-            .sorted { $0.lastUsed < $1.lastUsed }
+            .sorted { $0.useOrder < $1.useOrder }
         for entry in candidates {
             guard total > budget, entries.count > 1 else { break }
             try? FileManager.default.removeItem(at: fileURL(for: entry))
