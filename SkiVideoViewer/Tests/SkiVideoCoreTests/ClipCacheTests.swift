@@ -8,25 +8,34 @@ final class FakeClipDownloader: ClipDownloader, @unchecked Sendable {
     var errorToThrow: Error?
     private(set) var requestedFileIDs: [String] = []
     private(set) var lastHeaders: [String: String] = [:]
-    /// Blocks each download until `release()` is called, for the coalescing
-    /// and cancellation tests.
-    var gate: CheckedContinuation<Void, Never>?
+    /// Blocks each download until it is released, for the coalescing and
+    /// cancellation tests. Keyed by file id — rather than one bare
+    /// continuation — so two different clips can be held open
+    /// independently, which is what a test of overlapping fetches needs.
+    private var gates: [String: CheckedContinuation<Void, Never>] = [:]
     var shouldWait = false
 
     func download(_ source: DownloadSource, of file: RemoteFile, to destination: URL) async throws {
         requestedFileIDs.append(file.id)
         lastHeaders = source.headers
         if shouldWait {
-            await withCheckedContinuation { gate = $0 }
+            await withCheckedContinuation { gates[file.id] = $0 }
         }
         if let errorToThrow { throw errorToThrow }
         try (bytesByFileID[file.id] ?? Data(repeating: 0, count: Int(file.size)))
             .write(to: destination)
     }
 
+    /// Releases every currently held download.
     func release() {
-        gate?.resume()
-        gate = nil
+        let held = gates.values
+        gates.removeAll()
+        held.forEach { $0.resume() }
+    }
+
+    /// Releases only the named download, leaving any others held.
+    func release(_ fileID: String) {
+        gates.removeValue(forKey: fileID)?.resume()
     }
 }
 
@@ -140,6 +149,46 @@ final class ClipCacheTests: XCTestCase {
         }
     }
 
+    /// Reproduced against the unfixed cache: after a failed refresh to a new
+    /// `contentVersion`, the original file was still on disk, but the catch
+    /// block had already removed its manifest entry — `cachedURL` returned
+    /// nil and `bytesOnDisk()` returned 0, so a coach offline lost a clip
+    /// that worked seconds ago, and its megabytes became invisible to the
+    /// budget and unevictable forever.
+    func testAFailedRefreshLeavesThePriorVersionCachedAndPlayable() async throws {
+        _ = try await cache.materialize(file("a"), source: source)
+
+        downloader.errorToThrow = RemoteLibraryError.api("network down")
+        let updated = RemoteFile(id: "a", name: "a.mp4", path: ["E", "Ada"],
+                                 size: 100, contentVersion: "v2", md5: nil)
+        _ = try? await cache.materialize(updated, source: source)
+
+        let cached = await cache.cachedURL(for: .remote(provider: "gdrive", fileID: "a"))
+        XCTAssertNotNil(cached, "the previous, still-playable copy must remain cached")
+        let total = await cache.bytesOnDisk()
+        XCTAssertEqual(total, 100, "the surviving clip's bytes must still be counted toward the budget")
+    }
+
+    /// Same family as C3: a Drive rename that changes the extension
+    /// (`.mp4` → `.mov`) points the entry at a *different* `fileURL`, so the
+    /// plain overwrite in `fetch` never touches the old file. Without the
+    /// explicit cleanup it survives on disk, untracked and counted nowhere.
+    func testARenameThatChangesTheExtensionRemovesTheOldFile() async throws {
+        let url = try await cache.materialize(file("a"), source: source)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "precondition")
+
+        let renamed = RemoteFile(id: "a", name: "a.mov", path: ["E", "Ada"],
+                                 size: 100, contentVersion: "v2", md5: nil)
+        let newURL = try await cache.materialize(renamed, source: source)
+
+        XCTAssertNotEqual(url, newURL, "precondition: the extension change moved the file")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path),
+            "the old .mp4 file must not be left orphaned on disk"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newURL.path))
+    }
+
     // MARK: - Eviction
 
     /// Eviction order must not depend on the wall clock. Two clips
@@ -181,7 +230,7 @@ final class ClipCacheTests: XCTestCase {
     func testAPinnedClipSurvivesEviction() async throws {
         await cache.setBudget(250)
         _ = try await cache.materialize(file("a"), source: source)
-        try await cache.pin(.remote(provider: "gdrive", fileID: "a"))
+        await cache.pin(.remote(provider: "gdrive", fileID: "a"))
         _ = try await cache.materialize(file("b"), source: source)
         _ = try await cache.materialize(file("c"), source: source)
 
@@ -192,7 +241,7 @@ final class ClipCacheTests: XCTestCase {
     func testUnpinningLetsAClipBeEvictedAgain() async throws {
         await cache.setBudget(250)
         _ = try await cache.materialize(file("a"), source: source)
-        try await cache.pin(.remote(provider: "gdrive", fileID: "a"))
+        await cache.pin(.remote(provider: "gdrive", fileID: "a"))
         await cache.unpin(.remote(provider: "gdrive", fileID: "a"))
         _ = try await cache.materialize(file("b"), source: source)
         _ = try await cache.materialize(file("c"), source: source)
@@ -218,6 +267,24 @@ final class ClipCacheTests: XCTestCase {
         await cache.setBudget(50)
         let url = try await cache.materialize(file("a", size: 100), source: source)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// Reproduced against the unfixed cache: with `a` pinned and filling the
+    /// budget, materialising `b` had `evictToFit` delete `b` itself right
+    /// after writing it — the only unpinned entry `evictToFit` could see. The
+    /// caller got back a path to nothing, and every retry would re-download
+    /// and re-evict it forever.
+    func testMaterializingDoesNotEvictTheClipItJustReturned() async throws {
+        await cache.setBudget(150)
+        _ = try await cache.materialize(file("a", size: 100), source: source)
+        await cache.pin(.remote(provider: "gdrive", fileID: "a"))
+
+        let url = try await cache.materialize(file("b", size: 100), source: source)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
+                       "the clip just materialised must exist on disk")
+        let cachedB = await cache.cachedURL(for: .remote(provider: "gdrive", fileID: "b"))
+        XCTAssertNotNil(cachedB, "cachedURL must find the clip fetch just returned")
     }
 
     // MARK: - Coalescing

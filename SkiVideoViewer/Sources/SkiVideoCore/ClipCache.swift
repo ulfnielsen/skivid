@@ -10,8 +10,9 @@ public protocol ClipDownloader: Sendable {
 public struct URLSessionClipDownloader: ClipDownloader {
     private let session: URLSession
 
-    /// A background session so a download survives the app being suspended,
-    /// which matters on iPad far more than on a Mac.
+    /// The default session. A background session — which is what an iPad
+    /// download needs to survive suspension — requires the delegate API rather
+    /// than `download(for:)`, so it lands with the iPad work in plan 3.
     public init(session: URLSession = .shared) {
         self.session = session
     }
@@ -114,8 +115,10 @@ public actor ClipCache {
         guard FileManager.default.fileExists(atPath: url.path) else {
             // The manifest outlived the bytes: iOS may purge Caches, and a
             // coach may empty it by hand. Forget the entry rather than hand
-            // back a path to nothing.
+            // back a path to nothing — and persist that forgetting, or the
+            // stale entry returns on the next launch.
             entries.removeValue(forKey: fileID)
+            saveManifest()
             return nil
         }
         return url
@@ -167,10 +170,24 @@ public actor ClipCache {
             try FileManager.default.moveItem(at: scratch, to: destination)
         } catch {
             // A half-written clip must never read as cached — AVPlayer would
-            // open it and show a truncated run.
+            // open it and show a truncated run. The destination is
+            // untouched on this path, so a previous, still-playable version
+            // is deliberately left alone: removing its entry here would
+            // make the good copy on disk unplayable and its bytes invisible
+            // to the budget, permanently — worse than the failure itself.
             try? FileManager.default.removeItem(at: scratch)
-            entries.removeValue(forKey: file.id)
             throw error
+        }
+
+        // A renamed extension (Drive's .mp4 becoming .mov) means the new
+        // entry's `fileURL` differs from the old one's, so the plain
+        // overwrite above never touches the old file. Without this it is
+        // orphaned: untracked, uncounted, and never evicted.
+        if let old = entries[file.id] {
+            let oldURL = fileURL(for: old)
+            if oldURL != destination {
+                try? FileManager.default.removeItem(at: oldURL)
+            }
         }
 
         entries[file.id] = Entry(
@@ -178,7 +195,7 @@ public actor ClipCache {
             bytes: file.size, lastUsed: now(), useOrder: takeUseOrder(),
             isPinned: entries[file.id]?.isPinned ?? false
         )
-        evictToFit()
+        evictToFit(protecting: file.id)
         saveManifest()
         return destination
     }
@@ -210,7 +227,7 @@ public actor ClipCache {
         saveManifest()
     }
 
-    public func pin(_ identity: ClipIdentity) throws {
+    public func pin(_ identity: ClipIdentity) {
         guard case let .remote(_, fileID) = identity, entries[fileID] != nil else { return }
         entries[fileID]?.isPinned = true
         saveManifest()
@@ -233,14 +250,17 @@ public actor ClipCache {
 
     /// Drops least-recently-used clips until the total fits the budget.
     ///
-    /// Never evicts a pinned clip, and never refuses to keep a clip larger
-    /// than the whole budget — the biggest clips in the library would
-    /// otherwise become permanently unopenable.
-    public func evictToFit() {
+    /// Never evicts a pinned clip, and never the clip just materialised —
+    /// evicting the file we are about to hand back leaves the caller with a
+    /// path to nothing and makes every retry re-download and re-evict it.
+    /// Nor does it ever refuse to keep a clip larger than the whole budget —
+    /// the biggest clips in the library would otherwise become permanently
+    /// unopenable.
+    public func evictToFit(protecting fileID: String? = nil) {
         var total = bytesOnDisk()
         guard total > budget else { return }
         let candidates = entries.values
-            .filter { !$0.isPinned }
+            .filter { !$0.isPinned && $0.fileID != fileID }
             .sorted { $0.useOrder < $1.useOrder }
         for entry in candidates {
             guard total > budget, entries.count > 1 else { break }

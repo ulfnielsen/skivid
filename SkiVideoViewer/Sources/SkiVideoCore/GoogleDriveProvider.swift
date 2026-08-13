@@ -67,11 +67,22 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                 do {
                     let records = try await sweep(driveID: folder.id)
                     let folders = Dictionary(
-                        uniqueKeysWithValues: records
-                            .filter { $0.mimeType == Self.folderMimeType }
-                            .map { ($0.id, $0) }
+                        records.filter { $0.mimeType == Self.folderMimeType }.map { ($0.id, $0) },
+                        // Drive can report one record twice — results shift
+                        // mid-pagination, and a multi-page change drain can
+                        // repeat a file. `uniqueKeysWithValues` traps on that,
+                        // which would crash the app on a routine refresh.
+                        uniquingKeysWith: { first, _ in first }
                     )
                     for record in records where record.mimeType != Self.folderMimeType {
+                        // Cosmetic by the time execution reaches here: `sweep`
+                        // has already paged through the whole drive and
+                        // `records` is fully in memory, so a cancellation
+                        // caught in this loop only skips a few in-memory
+                        // yields. The check that actually matters — the one
+                        // that stops an abandoned browse from paging on to
+                        // the end of a thousand-clip drive — is the one
+                        // inside `sweep`'s own page loop, below.
                         try Task.checkCancellation()
                         continuation.yield(
                             RemoteFile(
@@ -316,9 +327,12 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
         // caller wanting more must re-sweep. In practice a new clip's folders
         // are already in the index from the last sweep.
         let folders = Dictionary(
-            uniqueKeysWithValues: changed
-                .filter { $0.mimeType == Self.folderMimeType }
-                .map { ($0.id, $0) }
+            changed.filter { $0.mimeType == Self.folderMimeType }.map { ($0.id, $0) },
+            // Drive can report one record twice — results shift mid-pagination,
+            // and a multi-page change drain can repeat a file.
+            // `uniqueKeysWithValues` traps on that, which would crash the app
+            // on a routine refresh.
+            uniquingKeysWith: { first, _ in first }
         )
         return RemoteLibraryChanges(
             changed: changed

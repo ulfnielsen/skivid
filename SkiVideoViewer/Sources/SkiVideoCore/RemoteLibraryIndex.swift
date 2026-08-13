@@ -105,10 +105,13 @@ public struct RemoteLibraryIndex: Equatable {
     /// index's — a local clip, or one indexed before a refresh dropped it.
     public func file(for url: URL) -> RemoteFile? { filesByURL[url] }
 
-    /// Bumped whenever the stored shape changes. A stored index from an older
-    /// version is refused rather than adapted, the same rule
-    /// `AlignmentTrackStore` applies to a stale track: refusing costs one
-    /// sweep, adapting silently costs a library that is subtly wrong.
+    /// Bumped whenever the stored shape changes. A stored index from any
+    /// other version — older *or newer* — is refused rather than adapted,
+    /// the same rule `AlignmentTrackStore` applies to a stale track:
+    /// refusing costs one sweep, adapting silently costs a library that is
+    /// subtly wrong. A newer version matters too: a build ahead of this one
+    /// could have changed the stored shape in a way today's decoder cannot
+    /// detect, only misread.
     public static let currentVersion = 1
 
     /// Where indexes are written. Application Support rather than Caches: an
@@ -149,12 +152,12 @@ public struct RemoteLibraryIndex: Equatable {
     }
 
     /// The stored index, or nil when there is none, it cannot be read, or it
-    /// was written by an older version. All three mean the same thing to the
-    /// caller: sweep the drive.
+    /// was written by a different version — older or newer. All three mean
+    /// the same thing to the caller: sweep the drive.
     public static func load(forRoot rootID: String) -> RemoteLibraryIndex? {
         guard let data = try? Data(contentsOf: storeURL(forRoot: rootID)),
               let stored = try? JSONDecoder().decode(Stored.self, from: data),
-              stored.version >= currentVersion
+              stored.version == currentVersion
         else { return nil }
         return RemoteLibraryIndex(
             providerIdentifier: stored.providerIdentifier,

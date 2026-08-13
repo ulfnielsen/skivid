@@ -39,4 +39,14 @@ final class ClipIdentityTests: XCTestCase {
             ClipIdentity.remote(provider: "dropbox", fileID: "x").storeKey
         )
     }
+
+    /// `pairKey`'s doc records an invariant it cannot check itself: a
+    /// provider identifier must never contain "-" (the join would no longer
+    /// be injective) and must never be the literal "local" (its key would be
+    /// indistinguishable from a local digest). Nothing enforces this at
+    /// compile time, so a real provider is guarded here directly.
+    func testGoogleDriveProviderIdentifierRespectsThePairKeyInvariant() {
+        XCTAssertFalse(GoogleDriveProvider.identifier.contains("-"))
+        XCTAssertNotEqual(GoogleDriveProvider.identifier, "local")
+    }
 }

@@ -51,8 +51,10 @@ public final class ViewerModel: ObservableObject {
     private var clipCache: ClipCache?
 
     @Published public private(set) var isUsingRemoteLibrary = false
-    /// True while any clip's bytes are being fetched. The view shows
-    /// progress instead of an empty player.
+    /// True while any clip's bytes are being fetched. No view reads this
+    /// yet — plan 3 is what puts a spinner on screen instead of an empty
+    /// player — but the flag and the counter behind it are exercised by
+    /// `testIsPreparingClipStaysTrueUntilBothOverlappingFetchesFinish`.
     @Published public private(set) var isPreparingClip = false
     /// How many fetches are in flight. A count rather than a bare flag:
     /// with two overlapping fetches — a coach reselecting while the first is
@@ -223,7 +225,7 @@ public final class ViewerModel: ObservableObject {
                         id: "\(athlete.id)|\(video.absoluteString)",
                         name: video.lastPathComponent,
                         playbackURL: remoteIndex?.file(for: video)
-                            .flatMap { materialisedByFileID[$0.id] } ?? video
+                            .flatMap { cachedRemoteURL(for: $0) } ?? video
                     )
                 }
             )

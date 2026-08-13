@@ -135,4 +135,73 @@ final class RemoteLibraryWiringTests: XCTestCase {
             """
         )
     }
+
+    /// `currentPlaybackURL` guards its mirror with `fileExists` because
+    /// eviction or an iOS Caches purge can delete a clip's bytes out from
+    /// under a still-valid manifest entry. The comparison picker must fall
+    /// back the same way rather than handing out a `file://` URL to nothing.
+    func testTheComparisonPickerFallsBackWhenTheCachedFileHasBeenEvicted() async throws {
+        let (model, provider, cache) = self.model(files: [
+            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+        ])
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        try await model.prepareCurrentClip()
+        let preparedURL = try XCTUnwrap(model.currentPlaybackURL)
+        try FileManager.default.removeItem(at: preparedURL)
+
+        let choice = try XCTUnwrap(model.comparisonLibrary.first?.videos.first)
+
+        XCTAssertFalse(
+            choice.playbackURL.isFileURL,
+            "eviction must fall back to the library URL, not a file URL pointing at nothing"
+        )
+    }
+
+    /// The entire justification for `preparingCount`: a coach reselecting
+    /// while the first clip is still downloading must not let that first
+    /// fetch finishing clear the flag while the second is still in flight —
+    /// which is exactly what a bare boolean would do, showing neither a
+    /// spinner nor a clip.
+    func testIsPreparingClipStaysTrueUntilBothOverlappingFetchesFinish() async throws {
+        let downloader = FakeClipDownloader()
+        downloader.shouldWait = true
+        let cache = ClipCache(root: root, downloader: downloader, budget: 1_000_000)
+        let provider = FakeRemoteProvider(files: [
+            file("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            file("b", "run2.mp4", ["Neuss 2026", "Ada"]),
+        ])
+        let model = ViewerModel(
+            input: FakeInputSource(), folderPicker: FakeFolderPicker(),
+            oauthPresenter: FakeOAuthPresenter()
+        )
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        XCTAssertFalse(model.isPreparingClip)
+
+        Task { try await model.prepareCurrentClip() }
+        // Let the first fetch reach the downloader and hold its gate before
+        // the selection moves on.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(model.isPreparingClip)
+
+        model.changeVideo(by: 1)
+        Task { try await model.prepareCurrentClip() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(downloader.requestedFileIDs, ["a", "b"], "both fetches must be in flight")
+        XCTAssertTrue(model.isPreparingClip)
+
+        downloader.release("a")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(
+            model.isPreparingClip,
+            "the first fetch finishing must not clear the flag while the second is still in flight"
+        )
+
+        downloader.release("b")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(model.isPreparingClip)
+    }
 }

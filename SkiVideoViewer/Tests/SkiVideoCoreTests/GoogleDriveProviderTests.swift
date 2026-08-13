@@ -209,6 +209,57 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertLessThanOrEqual(files[0].path.count, 2)
     }
 
+    /// The spec records that `files.list` results can shift mid-pagination,
+    /// so a folder can legitimately appear twice in one sweep. Reproduced
+    /// against the unfixed code: `Dictionary(uniqueKeysWithValues:)` traps
+    /// with "Fatal error: Duplicate values for key" and kills the process —
+    /// a crash on a routine refresh, from data outside our control.
+    func testADuplicateFolderIDInASweepDoesNotCrash() async throws {
+        transport.responses = [.init(json: """
+        {"files":[
+          {"id":"f1","name":"Neuss 2026","mimeType":"application/vnd.google-apps.folder","parents":["d1"]},
+          {"id":"f1","name":"Neuss 2026","mimeType":"application/vnd.google-apps.folder","parents":["d1"]},
+          {"id":"f3","name":"run.mp4","mimeType":"video/mp4","parents":["f1"],"size":"1"}
+        ]}
+        """)]
+
+        var files: [RemoteFile] = []
+        for try await file in provider.enumerate(RemoteFolder(id: "d1", name: "Club")) {
+            files.append(file)
+        }
+
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(files[0].path, ["Neuss 2026"])
+    }
+
+    /// The other of the two duplicate-key sites: a multi-page `changes.list`
+    /// drain can report one file twice across pages. Reproduced against the
+    /// unfixed code the same way as the sweep above — a trap, not a thrown
+    /// error.
+    func testADuplicateFolderIDAcrossTwoChangePagesDoesNotCrash() async throws {
+        transport.responses = [
+            .init(json: """
+            {"nextPageToken":"p2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"Neuss 2026","mimeType":"application/vnd.google-apps.folder","parents":["d1"]}}
+            ]}
+            """),
+            .init(json: """
+            {"newStartPageToken":"t2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"Neuss 2026","mimeType":"application/vnd.google-apps.folder","parents":["d1"]}},
+              {"fileId":"f3","removed":false,
+               "file":{"id":"f3","name":"run.mp4","mimeType":"video/mp4","parents":["f1"],"size":"1"}}
+            ]}
+            """),
+        ]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed.map(\.id), ["f3"])
+        XCTAssertEqual(changes.changed[0].path, ["Neuss 2026"])
+    }
+
     // MARK: - Errors
 
     /// Drive answers an unauthenticated media request with an HTML block page.

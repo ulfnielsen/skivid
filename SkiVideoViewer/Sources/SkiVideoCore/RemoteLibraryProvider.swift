@@ -50,10 +50,14 @@ public protocol RemoteLibraryProvider: Sendable {
     /// a root that yields nothing is worse than a root that is absent.
     func roots() async throws -> [RemoteFolder]
 
-    /// Every descendant *file* of `folder`, streamed so a large library can
-    /// show results before the sweep finishes. A failure part-way through
-    /// finishes the stream by throwing — never silently, which would show a
-    /// half library as if it were whole.
+    /// Every descendant *file* of `folder`, as an `AsyncThrowingStream`. For
+    /// `GoogleDriveProvider` this does not yet show results before the sweep
+    /// finishes — `sweep()` collects every page first, and the yield loop
+    /// only replays what it already has — but the stream shape is worth
+    /// keeping regardless: it is what lets a failure part-way through finish
+    /// the stream by throwing rather than silently, which would show a half
+    /// library as if it were whole, and it is what a future implementation
+    /// that yields per-page would slot into without a signature change.
     func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error>
 
     /// Where to fetch this file's bytes. Minted per download and never stored
@@ -76,8 +80,9 @@ public struct RemoteFolder: Hashable, Sendable {
 /// Separate from `RemoteLibraryProvider` because only some providers have one:
 /// Drive and Dropbox do, an object store does not. A core method would make
 /// three implementations carry a stub that just re-enumerates, which reads as
-/// support for something that is not there. Call sites test for it:
-/// `if let incremental = provider as? IncrementallyEnumerable`.
+/// support for something that is not there. No call site does this yet —
+/// `if let incremental = provider as? IncrementallyEnumerable` is the
+/// intended pattern once plan 3 wires a refresh action to it.
 public protocol IncrementallyEnumerable: RemoteLibraryProvider {
     /// The cursor to start from, obtained once when the library is first swept.
     func startCursor(forRoot rootID: String) async throws -> String
