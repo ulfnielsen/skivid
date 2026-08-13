@@ -330,4 +330,21 @@ final class SubjectSessionModelTests: XCTestCase {
         }
         XCTAssertEqual(result, second)
     }
+
+    /// The model must reach the store through an identity, so that a library
+    /// yielding remote clips needs no change here. Asserted by pointing the
+    /// keyed store somewhere empty and confirming a *local* clip is still
+    /// found — i.e. the model did not start writing everything to the key
+    /// store by mistake.
+    func testSubjectSessionStillUsesTheFootageFolderForALocalClip() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let previous = ClipIdentity.keyedStoreRoot
+        ClipIdentity.keyedStoreRoot = root
+        defer { ClipIdentity.keyedStoreRoot = previous }
+
+        try ClipAnalysisStore.save(analysis(subject: nil), for: clip())
+        XCTAssertNotNil(ClipAnalysisStore.load(for: ClipIdentity(clip())))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
 }

@@ -155,7 +155,9 @@ public final class AlignmentSessionModel: ObservableObject {
         left: URL, right: URL,
         leftStart: TimeInterval, rightStart: TimeInterval
     ) -> AlignmentTrack? {
-        guard let stored = AlignmentTrackStore.load(left: left, right: right) else {
+        guard let stored = AlignmentTrackStore.load(
+            left: ClipIdentity(left), right: ClipIdentity(right)
+        ) else {
             reset()
             return nil
         }
@@ -217,7 +219,9 @@ public final class AlignmentSessionModel: ObservableObject {
                 state = .ready(result)
                 isStale = false
                 do {
-                    try AlignmentTrackStore.save(result, left: left, right: right)
+                    try AlignmentTrackStore.save(
+                        result, left: ClipIdentity(left), right: ClipIdentity(right)
+                    )
                 } catch {
                     saveWarning = "\(left.lastPathComponent): \(error). "
                         + "The alignment still applies for this session."

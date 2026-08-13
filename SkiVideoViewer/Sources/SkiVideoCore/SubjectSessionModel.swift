@@ -70,7 +70,7 @@ public final class SubjectSessionModel: ObservableObject {
     /// that was probably already right.
     @discardableResult
     public func loadStored(for clip: URL) -> ClipAnalysis? {
-        guard let stored = ClipAnalysisStore.load(for: clip) else {
+        guard let stored = ClipAnalysisStore.load(for: ClipIdentity(clip)) else {
             state = .idle
             isStale = false
             return nil
@@ -160,7 +160,7 @@ public final class SubjectSessionModel: ObservableObject {
             )
         )
         state = .ready(updated)
-        try ClipAnalysisStore.save(updated, for: clip)
+        try ClipAnalysisStore.save(updated, for: ClipIdentity(clip))
     }
 
     private func updateProgress(_ value: Double, generation: Int) {
