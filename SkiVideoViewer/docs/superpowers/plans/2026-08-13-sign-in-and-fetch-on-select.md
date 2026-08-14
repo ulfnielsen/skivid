@@ -1133,7 +1133,10 @@ somewhere the app never sees it."
 - [ ] Opening the same drive twice sweeps once.
 - [ ] Signing in downloads nothing.
 - [ ] A removal in Drive does not delete cached bytes.
-- [ ] No test touches the network or the real Keychain.
+- [ ] No test touches the network, the real Keychain, or the real Application Support directory. Check the last one by looking: `ls ~/Library/Application\ Support/SkiVideoViewer` must find nothing after a test run. Wiring `RemoteLibraryIndex.save`/`load` in Task 5 made three suites start writing there, because they share a root id and nothing isolated `storeRoot` — a rule stated in a plan is not a rule the tests obey.
+- [ ] **`xcodebuild` resolves the package graph.** Run it, not just SwiftPM:
+      `xcodegen generate && xcodebuild -project SkiVideoViewer.xcodeproj -scheme SkiVideoViewer -destination 'platform=macOS' build`
+      Task 1 added a test-target-to-test-target dependency that SwiftPM permits and `xcodebuild` rejects, killing the Xcode project for both schemes. `swift build`, `swift test` and `build_app.sh` all stayed green throughout, so four tasks passed over it — **every check in this plan ran through SwiftPM and none through xcodebuild.** Running fewer tests would not have caught it; running a different tool would.
 - [ ] The 10 pre-existing warnings are unchanged; none added.
 - [ ] A local library behaves exactly as before.
 
