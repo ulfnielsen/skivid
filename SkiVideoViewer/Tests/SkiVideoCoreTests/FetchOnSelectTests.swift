@@ -7,6 +7,10 @@ final class FetchOnSelectTests: XCTestCase {
         (1...5).map { remoteFile("f\($0)", "run\($0).mp4", ["Neuss 2026", "Ada"]) }
     }
 
+    private func sixClips() -> [RemoteFile] {
+        (1...6).map { remoteFile("f\($0)", "run\($0).mp4", ["Neuss 2026", "Ada"]) }
+    }
+
     /// Selecting a clip is what asks for it. Nothing else in the app calls
     /// `prepareCurrentClip`, so without this a coach clicks a clip and watches
     /// an empty pane forever.
@@ -26,12 +30,16 @@ final class FetchOnSelectTests: XCTestCase {
     }
 
     /// Prefetch reaches the next two and the previous one — and stops.
-    /// Selecting clip 3 of 5 must leave clip 5 alone. A test asserting only
-    /// that the neighbours *were* fetched would pass an implementation that
+    /// Six clips, clip 3 selected: fetching must reach clips 2 through 5
+    /// (indices 1–4) and must leave clip 6 alone. Five clips was too small a
+    /// fixture to state this bound — with the middle of five selected,
+    /// "next two" necessarily lands on the last clip, making the negative
+    /// assertion impossible to satisfy honestly. A test asserting only that
+    /// the neighbours *were* fetched would pass an implementation that
     /// fetched the whole athlete, which on a 74 GB library is the difference
     /// between a warm cache and a flooded connection.
     func testPrefetchReachesTheNeighboursAndNoFurther() async throws {
-        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: sixClips())
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
         )
@@ -40,8 +48,8 @@ final class FetchOnSelectTests: XCTestCase {
         try await model.settleFetches()
 
         let fetched = Set(downloader.requestedFileIDs)
-        XCTAssertTrue(fetched.isSuperset(of: ["f2", "f3", "f4"]), "got \(fetched)")
-        XCTAssertFalse(fetched.contains("f5"), "prefetch reached too far: \(fetched)")
+        XCTAssertTrue(fetched.isSuperset(of: ["f2", "f3", "f4", "f5"]), "got \(fetched)")
+        XCTAssertFalse(fetched.contains("f6"), "prefetch reached too far: \(fetched)")
     }
 
     /// A comparison pane must fetch the clip it was given. This closes the gap
@@ -78,7 +86,13 @@ final class FetchOnSelectTests: XCTestCase {
         downloader.release("f3")
         try await model.settleFetches()
 
-        XCTAssertEqual(model.currentPlaybackURL?.lastPathComponent.contains("f3"), true,
+        // `ClipCache` names cached files by a digest of the file id
+        // (`StorageName.forIdentifier`), never the id itself, so which clip
+        // actually loaded has to be confirmed by identity — a filename
+        // substring check could never pass regardless of correctness, and
+        // must not be weakened to "some file loaded": that would pass even
+        // if f2, not f3, ended up on screen.
+        XCTAssertEqual(model.currentClipIdentity, .remote(provider: "fake", fileID: "f3"),
                        "got \(String(describing: model.currentPlaybackURL))")
         XCTAssertFalse(model.isPreparingClip, "the flag must clear once both finish")
     }

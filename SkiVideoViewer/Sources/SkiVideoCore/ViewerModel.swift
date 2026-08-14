@@ -70,17 +70,30 @@ public final class ViewerModel: ObservableObject {
     /// other was still running, showing neither a spinner nor a clip.
     private var preparingCount = 0
 
-    /// The current clip's own fetch, one `Task` per call to `changeVideo`,
-    /// `changeAthlete` or `selectAthlete` — so `settleFetches()` can await
-    /// exactly what a test's own selection changes started.
+    /// The current clip's own fetch — one `Task` per call to `changeVideo`,
+    /// `changeAthlete`, `selectAthlete`, or the auto-select
+    /// `openRemoteLibrary`/`openDirectory` make when a library first opens —
+    /// so `settleFetches()` can await every `prepareCurrentClip` invocation a
+    /// selection change started.
+    ///
+    /// All of them, not just the explicit ones: `prepareCurrentClip` reads
+    /// `currentVideo` — live, at the moment its `Task` actually runs, not a
+    /// snapshot from when the `Task` was created — so a coach (or a test)
+    /// who moves on again before an *earlier* selection's fetch has even
+    /// started leaves that earlier `Task` to resolve against whatever is
+    /// current by the time it runs. Its `preparingCount` contribution is real
+    /// regardless of which clip it ends up naming, and leaving it untracked
+    /// was measured to make `isPreparingClip` flake false after
+    /// `settleFetches()` returned — the untracked `Task` was still mid-flight,
+    /// decrementing a moment later.
     ///
     /// Deliberately **not** the neighbour prefetches `fetchSelection` also
-    /// starts, and not the auto-select `openRemoteLibrary`/`openDirectory`
-    /// make when a library first opens (see `fetchCurrentClip`). Both are
-    /// best-effort and may legitimately never finish — a coach who moves on
-    /// again before a prefetch lands, or a test that gates the downloader
-    /// after opening a library — so awaiting them here would make
-    /// `settleFetches()` hang on a fetch nobody asked it to wait for.
+    /// starts (see `prefetch`, which does not touch `preparingCount` at
+    /// all). Those are best-effort and may legitimately never finish — a
+    /// coach who moves on again before a prefetch lands, or a test that
+    /// gates the downloader and only releases the clips it selected — so
+    /// awaiting them here would make `settleFetches()` hang on a fetch
+    /// nobody asked it to wait for.
     private var fetchTasks: [Task<Void, Never>] = []
 
     /// Mirrors the cache for synchronous reads. `currentPlaybackURL` and
@@ -490,7 +503,7 @@ public final class ViewerModel: ObservableObject {
     /// `neighboursToPrefetch` both return immediately without a
     /// `remoteIndex`.
     private func fetchSelection() {
-        fetchCurrentClip(track: true)
+        fetchCurrentClip()
         for file in neighboursToPrefetch() {
             Task { [weak self] in
                 await self?.prefetch(file)
@@ -498,15 +511,15 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
-    /// Starts the current clip's own fetch. `track` controls whether it is
-    /// added to `fetchTasks` — see that property for why the initial
-    /// auto-select does not.
-    private func fetchCurrentClip(track: Bool) {
+    /// Starts the current clip's own fetch and tracks it in `fetchTasks` —
+    /// see that property for why every selection change's own fetch is
+    /// tracked, including the initial auto-select's.
+    private func fetchCurrentClip() {
         let task = Task { [weak self] in
             guard let self else { return }
             try? await self.prepareCurrentClip()
         }
-        if track { fetchTasks.append(task) }
+        fetchTasks.append(task)
     }
 
     /// Best-effort priming of a clip nobody has asked for yet. Shares
@@ -520,12 +533,13 @@ public final class ViewerModel: ObservableObject {
         materialisedByFileID[file.id] = url
     }
 
-    /// The clips worth having before they are asked for: the one just ahead,
-    /// and the one just behind. Bounded on purpose — the library is 74 GB,
-    /// and "fetch the whole athlete" is a flooded connection on a hill.
+    /// The clips worth having before they are asked for: the two a coach is
+    /// about to step forward onto, and the one behind them. Bounded on
+    /// purpose — the library is 74 GB, and "fetch the whole athlete" is a
+    /// flooded connection on a hill.
     private func neighboursToPrefetch() -> [RemoteFile] {
         guard let athlete = currentAthlete, let remoteIndex else { return [] }
-        return [videoIndex - 1, videoIndex + 1]
+        return [videoIndex - 1, videoIndex + 1, videoIndex + 2]
             .filter { athlete.videos.indices.contains($0) }
             .compactMap { remoteIndex.file(for: athlete.videos[$0]) }
     }
@@ -572,16 +586,16 @@ public final class ViewerModel: ObservableObject {
 
     /// The auto-pick `openRemoteLibrary`/`openDirectory` make when a library
     /// first opens. Same selection as `selectAthlete`, but starting only the
-    /// current clip's own fetch — no prefetch, and no `fetchTasks` tracking.
+    /// current clip's own fetch — no prefetch of neighbours.
     ///
     /// A coach who has not navigated anywhere yet gets the one clip on
     /// screen, not an immediate flurry of prefetches for clips they may never
-    /// look at; the untracked fetch is also what keeps this from racing a
-    /// test that configures the fake downloader immediately after the call
-    /// that opened the library — see `fetchTasks`.
+    /// look at. The fetch itself is still tracked in `fetchTasks`, same as
+    /// every other selection change — see that property for why leaving it
+    /// untracked was measured to flake `isPreparingClip`.
     private func selectInitialAthlete(_ id: String?) {
         guard applySelection(id) else { return }
-        fetchCurrentClip(track: false)
+        fetchCurrentClip()
     }
 
     @discardableResult
