@@ -1,6 +1,5 @@
 import XCTest
 @testable import SkiVideoCore
-@testable import SkiVideoCoreTests
 
 @MainActor
 final class RemoteAnalysisIdentityTests: XCTestCase {
