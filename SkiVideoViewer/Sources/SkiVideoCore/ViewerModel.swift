@@ -314,13 +314,23 @@ public final class ViewerModel: ObservableObject {
     /// Opens the chosen drive's library. Separate from `signIn` because a
     /// coach in several drives picks one, and because the picker must be able
     /// to reappear without signing in again.
-    public func chooseRoot(_ root: RemoteFolder, cache: ClipCache) async {
-        guard let remoteProvider else { return }
+    ///
+    /// Returns whether the library actually opened, so a caller — the sheet's
+    /// button — can dismiss only then, rather than on every tap regardless of
+    /// outcome. Clears any earlier failure's message at the start, the way
+    /// `signIn` does, so a later successful pick never leaves a stale one on
+    /// screen.
+    @discardableResult
+    public func chooseRoot(_ root: RemoteFolder, cache: ClipCache) async -> Bool {
+        signInError = nil
+        guard let remoteProvider else { return false }
         do {
             try await openRemoteLibrary(provider: remoteProvider, root: root, cache: cache)
             availableRoots = []
+            return true
         } catch {
             signInError = error.localizedDescription
+            return false
         }
     }
 

@@ -68,8 +68,9 @@ struct GoogleDriveSheet: View {
         List(model.availableRoots, id: \.id) { root in
             Button(root.name) {
                 Task {
-                    await model.chooseRoot(root, cache: cache)
-                    isPresented = false
+                    if await model.chooseRoot(root, cache: cache) {
+                        isPresented = false
+                    }
                 }
             }
         }

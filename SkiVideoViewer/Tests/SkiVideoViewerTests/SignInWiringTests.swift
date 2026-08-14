@@ -62,4 +62,42 @@ final class SignInWiringTests: XCTestCase {
             "listing a library must not fetch its clips"
         )
     }
+
+    /// A Shared Drive with no video files must not open as an empty library —
+    /// `openRemoteLibrary` throws `ViewerError.noVideos` before it writes any
+    /// state — and the failure has to reach `signInError` so the sheet can
+    /// show it instead of silently dismissing. Asserted on both: an
+    /// implementation that sets the error but still flips `isUsingRemoteLibrary`
+    /// (or one that opens an empty `athletes` list) satisfies only one half.
+    func testChoosingADriveWithNoVideosLeavesTheLibraryUnopenedAndReportsWhy() async throws {
+        let (model, provider, cache) = try remoteModel(files: [])
+        await model.signIn(with: provider)
+
+        let opened = await model.chooseRoot(RemoteFolder(id: "empty", name: "Empty Drive"), cache: cache)
+
+        XCTAssertFalse(opened)
+        XCTAssertNotNil(model.signInError)
+        XCTAssertTrue(model.athletes.isEmpty, "a drive with no videos must not open as an empty library")
+        XCTAssertFalse(model.isUsingRemoteLibrary)
+    }
+
+    /// The stale-banner case: a failed pick sets `signInError`, and nothing
+    /// before this fix ever cleared it, so a later, successful pick would
+    /// show the earlier failure's message on top of a working library.
+    /// Fails today because `chooseRoot` only ever sets `signInError`, never
+    /// clears it on success.
+    func testASuccessfulPickClearsAnEarlierFailedPicksError() async throws {
+        let (model, provider, cache) = try remoteModel(files: [])
+        await model.signIn(with: provider)
+
+        let firstPick = await model.chooseRoot(RemoteFolder(id: "empty", name: "Empty Drive"), cache: cache)
+        XCTAssertFalse(firstPick)
+        XCTAssertNotNil(model.signInError, "precondition: the failed pick must have set an error")
+
+        provider.files = [remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"])]
+        let secondPick = await model.chooseRoot(RemoteFolder(id: "d1", name: "Club"), cache: cache)
+
+        XCTAssertTrue(secondPick)
+        XCTAssertNil(model.signInError, "a working pick must clear an earlier failure's message")
+    }
 }
