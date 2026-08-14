@@ -18,7 +18,22 @@ public struct AthleteGroup: Identifiable, Equatable {
     }
 }
 
-/// One sidebar section: the athletes that shared an event folder.
+/// Which dimension heads the sidebar.
+///
+/// A coach's preference, not a correction — both "how is Ada progressing?"
+/// (athlete-first) and "who did what at Neuss?" (event-first) are legitimate
+/// ways to read one library, so this is changeable at any time rather than
+/// derived from the data. See `ViewerModel.sidebarGrouping` for where it is
+/// persisted, and `LibraryGrouping.order(_:by:)` for how it reorders a group
+/// list without re-folding it.
+public enum SidebarGrouping: String, CaseIterable, Codable, Equatable, Sendable {
+    case event
+    case athlete
+}
+
+/// One sidebar section: rows that share a leading key — an event's athletes
+/// when the sidebar is event-led, or an athlete's events when it is
+/// athlete-led.
 ///
 /// A derived reading of `ViewerModel.athletes`, never a second store — the flat
 /// array stays the source of truth because selection-by-id, `changeAthlete` and
@@ -37,8 +52,12 @@ public struct EventGroup: Identifiable, Equatable {
     /// own: `LibraryGrouping` already collapsed the folder spellings that fold
     /// alike onto one name, so two sections can only carry the same name if
     /// they came from the same folded event — and then they are one section.
+    /// An athlete-led section reuses the same tag: an athlete's name is never
+    /// nil, so the "a" (event-less) id can never collide with it.
     public let id: String
-    /// nil for the trailing section holding athletes that had no event folder.
+    /// The section's heading: an event name (event-led; nil for the
+    /// event-less trailing section) or an athlete's name (athlete-led, always
+    /// non-nil).
     public let name: String?
     public let athletes: [AthleteGroup]
 
@@ -48,25 +67,31 @@ public struct EventGroup: Identifiable, Equatable {
         self.athletes = athletes
     }
 
-    /// The id a section carrying `event` must have. One function so the pass
-    /// below and the row tagging in `LibraryGrouping` cannot drift apart on
-    /// what "no event" means.
-    static func id(for event: String?) -> String {
-        guard let event else { return "a" }
-        return "e\u{0}\(event)"
+    /// The id a section carrying this heading must have. One function so the
+    /// pass below and the row tagging in `LibraryGrouping` cannot drift apart
+    /// on what "no event" means.
+    static func id(for heading: String?) -> String {
+        guard let heading else { return "a" }
+        return "e\u{0}\(heading)"
     }
 
     /// Splits a sidebar-ordered athlete list into sections by walking it in
-    /// order and starting a section wherever the event changes.
+    /// order and starting a section wherever the leading key changes — the
+    /// event when `grouping` is `.event`, the athlete's name when it is
+    /// `.athlete`. Assumes `athletes` is already ordered on that same key,
+    /// which is `LibraryGrouping.order(_:by:)`'s job, not this one's.
     ///
     /// A free function on the type that owns the id rather than a closure
     /// inside `ViewerModel.events`, so a test can hand it athletes that no
     /// local scan can produce — an event named the empty string, which only the
     /// Drive scanner admits.
-    static func sections(of athletes: [AthleteGroup]) -> [EventGroup] {
+    static func sections(
+        of athletes: [AthleteGroup], by grouping: SidebarGrouping = .event
+    ) -> [EventGroup] {
         var sections: [EventGroup] = []
         for athlete in athletes {
-            if let last = sections.last, last.name == athlete.event {
+            let key = grouping == .event ? athlete.event : athlete.name
+            if let last = sections.last, last.name == key {
                 sections[sections.count - 1] = EventGroup(
                     id: last.id,
                     name: last.name,
@@ -75,8 +100,8 @@ public struct EventGroup: Identifiable, Equatable {
             } else {
                 sections.append(
                     EventGroup(
-                        id: id(for: athlete.event),
-                        name: athlete.event,
+                        id: id(for: key),
+                        name: key,
                         athletes: [athlete]
                     )
                 )

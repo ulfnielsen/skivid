@@ -127,6 +127,68 @@ enum LibraryGrouping {
         return "e\u{0}\(event)\u{0}\(athlete)"
     }
 
+    /// Re-orders an already built group list for whichever dimension leads the
+    /// sidebar — `group(_:)` always folds and *builds* in event-led order;
+    /// this only re-sorts its output, so it never re-derives an id and a
+    /// pivot never disturbs a selection riding on one.
+    ///
+    /// Both directions reuse the two comparisons `group(_:)` already made —
+    /// events descending, athletes ascending — just swapping which is
+    /// primary: leading by event sorts sections descending with athletes
+    /// ascending inside; leading by athlete sorts sections alphabetically
+    /// with events descending inside.
+    static func order(_ groups: [AthleteGroup], by grouping: SidebarGrouping) -> [AthleteGroup] {
+        switch grouping {
+        case .event:
+            return groups.sorted(by: eventLeads)
+        case .athlete:
+            return groups.sorted(by: athleteLeads)
+        }
+    }
+
+    /// `group(_:)`'s own event-then-athlete order, restated over the already
+    /// folded `AthleteGroup` values instead of the raw `Key`/name tables —
+    /// there are no folded-key ties left to break here, because two groups
+    /// that folded alike are one group by the time `group(_:)` returns, so
+    /// ties break on `id` purely for a total, deterministic order.
+    private static func eventLeads(_ left: AthleteGroup, _ right: AthleteGroup) -> Bool {
+        switch (left.event, right.event) {
+        case let (lhs?, rhs?) where lhs != rhs:
+            let byName = lhs.localizedCaseInsensitiveCompare(rhs)
+            if byName == .orderedSame { return left.id < right.id }
+            return byName == .orderedDescending
+        case (nil, _?):
+            return false
+        case (_?, nil):
+            return true
+        default:
+            let byName = left.name.localizedCaseInsensitiveCompare(right.name)
+            if byName == .orderedSame { return left.id < right.id }
+            return byName == .orderedAscending
+        }
+    }
+
+    /// The mirror of `eventLeads`: athlete name leads (ascending), event
+    /// breaks the tie (descending) rather than the other way round.
+    private static func athleteLeads(_ left: AthleteGroup, _ right: AthleteGroup) -> Bool {
+        let byName = left.name.localizedCaseInsensitiveCompare(right.name)
+        if byName != .orderedSame {
+            return byName == .orderedAscending
+        }
+        switch (left.event, right.event) {
+        case let (lhs?, rhs?) where lhs != rhs:
+            let byEvent = lhs.localizedCaseInsensitiveCompare(rhs)
+            if byEvent == .orderedSame { return left.id < right.id }
+            return byEvent == .orderedDescending
+        case (nil, _?):
+            return false
+        case (_?, nil):
+            return true
+        default:
+            return left.id < right.id
+        }
+    }
+
     /// A total order on entries, so the pre-sort above is itself deterministic.
     /// `path` alone ties for two Drive clips that share a file name — their URLs
     /// differ only in the host, which carries the file id — so the full URL

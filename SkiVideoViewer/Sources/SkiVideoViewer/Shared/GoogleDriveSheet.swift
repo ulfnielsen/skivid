@@ -14,6 +14,12 @@ struct GoogleDriveSheet: View {
     @ObservedObject var model: ViewerModel
     @Binding var isPresented: Bool
     let cache: ClipCache
+    /// Which of the two folders nearest a clip is the athlete and which is
+    /// the event, for whichever drive is chosen next. `.eventThenAthlete`
+    /// matches the local convention, so it stays the default until a coach
+    /// says otherwise — this sheet is the one place that convention is
+    /// "settable when a remote library is opened," per the design.
+    @State private var folderConvention: FolderConvention = .eventThenAthlete
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -65,16 +71,34 @@ struct GoogleDriveSheet: View {
     }
 
     private var driveList: some View {
-        List(model.availableRoots, id: \.id) { root in
-            Button(root.name) {
-                Task {
-                    if await model.chooseRoot(root, cache: cache) {
-                        isPresented = false
+        VStack(alignment: .leading, spacing: 12) {
+            // This club's Shared Drive nests `<athlete>/<event>/clip.mp4` —
+            // the reverse of the local convention — and a wrong pick here is
+            // what used to show athlete names as section headers, reversed
+            // clip captions, and reversed ordering throughout the sidebar.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Folder layout")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Folder layout", selection: $folderConvention) {
+                    Text("Event, then athlete").tag(FolderConvention.eventThenAthlete)
+                    Text("Athlete, then event").tag(FolderConvention.athleteThenEvent)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+
+            List(model.availableRoots, id: \.id) { root in
+                Button(root.name) {
+                    Task {
+                        if await model.chooseRoot(root, cache: cache, convention: folderConvention) {
+                            isPresented = false
+                        }
                     }
                 }
             }
+            .frame(minHeight: 120, maxHeight: 260)
         }
-        .frame(minHeight: 120, maxHeight: 260)
     }
 
     /// A Desktop OAuth client, using the loopback redirect

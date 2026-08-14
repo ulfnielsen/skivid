@@ -175,6 +175,18 @@ struct ContentView: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
+            // "How is Ada progressing?" and "who did what at Neuss?" are both
+            // legitimate readings of one library — a preference, not a
+            // correction — so this is a control the coach can flip at any
+            // time, not a setting buried in a menu.
+            Picker("Group sidebar by", selection: $model.sidebarGrouping) {
+                Text("By Event").tag(SidebarGrouping.event)
+                Text("By Athlete").tag(SidebarGrouping.athlete)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 8)
+
             List(selection: $model.selectedAthleteID) {
                 ForEach(model.events) { event in
                     // A `Section` without a header renders as a plain run of
@@ -183,7 +195,16 @@ struct ContentView: View {
                     Section {
                         ForEach(event.athletes) { athlete in
                             HStack {
-                                Text(athlete.name)
+                                // The section header already names the leading
+                                // dimension, so each row spells out the other
+                                // one — the athlete's event when the sidebar is
+                                // athlete-led, same as it always has when it is
+                                // event-led.
+                                Text(
+                                    model.sidebarGrouping == .event
+                                        ? athlete.name
+                                        : (athlete.event ?? "No event")
+                                )
                                 Spacer()
                                 Text("\(athlete.videos.count)")
                                     .foregroundStyle(.secondary)

@@ -1,5 +1,22 @@
 import Foundation
 
+/// Which of the two folders nearest a clip is the athlete and which is the
+/// event.
+///
+/// `.eventThenAthlete` reads `<event>/<athlete>/clip.mp4` — the local
+/// convention, and the only shape `VideoLibrary.scan` ever produces.
+/// `.athleteThenEvent` reads `<athlete>/<event>/clip.mp4` — measured against
+/// this user's Shared Drive, which nests the other way round.
+///
+/// A property of one physical library, not of the app: a coach's local
+/// folders and their Shared Drive genuinely differ, so this travels with
+/// `RemoteLibraryIndex` and is persisted per root rather than kept as a
+/// single app-wide setting.
+public enum FolderConvention: String, Codable, Equatable, Sendable {
+    case eventThenAthlete
+    case athleteThenEvent
+}
+
 /// A cloud library as the sidebar sees it: the files, the groups they form,
 /// and the way back from a group's URL to the file it came from.
 ///
@@ -18,6 +35,11 @@ public struct RemoteLibraryIndex: Equatable {
     /// parameter, because Task 5 reloads an index from disk and it has to
     /// group those clips the same way the sweep that built it did.
     public let rootName: String
+    /// Which of the two nearest folders is the athlete and which is the
+    /// event, for this root. Stored for the same reason `rootName` is: a
+    /// reload must derive athlete and event the same way the sweep that
+    /// built the index did.
+    public let convention: FolderConvention
     public private(set) var athletes: [AthleteGroup]
     /// Where the change feed resumes, or nil before the first sweep.
     public private(set) var cursor: String?
@@ -28,11 +50,13 @@ public struct RemoteLibraryIndex: Equatable {
         providerIdentifier: String,
         rootName: String = "Unsorted",
         files: [RemoteFile],
-        cursor: String? = nil
+        cursor: String? = nil,
+        convention: FolderConvention = .eventThenAthlete
     ) {
         self.providerIdentifier = providerIdentifier
         self.rootName = rootName
         self.cursor = cursor
+        self.convention = convention
 
         var entries: [LibraryGrouping.Entry] = []
         var filesByURL: [URL: RemoteFile] = [:]
@@ -44,19 +68,27 @@ public struct RemoteLibraryIndex: Equatable {
 
             let url = Self.libraryURL(for: file, providerIdentifier: providerIdentifier)
             filesByURL[url] = file
-            entries.append(
-                LibraryGrouping.Entry(
-                    video: url,
-                    // The two folders nearest the clip, the same rule the
-                    // local scanner applies to a path. A clip loose in the
-                    // root has neither, and is grouped under the root's own
-                    // name — the grouping *key*, not a caption, which is why
-                    // a literal "Unsorted" would fold a real folder of that
-                    // name together with the loose files.
-                    athlete: file.path.last ?? rootName,
-                    event: file.path.count >= 2 ? file.path[file.path.count - 2] : nil
-                )
-            )
+
+            // The two folders nearest the clip, the same rule the local
+            // scanner applies to a path — `convention` only decides which of
+            // the two is the athlete and which is the event. A clip loose in
+            // the root has neither, and is grouped under the root's own name
+            // — the grouping *key*, not a caption, which is why a literal
+            // "Unsorted" would fold a real folder of that name together with
+            // the loose files.
+            let nearest = file.path.last
+            let aboveNearest = file.path.count >= 2 ? file.path[file.path.count - 2] : nil
+            let athlete: String
+            let event: String?
+            switch convention {
+            case .eventThenAthlete:
+                athlete = nearest ?? rootName
+                event = aboveNearest
+            case .athleteThenEvent:
+                athlete = aboveNearest ?? rootName
+                event = nearest
+            }
+            entries.append(LibraryGrouping.Entry(video: url, athlete: athlete, event: event))
         }
 
         self.filesByURL = filesByURL
@@ -155,7 +187,8 @@ public struct RemoteLibraryIndex: Equatable {
             providerIdentifier: providerIdentifier,
             rootName: rootName,
             files: Array(filesByURL.values).sorted { $0.id < $1.id },
-            cursor: cursor
+            cursor: cursor,
+            convention: convention
         )
         try JSONEncoder().encode(stored).write(to: url, options: .atomic)
     }
@@ -172,7 +205,8 @@ public struct RemoteLibraryIndex: Equatable {
             providerIdentifier: stored.providerIdentifier,
             rootName: stored.rootName,
             files: stored.files,
-            cursor: stored.cursor
+            cursor: stored.cursor,
+            convention: stored.convention ?? .eventThenAthlete
         )
     }
 
@@ -202,7 +236,8 @@ public struct RemoteLibraryIndex: Equatable {
             providerIdentifier: providerIdentifier,
             rootName: rootName,
             files: Array(byID.values),
-            cursor: changes.cursor
+            cursor: changes.cursor,
+            convention: convention
         )
     }
 
@@ -212,5 +247,9 @@ public struct RemoteLibraryIndex: Equatable {
         let rootName: String
         let files: [RemoteFile]
         let cursor: String?
+        /// Optional so a file written before this field existed still
+        /// decodes — see `load`, which falls back to `.eventThenAthlete`,
+        /// today's only convention, when it is absent.
+        let convention: FolderConvention?
     }
 }

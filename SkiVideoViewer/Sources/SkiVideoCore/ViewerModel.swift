@@ -14,6 +14,18 @@ public final class ViewerModel: ObservableObject {
     @Published public private(set) var athletes: [AthleteGroup] = []
     @Published public var selectedAthleteID: String?
     @Published public var athleteQuery = ""
+    /// Which dimension heads the sidebar — a coach's preference, restored
+    /// from `UserDefaults` on launch and applied to whichever library is
+    /// open, local or remote. Changing it re-orders `athletes` in place —
+    /// `LibraryGrouping.order(_:by:)` never re-folds the library — so every
+    /// row keeps its id and a selection survives the pivot.
+    @Published public var sidebarGrouping: SidebarGrouping = ViewerModel.loadSidebarGrouping() {
+        didSet {
+            guard oldValue != sidebarGrouping else { return }
+            Self.defaults.set(sidebarGrouping.rawValue, forKey: Self.sidebarGroupingDefaultsKey)
+            athletes = LibraryGrouping.order(athletes, by: sidebarGrouping)
+        }
+    }
     /// Internal: no view reads it, but the intent tests assert on it.
     @Published private(set) var videoIndex = 0
     @Published public private(set) var status = "Choose an organized video directory"
@@ -118,6 +130,21 @@ public final class ViewerModel: ObservableObject {
     /// Exposed so tests can assert on seeks without a playable asset.
     private(set) var lastSeekOffset: Double?
 
+    /// Where the sidebar pivot is persisted. Settable so a test never writes
+    /// to the coach's real preferences or leaks state into another test —
+    /// the same seam `RemoteLibraryIndex.storeRoot` uses for its own store.
+    public static var defaults: UserDefaults = .standard
+
+    private static let sidebarGroupingDefaultsKey = "SidebarGrouping"
+
+    /// `.event` when nothing is stored yet — today's only behaviour, so a
+    /// coach who has never touched the pivot sees exactly what they always
+    /// have.
+    private static func loadSidebarGrouping() -> SidebarGrouping {
+        Self.defaults.string(forKey: sidebarGroupingDefaultsKey)
+            .flatMap(SidebarGrouping.init(rawValue:)) ?? .event
+    }
+
     public init(
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
@@ -208,7 +235,7 @@ public final class ViewerModel: ObservableObject {
     /// stored: the flat array stays the source of truth because selection-by-id,
     /// `changeAthlete` and the Page keys all run on it.
     public var events: [EventGroup] {
-        EventGroup.sections(of: filteredAthletes)
+        EventGroup.sections(of: filteredAthletes, by: sidebarGrouping)
     }
 
     var currentVideo: URL? {
@@ -347,11 +374,15 @@ public final class ViewerModel: ObservableObject {
     /// `signIn` does, so a later successful pick never leaves a stale one on
     /// screen.
     @discardableResult
-    public func chooseRoot(_ root: RemoteFolder, cache: ClipCache) async -> Bool {
+    public func chooseRoot(
+        _ root: RemoteFolder, cache: ClipCache, convention: FolderConvention = .eventThenAthlete
+    ) async -> Bool {
         signInError = nil
         guard let remoteProvider else { return false }
         do {
-            try await openRemoteLibrary(provider: remoteProvider, root: root, cache: cache)
+            try await openRemoteLibrary(
+                provider: remoteProvider, root: root, cache: cache, convention: convention
+            )
             availableRoots = []
             return true
         } catch {
@@ -362,10 +393,16 @@ public final class ViewerModel: ObservableObject {
 
     /// Opens a cloud library: index it, group it, show it. No bytes are
     /// fetched — a clip downloads when it is selected.
+    ///
+    /// `convention` only matters for a *fresh* sweep — a stored index already
+    /// knows the convention it was built with (see `RemoteLibraryIndex.load`)
+    /// and keeps it regardless of what is passed here, so reopening a drive
+    /// never silently relabels an already-indexed library.
     public func openRemoteLibrary(
         provider: any RemoteLibraryProvider,
         root: RemoteFolder,
-        cache: ClipCache
+        cache: ClipCache,
+        convention: FolderConvention = .eventThenAthlete
     ) async throws {
         status = "Listing \(root.name)…"
 
@@ -388,7 +425,7 @@ public final class ViewerModel: ObservableObject {
             for try await file in provider.enumerate(root) { files.append(file) }
             var swept = RemoteLibraryIndex(
                 providerIdentifier: type(of: provider).identifier,
-                rootName: root.name, files: files
+                rootName: root.name, files: files, convention: convention
             )
             if let incremental = provider as? IncrementallyEnumerable {
                 swept = swept.withCursor(try await incremental.startCursor(forRoot: root.id))
@@ -405,12 +442,13 @@ public final class ViewerModel: ObservableObject {
         clipCache = cache
         materialisedByFileID = [:]
         isUsingRemoteLibrary = true
-        athletes = index.athletes
+        let ordered = LibraryGrouping.order(index.athletes, by: sidebarGrouping)
+        athletes = ordered
         activeAthleteID = nil
-        selectedAthleteID = index.athletes[0].id
+        selectedAthleteID = ordered[0].id
         athleteQuery = ""
         zoom.reset()
-        selectInitialAthlete(index.athletes[0].id)
+        selectInitialAthlete(ordered[0].id)
         let clipCount = index.athletes.reduce(0) { $0 + $1.videos.count }
         status = "\(root.name) — \(clipCount) clips"
         // A failure to persist is a slower next launch, not a reason to
@@ -564,16 +602,17 @@ public final class ViewerModel: ObservableObject {
             endSlowMotion()
             player.pause()
             directory = url
-            athletes = scannedAthletes
+            let ordered = LibraryGrouping.order(scannedAthletes, by: sidebarGrouping)
+            athletes = ordered
             remoteIndex = nil
             remoteProvider = nil
             clipCache = nil
             materialisedByFileID = [:]
             isUsingRemoteLibrary = false
             activeAthleteID = nil
-            selectedAthleteID = scannedAthletes[0].id
+            selectedAthleteID = ordered[0].id
             zoom.reset()
-            selectInitialAthlete(scannedAthletes[0].id)
+            selectInitialAthlete(ordered[0].id)
         } catch {
             errorMessage = error.localizedDescription
         }

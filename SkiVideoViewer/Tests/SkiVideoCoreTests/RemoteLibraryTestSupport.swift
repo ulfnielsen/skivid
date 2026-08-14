@@ -73,6 +73,24 @@ func withTemporaryIndexStore(_ body: () async throws -> Void) async rethrows {
     try await body()
 }
 
+/// Points `ViewerModel.defaults` at a fresh, isolated suite for the duration
+/// of `body`, and restores it afterwards — so a test that reads or writes
+/// `sidebarGrouping` never touches the coach's real preferences, and never
+/// sees a pivot an earlier test left behind. The same isolation
+/// `withTemporaryIndexStore` gives `RemoteLibraryIndex.storeRoot`.
+@MainActor
+func withTemporaryUserDefaults(_ body: () async throws -> Void) async rethrows {
+    let suiteName = "SkiVideoCoreTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    let previous = ViewerModel.defaults
+    ViewerModel.defaults = defaults
+    defer {
+        ViewerModel.defaults = previous
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+    try await body()
+}
+
 /// A directory that exists and is unique to this call, so `remoteModel` and
 /// `localModel` never share one and nothing has to remember to delete it
 /// afterwards — it sits under the system's own temporary directory, which the
