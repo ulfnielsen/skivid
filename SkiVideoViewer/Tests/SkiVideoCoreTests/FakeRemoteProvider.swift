@@ -19,6 +19,22 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     var connectError: Error?
     private(set) var connectCallCount = 0
     private(set) var downloadSourceCallCount = 0
+    /// How many times `enumerate` was called — a full sweep. The relaunch
+    /// tests assert this stays at 1 across a second `openRemoteLibrary`, which
+    /// is the only thing that distinguishes a delta from a re-sweep that
+    /// happens to agree with the stored index.
+    private(set) var enumerateCallCount = 0
+    /// Bumped by `startCursor`, so each call mints a distinguishable token
+    /// ("cursor-1", "cursor-2", …) rather than a fixed string that would hide
+    /// a test calling it more than once.
+    var cursorsIssued = 0
+    /// Every cursor `changes(since:forRoot:)` was asked to resume from, in
+    /// call order.
+    private(set) var changesRequestedSince: [String] = []
+    /// What `changes(since:forRoot:)` hands back. Nil means "nothing
+    /// changed", answered with the same cursor it was asked to resume from —
+    /// the honest default for a test that never sets this.
+    var pendingChanges: RemoteLibraryChanges?
 
     init(files: [RemoteFile] = []) {
         self.files = files
@@ -34,7 +50,8 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     func roots() async throws -> [RemoteFolder] { rootsToReturn }
 
     func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error> {
-        AsyncThrowingStream { continuation in
+        enumerateCallCount += 1
+        return AsyncThrowingStream { continuation in
             for (offset, file) in files.enumerated() {
                 if let errorAfter, offset >= errorAfter {
                     continuation.finish(throwing: RemoteLibraryError.api("fake enumeration failure"))
@@ -49,5 +66,17 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     func downloadSource(for file: RemoteFile) async throws -> DownloadSource {
         downloadSourceCallCount += 1
         return DownloadSource(url: downloadURL, headers: headers)
+    }
+}
+
+extension FakeRemoteProvider: IncrementallyEnumerable {
+    func startCursor(forRoot rootID: String) async throws -> String {
+        cursorsIssued += 1
+        return "cursor-\(cursorsIssued)"
+    }
+
+    func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges {
+        changesRequestedSince.append(cursor)
+        return pendingChanges ?? RemoteLibraryChanges(changed: [], removed: [], cursor: cursor)
     }
 }

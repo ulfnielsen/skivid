@@ -80,9 +80,9 @@ public struct RemoteFolder: Hashable, Sendable {
 /// Separate from `RemoteLibraryProvider` because only some providers have one:
 /// Drive and Dropbox do, an object store does not. A core method would make
 /// three implementations carry a stub that just re-enumerates, which reads as
-/// support for something that is not there. No call site does this yet —
-/// `if let incremental = provider as? IncrementallyEnumerable` is the
-/// intended pattern once plan 3 wires a refresh action to it.
+/// support for something that is not there. `ViewerModel.openRemoteLibrary`
+/// is the one call site, and reaches this with exactly the cast this comment
+/// used to only propose: `if let incremental = provider as? IncrementallyEnumerable`.
 public protocol IncrementallyEnumerable: RemoteLibraryProvider {
     /// The cursor to start from, obtained once when the library is first swept.
     func startCursor(forRoot rootID: String) async throws -> String

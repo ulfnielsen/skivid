@@ -342,16 +342,34 @@ public final class ViewerModel: ObservableObject {
         cache: ClipCache
     ) async throws {
         status = "Listing \(root.name)…"
-        var files: [RemoteFile] = []
-        for try await file in provider.enumerate(root) {
-            files.append(file)
+
+        // A stored index plus a cursor makes a relaunch a delta. Page tokens
+        // never expire and Drive coalesces its change log per file, so an app
+        // closed for months still resyncs in a bounded number of calls — where
+        // a re-sweep would list the whole drive every time.
+        var index = RemoteLibraryIndex.load(forRoot: root.id)
+        if let stored = index,
+           let cursor = stored.cursor,
+           let incremental = provider as? IncrementallyEnumerable {
+            let changes = try await incremental.changes(since: cursor, forRoot: root.id)
+            // Bytes are never deleted here. A `removed` change means the clip
+            // left *this library*, which Drive also reports for lost access
+            // and a corpus move — evicting on it would make a coach pay to
+            // re-download a clip that never went anywhere.
+            index = stored.applying(changes)
+        } else if index == nil {
+            var files: [RemoteFile] = []
+            for try await file in provider.enumerate(root) { files.append(file) }
+            var swept = RemoteLibraryIndex(
+                providerIdentifier: type(of: provider).identifier,
+                rootName: root.name, files: files
+            )
+            if let incremental = provider as? IncrementallyEnumerable {
+                swept = swept.withCursor(try await incremental.startCursor(forRoot: root.id))
+            }
+            index = swept
         }
-        let index = RemoteLibraryIndex(
-            providerIdentifier: type(of: provider).identifier,
-            rootName: root.name,
-            files: files
-        )
-        guard !index.athletes.isEmpty else { throw ViewerError.noVideos }
+        guard let index, !index.athletes.isEmpty else { throw ViewerError.noVideos }
 
         endSlowMotion()
         player.pause()
@@ -367,7 +385,11 @@ public final class ViewerModel: ObservableObject {
         athleteQuery = ""
         zoom.reset()
         selectAthlete(index.athletes[0].id)
-        status = "\(root.name) — \(files.count) clips"
+        let clipCount = index.athletes.reduce(0) { $0 + $1.videos.count }
+        status = "\(root.name) — \(clipCount) clips"
+        // A failure to persist is a slower next launch, not a reason to
+        // refuse the library the coach can already see.
+        try? index.save(forRoot: root.id)
     }
 
     /// Brings the selected clip's bytes to disk, so playback and analysis have

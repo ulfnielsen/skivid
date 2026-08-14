@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class RemoteAnalysisIdentityTests: XCTestCase {
+    /// Two tests here open root id "d1", and `openRemoteLibrary` now saves and
+    /// loads an index for it. Without redirecting `RemoteLibraryIndex.storeRoot`
+    /// away from the real Application Support directory, the second test would
+    /// find the first one's stored index and skip its sweep.
+    private var previousIndexStoreRoot: URL!
+
+    override func setUpWithError() throws {
+        previousIndexStoreRoot = RemoteLibraryIndex.storeRoot
+        RemoteLibraryIndex.storeRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: RemoteLibraryIndex.storeRoot)
+        RemoteLibraryIndex.storeRoot = previousIndexStoreRoot
+    }
+
     /// A cloud clip's analysis must be keyed on the clip, not on wherever its
     /// bytes happen to sit. The cache path is under `Caches`, which eviction
     /// reclaims and iOS may purge outright — a sidecar written there is gone

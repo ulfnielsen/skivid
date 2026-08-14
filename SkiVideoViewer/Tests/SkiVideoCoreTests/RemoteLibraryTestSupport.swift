@@ -53,6 +53,26 @@ func remoteFile(_ id: String, _ name: String, _ path: [String]) -> RemoteFile {
     RemoteFile(id: id, name: name, path: path, size: 100, contentVersion: "v1", md5: nil)
 }
 
+/// Points `RemoteLibraryIndex.storeRoot` at a fresh temporary directory for
+/// the duration of `body`, and restores it afterwards — so a test that saves
+/// or loads an index never touches the real Application Support directory,
+/// and never sees another test's leftovers.
+///
+/// Extracted from `RemoteLibraryIndexTests`, which had this exact shape
+/// before `SignInWiringTests` needed it too for the relaunch tests — the
+/// plan-2 reviews flagged the duplication this replaces.
+func withTemporaryIndexStore(_ body: () async throws -> Void) async rethrows {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let previous = RemoteLibraryIndex.storeRoot
+    RemoteLibraryIndex.storeRoot = root
+    defer {
+        RemoteLibraryIndex.storeRoot = previous
+        try? FileManager.default.removeItem(at: root)
+    }
+    try await body()
+}
+
 /// A directory that exists and is unique to this call, so `remoteModel` and
 /// `localModel` never share one and nothing has to remember to delete it
 /// afterwards — it sits under the system's own temporary directory, which the

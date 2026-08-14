@@ -163,20 +163,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
 
     // MARK: - Persistence
 
-    private func withTemporaryStore(_ body: (URL) throws -> Void) rethrows {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let previous = RemoteLibraryIndex.storeRoot
-        RemoteLibraryIndex.storeRoot = root
-        defer {
-            RemoteLibraryIndex.storeRoot = previous
-            try? FileManager.default.removeItem(at: root)
-        }
-        try body(root)
-    }
-
-    func testAnIndexSurvivesASaveAndLoad() throws {
-        try withTemporaryStore { _ in
+    func testAnIndexSurvivesASaveAndLoad() async throws {
+        try await withTemporaryIndexStore {
             let index = RemoteLibraryIndex(
                 providerIdentifier: "gdrive",
                 files: [file("a", "run.mp4", ["E", "Ada"])],
@@ -191,8 +179,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
         }
     }
 
-    func testTwoDrivesKeepSeparateIndexes() throws {
-        try withTemporaryStore { _ in
+    func testTwoDrivesKeepSeparateIndexes() async throws {
+        try await withTemporaryIndexStore {
             try RemoteLibraryIndex(
                 providerIdentifier: "gdrive", files: [file("a", "a.mp4", ["E", "Ada"])], cursor: nil
             ).save(forRoot: "d1")
@@ -205,8 +193,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
         }
     }
 
-    func testNoStoredIndexLoadsAsNil() {
-        withTemporaryStore { _ in
+    func testNoStoredIndexLoadsAsNil() async {
+        await withTemporaryIndexStore {
             XCTAssertNil(RemoteLibraryIndex.load(forRoot: "never-saved"))
         }
     }
@@ -221,9 +209,11 @@ final class RemoteLibraryIndexTests: XCTestCase {
     /// with the version check deleted. The current-version fixture is
     /// byte-identical apart from `version`, so the only thing that can explain
     /// one loading and the other not is the gate itself.
-    func testAnIndexFromAnOlderVersionIsRefusedWhileACurrentOneLoads() throws {
-        try withTemporaryStore { root in
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    func testAnIndexFromAnOlderVersionIsRefusedWhileACurrentOneLoads() async throws {
+        try await withTemporaryIndexStore {
+            try FileManager.default.createDirectory(
+                at: RemoteLibraryIndex.storeRoot, withIntermediateDirectories: true
+            )
 
             func write(version: Int, forRoot rootID: String) throws {
                 try Data("""
@@ -243,9 +233,11 @@ final class RemoteLibraryIndexTests: XCTestCase {
         }
     }
 
-    func testAnUnreadableIndexLoadsAsNilRatherThanThrowing() throws {
-        try withTemporaryStore { root in
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    func testAnUnreadableIndexLoadsAsNilRatherThanThrowing() async throws {
+        try await withTemporaryIndexStore {
+            try FileManager.default.createDirectory(
+                at: RemoteLibraryIndex.storeRoot, withIntermediateDirectories: true
+            )
             try Data("not json".utf8).write(to: RemoteLibraryIndex.storeURL(forRoot: "d1"))
             XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
         }

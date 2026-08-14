@@ -4,6 +4,26 @@ import XCTest
 
 @MainActor
 final class SignInWiringTests: XCTestCase {
+    /// Several tests here — not just the relaunch ones below, which wrap
+    /// themselves in `withTemporaryIndexStore` — call `chooseRoot` on root id
+    /// "d1", and `openRemoteLibrary` now saves and loads an index for it.
+    /// Isolated for the whole class so none of them touch the real
+    /// Application Support directory or see another test's leftovers:
+    /// measured to happen (a stray `8b53639f152c8fc6.skiindex.json` in the
+    /// real store) before this was added.
+    private var previousIndexStoreRoot: URL!
+
+    override func setUpWithError() throws {
+        previousIndexStoreRoot = RemoteLibraryIndex.storeRoot
+        RemoteLibraryIndex.storeRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: RemoteLibraryIndex.storeRoot)
+        RemoteLibraryIndex.storeRoot = previousIndexStoreRoot
+    }
+
     /// Two drives, not one. An implementation that returned only the first —
     /// or that stopped at the first page — passes a single-drive fixture, and
     /// a club with an archive drive would silently see half its footage.
@@ -99,5 +119,87 @@ final class SignInWiringTests: XCTestCase {
 
         XCTAssertTrue(secondPick)
         XCTAssertNil(model.signInError, "a working pick must clear an earlier failure's message")
+    }
+
+    // MARK: - Relaunch
+
+    /// The whole point of the cursor: a second open must not list the drive
+    /// again. Asserted on the enumeration count, which is the only thing that
+    /// distinguishes "loaded the stored index" from "swept and got the same
+    /// answer" — the sidebar looks identical either way.
+    func testOpeningTheSameDriveTwiceSweepsOnce() async throws {
+        try await withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            XCTAssertEqual(provider.enumerateCallCount, 1)
+            XCTAssertEqual(provider.changesRequestedSince.count, 1, "the second open asks for a delta")
+            XCTAssertEqual(model.athletes.map(\.name), ["Ada"])
+        }
+    }
+
+    /// A clip uploaded while the app was closed appears without a re-sweep.
+    /// The new clip is what proves the change was applied rather than the
+    /// stored index simply reloaded.
+    func testAClipAddedInDriveAppearsFromTheChangeFeed() async throws {
+        try await withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            provider.pendingChanges = RemoteLibraryChanges(
+                changed: [remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"])],
+                removed: [], cursor: "cursor-2"
+            )
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            XCTAssertEqual(provider.enumerateCallCount, 1, "still no re-sweep")
+            XCTAssertEqual(
+                model.athletes.first?.videos.map(\.lastPathComponent),
+                ["run1.mp4", "run2.mp4"]
+            )
+        }
+    }
+
+    /// A `removed` change must drop the clip from the library and leave its
+    /// bytes alone. Drive reports lost access and a corpus move exactly as it
+    /// reports a deletion, so a coach who regains access must not pay to
+    /// download a clip that never left the disk.
+    ///
+    /// Fails if the removal path calls anything on the cache: the assertion is
+    /// on the file existing, which only survives if nothing deleted it.
+    func testARemovedClipLeavesTheLibraryButNotTheDisk() async throws {
+        try await withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+                remoteFile("b", "run2.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+            try await model.prepareCurrentClip()
+            let cached = try XCTUnwrap(model.currentPlaybackURL)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+
+            provider.pendingChanges = RemoteLibraryChanges(
+                changed: [], removed: ["a"], cursor: "cursor-2"
+            )
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+            XCTAssertEqual(
+                model.athletes.first?.videos.map(\.lastPathComponent), ["run2.mp4"],
+                "the removed clip leaves the sidebar"
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: cached.path),
+                "its bytes must stay: Drive reports lost access the same way"
+            )
+        }
     }
 }

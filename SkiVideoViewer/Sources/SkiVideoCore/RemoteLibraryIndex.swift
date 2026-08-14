@@ -167,6 +167,16 @@ public struct RemoteLibraryIndex: Equatable {
         )
     }
 
+    /// A copy of this index carrying `cursor`. For the sweep path: a fresh
+    /// sweep builds an index with no cursor, and `startCursor` is only known
+    /// once the sweep is already under way — `applying` sets its own cursor
+    /// from the change feed, so this exists only for that first sweep.
+    public func withCursor(_ cursor: String) -> RemoteLibraryIndex {
+        var copy = self
+        copy.cursor = cursor
+        return copy
+    }
+
     /// The index this one becomes after a refresh.
     ///
     /// Upsert by file id, so replaying a change is harmless — Drive's log is

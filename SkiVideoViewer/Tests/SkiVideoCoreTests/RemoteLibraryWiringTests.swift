@@ -9,14 +9,26 @@ final class RemoteLibraryWiringTests: XCTestCase {
     /// gets its own fresh directory from `remoteModel(files:)` instead, in
     /// `RemoteLibraryTestSupport.swift`.
     private var root: URL!
+    /// Every test in this file opens root id "d1", and `openRemoteLibrary`
+    /// now saves and loads an index for it. Without redirecting
+    /// `RemoteLibraryIndex.storeRoot`, the second test to run would find the
+    /// first one's stored index on the real disk and skip its sweep — this
+    /// was measured to happen and corrupt results across this whole suite,
+    /// not just theorized.
+    private var previousIndexStoreRoot: URL!
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        previousIndexStoreRoot = RemoteLibraryIndex.storeRoot
+        RemoteLibraryIndex.storeRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: RemoteLibraryIndex.storeRoot)
+        RemoteLibraryIndex.storeRoot = previousIndexStoreRoot
     }
 
     func testOpeningARemoteLibraryFillsTheSidebar() async throws {
