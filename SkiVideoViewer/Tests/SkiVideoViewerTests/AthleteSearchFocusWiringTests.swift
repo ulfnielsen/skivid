@@ -254,6 +254,7 @@ private final class NoSecondaryScreensForFocus: SecondaryScreenPresenter {
     func presentComparison(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
+        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
         onClose: @escaping () -> Void
     ) {
         XCTFail("presentComparison must not be called by this test")

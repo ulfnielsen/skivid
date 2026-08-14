@@ -13,6 +13,7 @@ final class SecondaryScreensTests: XCTestCase {
         func presentComparison(
             initialLeftVideo: URL?,
             openLibrary: [ComparisonAthleteChoice],
+            prepare: @escaping (ComparisonVideoChoice) async -> URL?,
             onClose: @escaping () -> Void
         ) {
             comparisonCalls += 1
@@ -35,6 +36,7 @@ final class SecondaryScreensTests: XCTestCase {
         func presentComparison(
             initialLeftVideo: URL?,
             openLibrary: [ComparisonAthleteChoice],
+            prepare: @escaping (ComparisonVideoChoice) async -> URL?,
             onClose: @escaping () -> Void
         ) {}
 
@@ -68,7 +70,7 @@ final class SecondaryScreensTests: XCTestCase {
     func testAPresenterThatCannotPresentIsStillSafeToCall() {
         // The view hides the buttons, but a stray call must not trap.
         let presenter = UnavailablePresenter()
-        presenter.presentComparison(initialLeftVideo: nil, openLibrary: []) {}
+        presenter.presentComparison(initialLeftVideo: nil, openLibrary: [], prepare: { _ in nil }) {}
         presenter.presentSorting(openResizedLibrary: { _ in }) {}
         XCTAssertEqual(presenter.comparisonCalls, 1)
         XCTAssertEqual(presenter.sortingCalls, 1)

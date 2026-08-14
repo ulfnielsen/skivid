@@ -15,6 +15,11 @@ import SwiftUI
 struct ComparisonPane: View {
     @ObservedObject var model: ComparisonModel
     let side: ComparisonSide
+    /// Forwarded to this pane's `ClipSourceMenu` — see `ComparisonView.prepare`
+    /// for where it comes from. Defaulted, not required: `ZoomWiringTests`
+    /// builds panes directly to drive zoom and never picks a clip through the
+    /// menu, so it has nothing to supply here and must not need to.
+    var prepare: (ComparisonVideoChoice) async -> URL? = { _ in nil }
 
     /// Where the current drag had reached at its previous change, so that
     /// `DragGesture`'s translation-from-the-start becomes a per-change delta.
@@ -239,7 +244,7 @@ struct ComparisonPane: View {
     /// that — so this passes the bare filename and lets `ClipSourceMenu` name
     /// the side in the spoken label alone.
     private var loadedName: some View {
-        ClipSourceMenu(model: model, side: side, appearance: .overlayChip, title: name)
+        ClipSourceMenu(model: model, side: side, appearance: .overlayChip, title: name, prepare: prepare)
             .padding(8)
     }
 
@@ -255,7 +260,8 @@ struct ComparisonPane: View {
             model: model,
             side: side,
             appearance: .prominent,
-            title: ClipSourceMenu.chooseTitle
+            title: ClipSourceMenu.chooseTitle,
+            prepare: prepare
         )
     }
 }

@@ -33,6 +33,17 @@ struct ClipSourceMenu: View {
     /// empty. Also the accessibility *identifier*, so renaming what the
     /// control says on screen is a change a test can see.
     let title: String
+    /// How a cloud pick gets fetched before it is loaded — see
+    /// `ComparisonView.prepare` for where it comes from. Called from
+    /// `clipSources` whenever the operator picks an athlete's video.
+    ///
+    /// Defaulted to a closure that always answers nil, so a pick with no
+    /// `prepare` supplied falls back to `ComparisonModel.load`'s own
+    /// library-URL fallback — the same behaviour this control had before this
+    /// parameter existed. `ClipChooserTests` builds this view directly and
+    /// never exercises a pick, so it has nothing to supply here and must not
+    /// need to.
+    var prepare: (ComparisonVideoChoice) async -> URL? = { _ in nil }
 
     @ViewBuilder
     var body: some View {
@@ -160,7 +171,14 @@ struct ClipSourceMenu: View {
         ForEach(model.openLibrary) { athlete in
             Menu(athlete.name) {
                 ForEach(athlete.videos) { video in
-                    Button(video.name) { model.load(video, side: side) }
+                    // Fetches through `prepare` before loading, rather than
+                    // the plain synchronous `load(_:side:)` this used to call
+                    // — which handed a cloud pick's raw library URL to the
+                    // pane unchanged, and no player can open that. See
+                    // `ComparisonModel.load(_:side:prepare:)`.
+                    Button(video.name) {
+                        Task { await model.load(video, side: side, prepare: prepare) }
+                    }
                 }
             }
         }

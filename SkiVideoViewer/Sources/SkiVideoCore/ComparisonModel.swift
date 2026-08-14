@@ -552,7 +552,25 @@ public final class ComparisonModel: ObservableObject {
     public func load(
         _ choice: ComparisonVideoChoice, side: ComparisonSide, fetching: ViewerModel
     ) async {
-        let url = await fetching.prepareClip(choice)
+        await load(choice, side: side, prepare: { await fetching.prepareClip($0) })
+    }
+
+    /// The seam `SecondaryScreenPresenter.presentComparison`'s `prepare`
+    /// parameter reaches: everything the `fetching:` overload above does, but
+    /// through a plain closure instead of a concrete `ViewerModel` — which is
+    /// what lets `ClipSourceMenu` call this without this module's app target
+    /// ever importing `ViewerModel` at the call site. `fetching:` now
+    /// delegates here rather than repeating the fetch-then-load sequence.
+    ///
+    /// `nil` from `prepare` means "could not be materialised" and falls back
+    /// to `choice`'s own `playbackURL`, exactly as `ViewerModel.prepareClip`
+    /// does on its own failure path — so a fetch failure reached through
+    /// either overload behaves the same way.
+    public func load(
+        _ choice: ComparisonVideoChoice, side: ComparisonSide,
+        prepare: @escaping (ComparisonVideoChoice) async -> URL?
+    ) async {
+        let url = await prepare(choice) ?? choice.playbackURL
         load(url, side: side)
         applyMetadata(of: choice, side: side)
     }

@@ -60,6 +60,12 @@ struct ComparisonView: View {
     /// track describes a *pair*, so it belongs to the comparison and not to
     /// either side.
     @StateObject private var alignment = AlignmentSessionModel()
+    /// How a pane materialises a cloud clip it was just given. Threaded down
+    /// to `ComparisonVideos`, and from there to every `ClipSourceMenu` — see
+    /// `SecondaryScreenPresenter.presentComparison`, which is where this
+    /// closure comes from, for why it exists and why it is a closure and not
+    /// a `ViewerModel`.
+    let prepare: (ComparisonVideoChoice) async -> URL?
     let closeWindow: () -> Void
 
     /// Non-nil while the subject sheet is up, and the side it is up for.
@@ -78,6 +84,7 @@ struct ComparisonView: View {
         openLibrary: [ComparisonAthleteChoice],
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
+        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
         closeWindow: @escaping () -> Void
     ) {
         _model = StateObject(
@@ -88,6 +95,7 @@ struct ComparisonView: View {
                 folderPicker: folderPicker
             )
         )
+        self.prepare = prepare
         self.closeWindow = closeWindow
     }
 
@@ -707,7 +715,7 @@ struct ComparisonView: View {
     }
 
     private var videos: some View {
-        ComparisonVideos(model: model, translation: alignmentTranslation)
+        ComparisonVideos(model: model, translation: alignmentTranslation, prepare: prepare)
     }
 
     /// What `.sheet(item:)` needs: the side being picked, plus the clip it was
@@ -758,6 +766,17 @@ struct ComparisonVideos: View {
     /// in separate rects, where moving one within its own pane would align
     /// nothing to anything.
     var translation: CGVector = .zero
+
+    /// Forwarded to every `ClipSourceMenu` this view builds — both panes in
+    /// the side-by-side layout, both chips in the overlay layout — so a pick
+    /// made anywhere fetches the same way. See `ComparisonView.prepare` for
+    /// where it comes from.
+    ///
+    /// Defaulted rather than required: `ClipChooserTests` and `ZoomWiringTests`
+    /// build this view directly to measure or drive panes and chips, never to
+    /// exercise a pick, so they have no `prepare` closure to supply and must
+    /// not need one to keep compiling.
+    var prepare: (ComparisonVideoChoice) async -> URL? = { _ in nil }
 
     /// Where the overlay's current drag had reached at its previous change, so
     /// that `DragGesture`'s translation-from-the-start becomes a per-change
@@ -810,11 +829,11 @@ struct ComparisonVideos: View {
         switch model.layout {
         case .sideBySide:
             HStack(spacing: 1) {
-                ComparisonPane(model: model, side: .left)
+                ComparisonPane(model: model, side: .left, prepare: prepare)
                 // Constrained deliberately: a bare `Divider()` inside an
                 // `HStack` is vertically greedy and squeezes the video.
                 Divider().frame(width: 1)
-                ComparisonPane(model: model, side: .right)
+                ComparisonPane(model: model, side: .right, prepare: prepare)
             }
         case .overlay:
             // Both platforms use the SwiftUI stack. macOS previously had its
@@ -981,13 +1000,15 @@ struct ComparisonVideos: View {
                 model: model,
                 side: .left,
                 appearance: .overlayChip,
-                title: ClipSourceMenu.sidedTitle(model, .left)
+                title: ClipSourceMenu.sidedTitle(model, .left),
+                prepare: prepare
             )
             ClipSourceMenu(
                 model: model,
                 side: .right,
                 appearance: .overlayChip,
-                title: ClipSourceMenu.sidedTitle(model, .right)
+                title: ClipSourceMenu.sidedTitle(model, .right),
+                prepare: prepare
             )
             ZoomControl(
                 zoom: model.zoom(for: .left),

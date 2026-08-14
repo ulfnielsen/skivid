@@ -17,11 +17,13 @@ final class MacSecondaryScreenPresenter: SecondaryScreenPresenter {
     func presentComparison(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
+        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
         onClose: @escaping () -> Void
     ) {
         comparisonWindow.show(
             initialLeftVideo: initialLeftVideo,
             openLibrary: openLibrary,
+            prepare: prepare,
             onClose: onClose
         )
     }

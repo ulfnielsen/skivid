@@ -13,6 +13,7 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
     func show(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
+        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
         onClose: @escaping () -> Void
     ) {
         if let window {
@@ -32,7 +33,8 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
             initialLeftVideo: initialLeftVideo,
             openLibrary: openLibrary,
             input: AppKitInputSource(),
-            folderPicker: AppKitFolderPicker()
+            folderPicker: AppKitFolderPicker(),
+            prepare: prepare
         ) { [weak window] in
             window?.performClose(nil)
         }

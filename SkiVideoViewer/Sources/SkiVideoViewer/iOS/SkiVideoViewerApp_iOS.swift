@@ -30,6 +30,7 @@ struct SkiVideoViewerApp_iOS: App {
                     // main viewer, which uses the same inert source.
                     input: InertInputSource(),
                     folderPicker: UIKitFolderPicker(),
+                    prepare: request.prepare,
                     closeWindow: { secondaryScreens.dismissComparison() }
                 )
             }

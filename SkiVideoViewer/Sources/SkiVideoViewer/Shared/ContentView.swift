@@ -115,6 +115,13 @@ struct ContentView: View {
                     secondaryScreens.presentComparison(
                         initialLeftVideo: model.currentPlaybackURL,
                         openLibrary: model.comparisonLibrary,
+                        // The only place `ViewerModel` is captured for the
+                        // comparison screen's benefit — everything downstream
+                        // of `presentComparison` (the window controller, the
+                        // full-screen cover, `ComparisonView`, `ComparisonPane`,
+                        // `ClipSourceMenu`) only ever sees this closure, never
+                        // `model` itself.
+                        prepare: { choice in await model.prepareClip(choice) },
                         onClose: {
                             model.setKeyboardControlsEnabled(true)
                         }

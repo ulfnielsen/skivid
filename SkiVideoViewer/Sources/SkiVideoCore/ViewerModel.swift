@@ -530,7 +530,14 @@ public final class ViewerModel: ObservableObject {
     /// `remoteIndex` no longer carries: `ComparisonVideoChoice.playbackURL`
     /// is non-optional, so something has to come back, and the pane already
     /// knows how to show that URL failing to open.
-    func prepareClip(_ choice: ComparisonVideoChoice) async -> URL {
+    ///
+    /// `public`, not merely reachable through `@testable import`: `ContentView`
+    /// is the one place in the app target that captures this into the
+    /// `(ComparisonVideoChoice) async -> URL?` shape
+    /// `SecondaryScreenPresenter.presentComparison`'s `prepare` parameter
+    /// carries — see that seam for why a closure crosses this boundary rather
+    /// than the model itself.
+    public func prepareClip(_ choice: ComparisonVideoChoice) async -> URL {
         guard let remoteIndex, let remoteProvider, let clipCache,
               case let .remote(_, fileID) = choice.identity,
               let file = remoteIndex.file(forID: fileID)
