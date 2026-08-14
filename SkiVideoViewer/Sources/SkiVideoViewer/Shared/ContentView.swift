@@ -6,6 +6,23 @@ struct ContentView: View {
     let initialDirectory: URL?
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
+
+    /// Which sidebar sections the coach has folded away.
+    ///
+    /// Collapsed rather than expanded ids, so a library opens fully visible
+    /// and a new event that appears after a refresh is never hidden by a
+    /// preference the coach never expressed.
+    ///
+    /// Section ids differ between the two groupings — `LibraryGrouping` tags
+    /// them by dimension — so flipping the picker leaves these stale entries
+    /// matching nothing, and each view keeps its own folds without either
+    /// having to be reset.
+    ///
+    /// SwiftUI's own `Section(isExpanded:)` would give this for free with
+    /// platform-standard animation, but it needs macOS 14 and this package
+    /// targets 13 — not worth cutting a coach on Ventura loose over a
+    /// chevron.
+    @State private var collapsedSections: Set<String> = []
     /// Backs the Google Drive sheet's `chooseRoot`. A `@State`, not a plain
     /// `let`: the actor must survive `ContentView`'s `body` re-evaluating —
     /// which happens on every `ViewerModel` publish, including the playback
@@ -193,7 +210,7 @@ struct ContentView: View {
                     // rows, so a library with no event folders looks exactly as
                     // it did before events existed.
                     Section {
-                        ForEach(event.athletes) { athlete in
+                        ForEach(collapsedSections.contains(event.id) ? [] : event.athletes) { athlete in
                             HStack {
                                 // The section header already names the leading
                                 // dimension, so each row spells out the other
@@ -214,7 +231,51 @@ struct ContentView: View {
                         }
                     } header: {
                         if let name = event.name {
-                            Text(name)
+                            // Styled rather than left to the platform default,
+                            // which is small, grey and low-contrast — fine for
+                            // a header that merely labels a group, wrong for
+                            // one carrying the name a coach navigates by. It
+                            // now reads as larger than the rows beneath it.
+                            //
+                            // `.textCase(nil)` because iOS uppercases section
+                            // headers by default, which mangles a
+                            // date-prefixed folder like `2026-08-08_Wittenburg`
+                            // — and the date is the part that makes one
+                            // session tell itself apart from another.
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    if collapsedSections.contains(event.id) {
+                                        collapsedSections.remove(event.id)
+                                    } else {
+                                        collapsedSections.insert(event.id)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "chevron.right")
+                                        // Rotated rather than swapped for a
+                                        // second glyph, so the turn animates
+                                        // and reads as one control changing
+                                        // state instead of two icons.
+                                        .rotationEffect(
+                                            .degrees(collapsedSections.contains(event.id) ? 0 : 90)
+                                        )
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(name)
+                                        .font(.title3.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .textCase(nil)
+                                    Spacer()
+                                }
+                                // The whole row is the target, not just the
+                                // glyph — a chevron alone is a small thing to
+                                // hit repeatedly across a season of sessions.
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 6)
+                            .padding(.bottom, 2)
                         }
                     }
                 }
