@@ -60,10 +60,10 @@ enum GoogleClientSecretsLoader {
     /// already uses for `transport` and `tokenStore`.
     static func load(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        directory: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Ski").appendingPathComponent("script")
+        directory: URL? = defaultSearchDirectory
     ) -> GoogleOAuthConfiguration? {
-        let path = environment[environmentVariable] ?? firstClientSecretsFile(in: directory)
+        let path = environment[environmentVariable]
+            ?? directory.flatMap(firstClientSecretsFile(in:))
         guard let path, let data = FileManager.default.contents(atPath: path) else {
             return nil
         }
@@ -75,6 +75,25 @@ enum GoogleClientSecretsLoader {
             clientSecret: decoded.installed.clientSecret,
             redirectKind: .loopback
         )
+    }
+
+    /// Where to look when no path is given: `~/Ski/script` on a Mac, and
+    /// nowhere at all on iPadOS.
+    ///
+    /// Nil rather than some iOS equivalent because there is no equivalent:
+    /// `homeDirectoryForCurrentUser` does not exist there — this file lives in
+    /// `Shared/` and so compiles into the iPad target, where naming it broke
+    /// the build outright — and an iPad has no developer home directory to
+    /// scan even in principle. The environment variable still works on both,
+    /// which is the seam a test uses; the directory scan is a Mac convenience
+    /// for the person who has a client-secrets file sitting beside the repo.
+    private static var defaultSearchDirectory: URL? {
+        #if os(macOS)
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Ski").appendingPathComponent("script")
+        #else
+        return nil
+        #endif
     }
 
     /// Sorted so the search is deterministic when a directory somehow holds
