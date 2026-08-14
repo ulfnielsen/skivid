@@ -6,6 +6,14 @@ import XCTest
 final class FakeClipDownloader: ClipDownloader, @unchecked Sendable {
     var bytesByFileID: [String: Data] = [:]
     var errorToThrow: Error?
+    /// Limits how many times `errorToThrow` is thrown for a given file id,
+    /// keyed by that id — so a retry test for one file is not disturbed by
+    /// unrelated downloads (a neighbour's prefetch, a coalesced in-flight
+    /// request) that happen to reach `download` first. A file id with no
+    /// entry here throws on every call, which is what every pre-existing use
+    /// of `errorToThrow` needs.
+    var errorThrowLimitByFileID: [String: Int] = [:]
+    private var errorThrowCountByFileID: [String: Int] = [:]
     private(set) var requestedFileIDs: [String] = []
     private(set) var lastHeaders: [String: String] = [:]
     /// Blocks each download until it is released, for the coalescing and
@@ -13,29 +21,60 @@ final class FakeClipDownloader: ClipDownloader, @unchecked Sendable {
     /// continuation — so two different clips can be held open
     /// independently, which is what a test of overlapping fetches needs.
     private var gates: [String: CheckedContinuation<Void, Never>] = [:]
+    /// File ids `release(_:)` was asked to open before `download` had
+    /// reached the gate for them — a caller that fires a `Task` and then
+    /// releases it in the same synchronous stretch cannot know whether the
+    /// `Task` has reached `download` yet, since `ViewerModel`'s fetches are
+    /// MainActor-isolated and get no time at all until the caller itself
+    /// suspends (a `changeVideo` call followed immediately by `release`,
+    /// with no `await` between them, is exactly this). Measured: without
+    /// this, such a `release` is silently a no-op, and the gate it should
+    /// have opened blocks forever once `download` finally runs. A real gate
+    /// or semaphore has this property for the same reason — `signal` before
+    /// `wait` still counts — so this fake matches it instead of requiring
+    /// every caller to insert an artificial yield.
+    private var preReleased: Set<String> = []
     var shouldWait = false
 
     func download(_ source: DownloadSource, of file: RemoteFile, to destination: URL) async throws {
         requestedFileIDs.append(file.id)
         lastHeaders = source.headers
-        if shouldWait {
+        if shouldWait, preReleased.remove(file.id) == nil {
             await withCheckedContinuation { gates[file.id] = $0 }
         }
-        if let errorToThrow { throw errorToThrow }
+        if let errorToThrow {
+            if let limit = errorThrowLimitByFileID[file.id] {
+                let count = errorThrowCountByFileID[file.id, default: 0]
+                if count < limit {
+                    errorThrowCountByFileID[file.id] = count + 1
+                    throw errorToThrow
+                }
+            } else {
+                throw errorToThrow
+            }
+        }
         try (bytesByFileID[file.id] ?? Data(repeating: 0, count: Int(file.size)))
             .write(to: destination)
     }
 
-    /// Releases every currently held download.
+    /// Releases every currently held download. Pre-arming is per-file (see
+    /// `preReleased`), so this only affects downloads already gated.
     func release() {
         let held = gates.values
         gates.removeAll()
         held.forEach { $0.resume() }
     }
 
-    /// Releases only the named download, leaving any others held.
+    /// Releases only the named download, leaving any others held. If
+    /// `download` has not reached the gate for this file id yet, this
+    /// records the release so the gate opens immediately once it does — see
+    /// `preReleased`.
     func release(_ fileID: String) {
-        gates.removeValue(forKey: fileID)?.resume()
+        guard let continuation = gates.removeValue(forKey: fileID) else {
+            preReleased.insert(fileID)
+            return
+        }
+        continuation.resume()
     }
 }
 

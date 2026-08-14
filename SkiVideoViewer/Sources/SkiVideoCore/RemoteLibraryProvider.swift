@@ -170,6 +170,13 @@ public enum RemoteLibraryError: LocalizedError, Equatable {
     /// rather than JSON. Its own case so a caller cannot mistake the body for
     /// an API error object.
     case unexpectedResponseBody(String)
+    /// A download refused for credentials — Drive answered 401. Task 3's
+    /// provider-side refresh covers `RemoteLibraryProvider`'s own API calls;
+    /// this is the byte path, which goes through `ClipCache`'s downloader and
+    /// has no provider to ask mid-request. Its own case, distinct from
+    /// `.api`, so `ViewerModel.prepareCurrentClip` can tell "the token is
+    /// stale, mint a fresh one and retry" apart from an ordinary failure.
+    case unauthorised
 
     public var errorDescription: String? {
         switch self {
@@ -179,6 +186,8 @@ public enum RemoteLibraryError: LocalizedError, Equatable {
             return message
         case .cancelled:
             return "The request was cancelled."
+        case .unauthorised:
+            return "Your session expired. Try again."
         }
     }
 }

@@ -105,6 +105,15 @@ public struct RemoteLibraryIndex: Equatable {
     /// index's — a local clip, or one indexed before a refresh dropped it.
     public func file(for url: URL) -> RemoteFile? { filesByURL[url] }
 
+    /// The file with this id, or nil when the index holds none. For a
+    /// comparison pane, which knows a clip only by the `ClipIdentity` it was
+    /// given — unlike `file(for:)`, the sidebar's hot path, this is a linear
+    /// scan, but it runs once per comparison pick rather than once per clip,
+    /// so a thousand-file library costs nothing worth indexing for.
+    func file(forID id: String) -> RemoteFile? {
+        filesByURL.values.first { $0.id == id }
+    }
+
     /// Bumped whenever the stored shape changes. A stored index from any
     /// other version — older *or newer* — is refused rather than adapted,
     /// the same rule `AlignmentTrackStore` applies to a stale track:

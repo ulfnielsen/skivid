@@ -103,16 +103,11 @@ final class RemoteLibraryWiringTests: XCTestCase {
         )
     }
 
-    /// A prepared clip resolves to a file for the comparison window; an
-    /// unprepared one does not, and today the picker hands out the library URL
-    /// for it.
-    ///
-    /// That second half is pinned deliberately rather than claimed otherwise.
-    /// `ComparisonVideoChoice.playbackURL` is non-optional, so there is nothing
-    /// honest to put there until plan 3 fetches a clip when a pane selects it —
-    /// and a test asserting "only local URLs" would be false the moment a
-    /// library has more than one clip. When plan 3 lands, the second assertion
-    /// is the one that changes.
+    /// A prepared clip resolves to a file for the comparison window — and so
+    /// does any other clip a coach has actually visited, now that selecting
+    /// one fetches it. `changeVideo` here stands in for a sidebar click: the
+    /// same `fetchSelection` that runs after it is what a coach's own
+    /// selection triggers.
     func testTheComparisonPickerOffersAFileOnlyForAPreparedClip() async throws {
         let (model, provider, cache) = try remoteModel(files: [
             remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
@@ -122,6 +117,8 @@ final class RemoteLibraryWiringTests: XCTestCase {
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
         )
         try await model.prepareCurrentClip()
+        _ = model.changeVideo(by: 1)
+        try await model.settleFetches()
 
         let choices = try XCTUnwrap(model.comparisonLibrary.first?.videos)
         XCTAssertEqual(choices.count, 2)
@@ -129,14 +126,9 @@ final class RemoteLibraryWiringTests: XCTestCase {
             choices[0].playbackURL.isFileURL,
             "the prepared clip must be a file: got \(choices[0].playbackURL)"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             choices[1].playbackURL.isFileURL,
-            """
-            KNOWN GAP, pinned on purpose: an unprepared clip is still offered its \
-            library URL, which no player can open. Plan 3 must fetch a clip when a \
-            pane selects it. If this assertion starts failing, that work has landed \
-            and this test should assert both are files.
-            """
+            "selecting this clip must fetch it too: got \(choices[1].playbackURL)"
         )
     }
 

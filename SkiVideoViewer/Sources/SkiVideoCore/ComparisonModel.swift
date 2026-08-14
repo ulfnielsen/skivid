@@ -535,6 +535,26 @@ public final class ComparisonModel: ObservableObject {
 
     public func load(_ choice: ComparisonVideoChoice, side: ComparisonSide) {
         load(choice.playbackURL, side: side)
+        applyMetadata(of: choice, side: side)
+    }
+
+    /// Fetches `choice` through `fetching` before loading it, so a pane is
+    /// handed a file it can actually open rather than the library URL the
+    /// plain overload above loads unchanged — the gap plan 2 pinned
+    /// deliberately, closed here.
+    ///
+    /// `fetching` is `ViewerModel`: it is the one thing in the app that knows
+    /// how to turn a `ComparisonVideoChoice` into bytes on disk, since only it
+    /// holds the provider, the cache and the index a fetch needs.
+    public func load(
+        _ choice: ComparisonVideoChoice, side: ComparisonSide, fetching: ViewerModel
+    ) async {
+        let url = await fetching.prepareClip(choice)
+        load(url, side: side)
+        applyMetadata(of: choice, side: side)
+    }
+
+    private func applyMetadata(of choice: ComparisonVideoChoice, side: ComparisonSide) {
         switch side {
         case .left:
             leftName = choice.name
@@ -549,6 +569,14 @@ public final class ComparisonModel: ObservableObject {
     /// been loaded there.
     public func identity(for side: ComparisonSide) -> ClipIdentity? {
         side == .left ? leftIdentity : rightIdentity
+    }
+
+    /// The file actually loaded on `side` right now, or nil before a clip has
+    /// been loaded there. `AVPlayerItem` carries no direct accessor for the
+    /// URL it was built from; reading it off the underlying `AVURLAsset` is
+    /// the one way back to it.
+    public func playbackURL(for side: ComparisonSide) -> URL? {
+        (player(for: side).currentItem?.asset as? AVURLAsset)?.url
     }
 
     public func toggleIndividual(_ side: ComparisonSide) {

@@ -29,6 +29,11 @@ public struct URLSessionClipDownloader: ClipDownloader {
             throw RemoteLibraryError.api("The download did not return an HTTP response.")
         }
         guard (200...299).contains(http.statusCode) else {
+            guard http.statusCode != 401 else {
+                // A stale token, not a corrupt file — `prepareCurrentClip`
+                // retries this exactly once with a freshly minted source.
+                throw RemoteLibraryError.unauthorised
+            }
             let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? ""
             if !contentType.contains("json") && !contentType.hasPrefix("video") {
                 // Drive answers an unauthenticated media request with an HTML

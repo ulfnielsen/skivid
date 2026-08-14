@@ -70,6 +70,19 @@ public final class ViewerModel: ObservableObject {
     /// other was still running, showing neither a spinner nor a clip.
     private var preparingCount = 0
 
+    /// The current clip's own fetch, one `Task` per call to `changeVideo`,
+    /// `changeAthlete` or `selectAthlete` — so `settleFetches()` can await
+    /// exactly what a test's own selection changes started.
+    ///
+    /// Deliberately **not** the neighbour prefetches `fetchSelection` also
+    /// starts, and not the auto-select `openRemoteLibrary`/`openDirectory`
+    /// make when a library first opens (see `fetchCurrentClip`). Both are
+    /// best-effort and may legitimately never finish — a coach who moves on
+    /// again before a prefetch lands, or a test that gates the downloader
+    /// after opening a library — so awaiting them here would make
+    /// `settleFetches()` hang on a fetch nobody asked it to wait for.
+    private var fetchTasks: [Task<Void, Never>] = []
+
     /// Mirrors the cache for synchronous reads. `currentPlaybackURL` and
     /// `comparisonLibrary` are computed properties a SwiftUI view reads
     /// directly, so neither can await an actor.
@@ -384,7 +397,7 @@ public final class ViewerModel: ObservableObject {
         selectedAthleteID = index.athletes[0].id
         athleteQuery = ""
         zoom.reset()
-        selectAthlete(index.athletes[0].id)
+        selectInitialAthlete(index.athletes[0].id)
         let clipCount = index.athletes.reduce(0) { $0 + $1.videos.count }
         status = "\(root.name) — \(clipCount) clips"
         // A failure to persist is a slower next launch, not a reason to
@@ -411,8 +424,7 @@ public final class ViewerModel: ObservableObject {
             isPreparingClip = preparingCount > 0
         }
         status = "Fetching \(file.name)…"
-        let source = try await remoteProvider.downloadSource(for: file)
-        materialisedByFileID[file.id] = try await clipCache.materialize(file, source: source)
+        materialisedByFileID[file.id] = try await materialise(file, using: remoteProvider, cache: clipCache)
         await clipCache.recordPlayback(
             of: file.identity(inProvider: remoteIndex.providerIdentifier)
         )
@@ -424,6 +436,111 @@ public final class ViewerModel: ObservableObject {
         guard currentVideo == videoAtRequest else { return }
         loadCurrentVideo()
         status = file.name
+    }
+
+    /// Materialises one clip's bytes, retrying once with a freshly minted
+    /// source if the cached one has gone stale.
+    ///
+    /// Task 3's 401-and-refresh covers `RemoteLibraryProvider`'s own API
+    /// calls; the bytes are fetched by `ClipCache`'s downloader, outside the
+    /// provider, and a 401 there became a plain failure with no refresh —
+    /// the same "token expires mid-session and cannot be replaced" defect
+    /// this whole design exists to route around, just on the path that
+    /// matters most. Retried once, not in a loop: a second refusal is a real
+    /// failure, and retrying it forever would hammer Drive with a bad token.
+    private func materialise(
+        _ file: RemoteFile, using provider: any RemoteLibraryProvider, cache: ClipCache
+    ) async throws -> URL {
+        let source = try await provider.downloadSource(for: file)
+        do {
+            return try await cache.materialize(file, source: source)
+        } catch RemoteLibraryError.unauthorised {
+            let retried = try await provider.downloadSource(for: file)
+            return try await cache.materialize(file, source: retried)
+        }
+    }
+
+    /// Materialises the clip a comparison pane was just given, so the pane is
+    /// handed a file it can actually open rather than the library URL
+    /// `comparisonLibrary` falls back to before a clip has been fetched —
+    /// the gap plan 2 pinned deliberately, closed here.
+    ///
+    /// Falls back to the choice's own `playbackURL` on any failure to
+    /// materialise, including a local library (no `remoteIndex`) and an id
+    /// `remoteIndex` no longer carries: `ComparisonVideoChoice.playbackURL`
+    /// is non-optional, so something has to come back, and the pane already
+    /// knows how to show that URL failing to open.
+    func prepareClip(_ choice: ComparisonVideoChoice) async -> URL {
+        guard let remoteIndex, let remoteProvider, let clipCache,
+              case let .remote(_, fileID) = choice.identity,
+              let file = remoteIndex.file(forID: fileID)
+        else { return choice.playbackURL }
+        guard let url = try? await materialise(file, using: remoteProvider, cache: clipCache) else {
+            return choice.playbackURL
+        }
+        materialisedByFileID[file.id] = url
+        await clipCache.recordPlayback(of: file.identity(inProvider: remoteIndex.providerIdentifier))
+        return url
+    }
+
+    /// Starts fetching the newly selected clip, and prefetching its
+    /// neighbours. Called after every explicit change of selection —
+    /// `changeVideo`, `changeAthlete`, and a direct `selectAthlete` call from
+    /// the sidebar. A no-op for a local library: `prepareCurrentClip` and
+    /// `neighboursToPrefetch` both return immediately without a
+    /// `remoteIndex`.
+    private func fetchSelection() {
+        fetchCurrentClip(track: true)
+        for file in neighboursToPrefetch() {
+            Task { [weak self] in
+                await self?.prefetch(file)
+            }
+        }
+    }
+
+    /// Starts the current clip's own fetch. `track` controls whether it is
+    /// added to `fetchTasks` — see that property for why the initial
+    /// auto-select does not.
+    private func fetchCurrentClip(track: Bool) {
+        let task = Task { [weak self] in
+            guard let self else { return }
+            try? await self.prepareCurrentClip()
+        }
+        if track { fetchTasks.append(task) }
+    }
+
+    /// Best-effort priming of a clip nobody has asked for yet. Shares
+    /// `materialise`'s one-shot retry on a stale token with the selected
+    /// clip's own fetch; any other error is swallowed — a coach who actually
+    /// selects this clip gets the real failure from `prepareCurrentClip`
+    /// instead.
+    private func prefetch(_ file: RemoteFile) async {
+        guard let remoteProvider, let clipCache else { return }
+        guard let url = try? await materialise(file, using: remoteProvider, cache: clipCache) else { return }
+        materialisedByFileID[file.id] = url
+    }
+
+    /// The clips worth having before they are asked for: the one just ahead,
+    /// and the one just behind. Bounded on purpose — the library is 74 GB,
+    /// and "fetch the whole athlete" is a flooded connection on a hill.
+    private func neighboursToPrefetch() -> [RemoteFile] {
+        guard let athlete = currentAthlete, let remoteIndex else { return [] }
+        return [videoIndex - 1, videoIndex + 1]
+            .filter { athlete.videos.indices.contains($0) }
+            .compactMap { remoteIndex.file(for: athlete.videos[$0]) }
+    }
+
+    /// Awaits every fetch a selection change has started, so a test can wait
+    /// for `changeVideo`/`changeAthlete`/`selectAthlete` to actually land
+    /// their clip without `Task.sleep`. Drains `fetchTasks` first: a task
+    /// appended while this is running belongs to a later selection, and to
+    /// that selection's own wait, not this one's.
+    func settleFetches() async {
+        let tasks = fetchTasks
+        fetchTasks.removeAll()
+        for task in tasks {
+            await task.value
+        }
     }
 
     public func openDirectory(_ url: URL) {
@@ -442,24 +559,45 @@ public final class ViewerModel: ObservableObject {
             activeAthleteID = nil
             selectedAthleteID = scannedAthletes[0].id
             zoom.reset()
-            selectAthlete(scannedAthletes[0].id)
+            selectInitialAthlete(scannedAthletes[0].id)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     public func selectAthlete(_ id: String?) {
+        guard applySelection(id) else { return }
+        fetchSelection()
+    }
+
+    /// The auto-pick `openRemoteLibrary`/`openDirectory` make when a library
+    /// first opens. Same selection as `selectAthlete`, but starting only the
+    /// current clip's own fetch — no prefetch, and no `fetchTasks` tracking.
+    ///
+    /// A coach who has not navigated anywhere yet gets the one clip on
+    /// screen, not an immediate flurry of prefetches for clips they may never
+    /// look at; the untracked fetch is also what keeps this from racing a
+    /// test that configures the fake downloader immediately after the call
+    /// that opened the library — see `fetchTasks`.
+    private func selectInitialAthlete(_ id: String?) {
+        guard applySelection(id) else { return }
+        fetchCurrentClip(track: false)
+    }
+
+    @discardableResult
+    private func applySelection(_ id: String?) -> Bool {
         guard let id,
               id != activeAthleteID,
               athletes.contains(where: { $0.id == id })
         else {
-            return
+            return false
         }
         endSlowMotion()
         activeAthleteID = id
         selectedAthleteID = id
         videoIndex = 0
         loadCurrentVideo()
+        return true
     }
 
     @discardableResult
@@ -470,6 +608,7 @@ public final class ViewerModel: ObservableObject {
         endSlowMotion()
         videoIndex = (videoIndex + offset + athlete.videos.count) % athlete.videos.count
         loadCurrentVideo()
+        fetchSelection()
         return true
     }
 
@@ -690,10 +829,14 @@ public final class ViewerModel: ObservableObject {
         currentTime = 0
         duration = 0
         guard let playbackURL = currentPlaybackURL else {
-            // Cloud clip not yet on disk. Nothing to show until the fetch
-            // completes and calls back in here.
+            // Cloud clip not yet on disk — reachable only for a remote
+            // library, since `currentPlaybackURL` always resolves for a
+            // local one. Nothing to show until the fetch completes and calls
+            // back in here. Not "Paused": that is the identical string a
+            // normally stopped clip shows, and would make a downloading clip
+            // look finished rather than in progress.
             player.replaceCurrentItem(with: nil)
-            status = "Paused"
+            status = "Fetching…"
             return
         }
         let item = AVPlayerItem(url: playbackURL)

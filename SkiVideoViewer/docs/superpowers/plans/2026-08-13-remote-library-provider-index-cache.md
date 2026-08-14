@@ -3045,6 +3045,5 @@ and its synthesised URLs are all replaced rather than repaired."
 - **Sign-in.** `GoogleDriveProvider.connect` throws `.notSignedIn`. Plan 3 owns the two OAuth client registrations, `ASWebAuthenticationSession`, the loopback-versus-custom-scheme split, and the Shared Drive picker. Until then the provider takes a token closure.
 - **Prefetch.** Clips materialise on demand only. Plan 3 adds the next-two-and-previous-one policy and the compare partner.
 - **Pinning UI.** `ClipCache.pin` exists and is tested; nothing calls it yet.
-- **Fetching a clip when a comparison pane selects it.** `ComparisonVideoChoice.playbackURL` is non-optional, so an unprepared remote clip is offered its library URL, which no player can open. Pinned by `testTheComparisonPickerOffersAFileOnlyForAPreparedClip` rather than papered over. **Plan 3 must close this**, either by fetching on select or by making the URL optional and showing unready clips as unavailable.
 - **Writing analysis back to Drive.** Out of scope in the spec, and this plan adds no write scope.
 - **The `-` join in `ClipIdentity.pairKey`.** Carried deliberately from plan 1: the obvious fix would be a regression, because Drive ids are base64url and legitimately contain both `-` and `_`. The invariant is documented there.
