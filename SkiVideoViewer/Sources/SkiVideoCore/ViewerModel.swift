@@ -484,7 +484,16 @@ public final class ViewerModel: ObservableObject {
         // until the next selection change, and the clip a coach asked for
         // never appears. Guarded against the selection having moved on during
         // the download, which would otherwise load the wrong clip.
-        guard currentVideo == videoAtRequest else { return }
+        //
+        // `self.currentVideo`, deliberately not the bare `currentVideo` the
+        // guard above binds: that `let` shadows the computed property for
+        // the rest of this function, so `currentVideo == videoAtRequest`
+        // compared a value against itself and was always true — a dead
+        // guard, not a working one. Found by a test that could not make it
+        // fail no matter how the race was constructed, then confirmed by
+        // tracing `self.currentVideo` versus the shadowed local at this
+        // exact line while a selection genuinely moved on mid-fetch.
+        guard self.currentVideo == videoAtRequest else { return }
         loadCurrentVideo()
         status = file.name
     }

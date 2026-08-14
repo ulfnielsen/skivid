@@ -3,6 +3,26 @@ import XCTest
 
 @MainActor
 final class FetchOnSelectTests: XCTestCase {
+    /// Every test here opens root id "d1", and `openRemoteLibrary` saves an
+    /// index for it via the un-isolated static `RemoteLibraryIndex.storeRoot`.
+    /// Without redirecting it, a real run wrote a fake five-clip index
+    /// straight into `~/Library/Application Support/SkiVideoViewer/RemoteLibrary`
+    /// — found on disk, next to the real 407-clip index, and confirmed by
+    /// inspection before this fix. `RemoteLibraryWiringTests` already isolates
+    /// itself the same way; this copies that pattern.
+    private var previousIndexStoreRoot: URL!
+
+    override func setUpWithError() throws {
+        previousIndexStoreRoot = RemoteLibraryIndex.storeRoot
+        RemoteLibraryIndex.storeRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: RemoteLibraryIndex.storeRoot)
+        RemoteLibraryIndex.storeRoot = previousIndexStoreRoot
+    }
+
     private func fiveClips() -> [RemoteFile] {
         (1...5).map { remoteFile("f\($0)", "run\($0).mp4", ["Neuss 2026", "Ada"]) }
     }
@@ -70,9 +90,42 @@ final class FetchOnSelectTests: XCTestCase {
     }
 
     /// Moving twice quickly must load what was selected *last*, not whichever
-    /// download happened to finish last. The gate holds the first fetch open
-    /// past the second selection, which is the ordering that would otherwise
-    /// leave the wrong clip on screen.
+    /// download happened to finish last.
+    ///
+    /// Two problems, found in this order:
+    ///
+    /// 1. **The original test built no race at all.** `changeVideo` does not
+    ///    await its own fetch — it fires an unstructured `Task` and returns
+    ///    immediately — and `prepareCurrentClip` reads `currentVideo` live,
+    ///    when that `Task` actually *runs*, not a snapshot from when it was
+    ///    created. Two `changeVideo` calls back to back with no `await`
+    ///    between them do not by themselves construct a race: neither `Task`
+    ///    gets any time until the test itself suspends, so both would read
+    ///    the *final* selection. `waitUntilGated` is what makes it genuine:
+    ///    it suspends until run2's fetch has actually reached the downloader
+    ///    — captured `videoAtRequest` and is now blocked — *before* run3 is
+    ///    selected.
+    /// 2. **The guard the test exists to pin was dead code.**
+    ///    `prepareCurrentClip` had `guard let currentVideo, …` at its top,
+    ///    which shadows the computed property `self.currentVideo` for the
+    ///    rest of the function — so `guard currentVideo == videoAtRequest`
+    ///    compared the shadowed local against itself and was always true.
+    ///    Fixing problem 1 alone still passed with the guard *deleted*; only
+    ///    reading `self.currentVideo` explicitly (the fix now in
+    ///    `prepareCurrentClip`) makes the comparison real. Confirmed both
+    ///    ways: with the shadowing bug, deleting the guard changed nothing;
+    ///    with the fix, deleting the guard fails this test's status
+    ///    assertion below, and restoring it passes again.
+    ///
+    /// The stale fetch is released and given a moment to reach its guard
+    /// check while run3's own fetch is still gated, so the status it would
+    /// wrongly set (if the guard failed to protect it) is observable before a
+    /// later, correct completion could overwrite it. That moment is bounded
+    /// by a short `Task.sleep`, not by `waitUntilGated`: the guard's effect
+    /// is on `status`, set several actor-hops after the downloader gate opens
+    /// (`ClipCache`'s internal `Task`, then a `recordPlayback` round trip),
+    /// and nothing in this fake can observe "`ViewerModel` finished handling
+    /// the resumed continuation" without instrumenting `ViewerModel` itself.
     func testMovingTwiceQuicklyLoadsTheClipSelectedLast() async throws {
         let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
         try await model.openRemoteLibrary(
@@ -80,9 +133,17 @@ final class FetchOnSelectTests: XCTestCase {
         )
         downloader.shouldWait = true
 
-        _ = model.changeVideo(by: 1)          // run2, blocked
-        _ = model.changeVideo(by: 1)          // run3, blocked
-        downloader.release("f2")              // the stale one finishes first
+        _ = model.changeVideo(by: 1)              // run2 selected; its fetch starts
+        await downloader.waitUntilGated("f2")     // ...and is genuinely in flight, blocked
+        _ = model.changeVideo(by: 1)              // run3 selected before run2's fetch landed
+
+        downloader.release("f2")                  // the stale fetch is allowed to land...
+        try await Task.sleep(nanoseconds: 50_000_000)  // ...give its guard check time to run
+        XCTAssertNotEqual(
+            model.status, "run2.mp4",
+            "a stale fetch landing after the selection moved on must not overwrite the status"
+        )
+
         downloader.release("f3")
         try await model.settleFetches()
 

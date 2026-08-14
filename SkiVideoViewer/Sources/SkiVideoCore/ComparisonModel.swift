@@ -538,10 +538,13 @@ public final class ComparisonModel: ObservableObject {
         applyMetadata(of: choice, side: side)
     }
 
-    /// Fetches `choice` through `fetching` before loading it, so a pane is
-    /// handed a file it can actually open rather than the library URL the
-    /// plain overload above loads unchanged — the gap plan 2 pinned
-    /// deliberately, closed here.
+    /// Fetches `choice` through `fetching` before loading it, rather than
+    /// loading the library URL unchanged the way the plain overload above
+    /// does — the gap plan 2 pinned deliberately, closed here for the common
+    /// case. Not a guarantee: `fetching.prepareClip` falls back to `choice`'s
+    /// own (possibly still-unopenable) `playbackURL` on any failure to
+    /// materialise, and this loads whatever it returns either way — see
+    /// `prepareClip` for why it cannot do otherwise.
     ///
     /// `fetching` is `ViewerModel`: it is the one thing in the app that knows
     /// how to turn a `ComparisonVideoChoice` into bytes on disk, since only it

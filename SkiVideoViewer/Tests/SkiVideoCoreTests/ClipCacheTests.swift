@@ -35,12 +35,28 @@ final class FakeClipDownloader: ClipDownloader, @unchecked Sendable {
     /// every caller to insert an artificial yield.
     private var preReleased: Set<String> = []
     var shouldWait = false
+    /// Resumed the moment `download` sets a file's gate — i.e. the moment
+    /// it is genuinely blocked, not merely "the `Task` that would fetch it
+    /// exists". A caller that fires a fetch through an unstructured `Task`
+    /// (every `ViewerModel` selection-change fetch does) has no guarantee
+    /// that `Task` has run even one line by the time its own next statement
+    /// executes — `ViewerModel`'s fetches are MainActor-isolated and get no
+    /// time until the caller itself suspends. `waitUntilGated` is what lets
+    /// a test construct a *real* race (one selection's fetch genuinely
+    /// in flight when the next selection lands) instead of an accidental
+    /// one where both `Task`s run only after every synchronous statement in
+    /// the test has already executed. Not signalled on the pre-armed path
+    /// (`preReleased`) — no test needs that combination today.
+    private var arrivalContinuations: [String: CheckedContinuation<Void, Never>] = [:]
 
     func download(_ source: DownloadSource, of file: RemoteFile, to destination: URL) async throws {
         requestedFileIDs.append(file.id)
         lastHeaders = source.headers
         if shouldWait, preReleased.remove(file.id) == nil {
-            await withCheckedContinuation { gates[file.id] = $0 }
+            await withCheckedContinuation { continuation in
+                gates[file.id] = continuation
+                arrivalContinuations.removeValue(forKey: file.id)?.resume()
+            }
         }
         if let errorToThrow {
             if let limit = errorThrowLimitByFileID[file.id] {
@@ -75,6 +91,16 @@ final class FakeClipDownloader: ClipDownloader, @unchecked Sendable {
             return
         }
         continuation.resume()
+    }
+
+    /// Suspends until `download` has been called for `fileID` and is
+    /// genuinely blocked on its gate. See `arrivalContinuations` for why
+    /// this exists instead of a `Task.sleep`: it is the difference between
+    /// "the fetch has actually started and is in flight" and "some `Task`
+    /// that may or may not have run yet exists".
+    func waitUntilGated(_ fileID: String) async {
+        if gates[fileID] != nil { return }
+        await withCheckedContinuation { arrivalContinuations[fileID] = $0 }
     }
 }
 
