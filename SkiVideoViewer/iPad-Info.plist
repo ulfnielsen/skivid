@@ -21,8 +21,26 @@
 	Keep this file minimal. Anything expressible as a recognised
 	INFOPLIST_KEY_* belongs in project.yml instead; a key repeated here
 	would shadow the generated value.
+
+	CFBundleURLTypes is here for the same reason: it is an array of
+	dictionaries, and project.yml's settings are flat build-setting values,
+	so it has no INFOPLIST_KEY_* form to redirect through. This registers
+	the custom scheme IOSOAuthPresenter.callbackScheme asks Google to
+	redirect to (Sources/SkiVideoViewer/iOS/IOSOAuthPresenter.swift) —
+	loopback redirects are blocked for iOS OAuth clients, so this scheme is
+	how Google's authorization response reaches the app at all.
+	IOSRedirectTests pins the two against each other.
 	-->
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.REPLACE-WITH-IOS-CLIENT-ID</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

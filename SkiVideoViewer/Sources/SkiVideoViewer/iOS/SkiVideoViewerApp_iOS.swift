@@ -6,7 +6,7 @@ struct SkiVideoViewerApp_iOS: App {
     @StateObject private var model = ViewerModel(
         input: InertInputSource(),
         folderPicker: UIKitFolderPicker(),
-        oauthPresenter: UnavailableOAuthPresenter()
+        oauthPresenter: IOSOAuthPresenter()
     )
     // A @StateObject, not a `let`: this scene has to re-render when the
     // presenter publishes a comparison request, which is what drives the cover.
