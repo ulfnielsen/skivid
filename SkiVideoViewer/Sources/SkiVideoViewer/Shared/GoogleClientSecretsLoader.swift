@@ -48,9 +48,22 @@ enum GoogleClientSecretsLoader {
     /// Where a person should look when `load` returns nil, spelled out so
     /// `GoogleDriveSheet` can put it in front of them directly instead of
     /// showing a button that silently cannot work.
+    ///
+    /// Different per platform because the Mac advice is *impossible* on iPad:
+    /// there is no `~/Ski/script` there, and nobody sets an environment
+    /// variable on an app they tapped. Telling an iPad user to do either is
+    /// worse than saying nothing — it reads as a step they failed rather than
+    /// as a build that was never configured. Observed in the simulator, where
+    /// the Mac wording appeared verbatim on an iPad.
     static var missingConfigurationMessage: String {
-        "No Google client secrets found. Set \(environmentVariable) to a client_secret_*.json path, " +
-            "or place one in ~/Ski/script."
+        #if os(macOS)
+        return "No Google client secrets found. Set \(environmentVariable) to a "
+            + "client_secret_*.json path, or place one in ~/Ski/script."
+        #else
+        return "This build has no Google sign-in configured. The iPad app needs an "
+            + "iOS OAuth client compiled in — it cannot read one from disk the way "
+            + "the Mac app can."
+        #endif
     }
 
     /// `environment` and `directory` default to the real environment and
