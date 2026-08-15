@@ -24,5 +24,28 @@
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!--
+    The redirect scheme a club-supplied Google client comes back through.
+    It is this bundle's own identifier, which is not a coincidence: a Google
+    iOS OAuth client accepts <registered-bundle-id>:/oauth2redirect, so a club
+    registers its client against this string and the app ships one unchanging
+    scheme instead of one it could not know until the club pasted its id.
+
+    Only club-supplied clients use it. The built-in Mac client is a Desktop
+    client and keeps its loopback listener (AppKitOAuthPresenter), because
+    Google blocks loopback for iOS clients but still allows it for Desktop
+    ones. ClubOAuthClientTests pins this scheme against ClubOAuthClientStore.
+    -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>ch.ski.video-viewer.oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ch.ski.video-viewer</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

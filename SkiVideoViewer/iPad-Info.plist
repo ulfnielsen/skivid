@@ -30,6 +30,18 @@
 	loopback redirects are blocked for iOS OAuth clients, so this scheme is
 	how Google's authorization response reaches the app at all.
 	IOSRedirectTests pins the two against each other.
+
+	Two schemes, because there are two kinds of client. The reverse-DNS one
+	belongs to the built-in client this app was registered with. The second,
+	ch.ski.video-viewer, is the one every *club-supplied* client redirects
+	through: a Google iOS client accepts <registered-bundle-id>:/oauth2redirect
+	as well as the reverse-DNS form (measured 2026-08-15), so every club can
+	register its own client against that one fixed bundle id and the app needs
+	no scheme it could not know at build time. ClubOAuthClientTests pins it.
+
+	The built-in client keeps its own scheme rather than moving to the shared
+	one, because that is what it was registered with — re-registering it would
+	break the home club's sign-in.
 	-->
 	<key>UIFileSharingEnabled</key>
 	<true/>
@@ -39,6 +51,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>com.googleusercontent.apps.1075094033080-autj2djudlifsgtr0rd51910531ig1qt</string>
+				<string>ch.ski.video-viewer</string>
 			</array>
 		</dict>
 	</array>

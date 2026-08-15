@@ -21,6 +21,33 @@ struct GoogleDriveSheet: View {
     /// "settable when a remote library is opened," per the design.
     @State private var folderConvention: FolderConvention = .eventThenAthlete
 
+    /// Where a club-supplied OAuth client id is read and written. A struct over
+    /// `UserDefaults`, so holding one costs nothing and it needs no `@StateObject`;
+    /// `savedClientID` below is what actually drives redraws.
+    private let store = ClubOAuthClientStore()
+
+    /// Mirrors the store so edits redraw the sheet — SwiftUI cannot observe
+    /// `UserDefaults` through a plain struct. Seeded from the store at init so
+    /// a club that set this up on a previous launch sees its id, not a blank
+    /// field that looks like the setup was lost.
+    @State private var savedClientID: String?
+    @State private var clientIDField = ""
+    @State private var clientIDError: String?
+    @State private var isShowingClubSetup: Bool
+
+    init(model: ViewerModel, isPresented: Binding<Bool>, cache: ClipCache) {
+        self.model = model
+        self._isPresented = isPresented
+        self.cache = cache
+        let store = ClubOAuthClientStore()
+        self._savedClientID = State(initialValue: store.clientID)
+        // Expanded only when there is no usable client at all — on a Mac with
+        // no client-secrets file and no club id, this section is the only way
+        // forward, and a coach should not have to find a disclosure triangle to
+        // discover that.
+        self._isShowingClubSetup = State(initialValue: GoogleDriveSheet.makeProvider() == nil)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Open Club Library")
@@ -67,6 +94,95 @@ struct GoogleDriveSheet: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider()
+            clubClientSection
+        }
+    }
+
+    /// Lets a club that is not the one this app was written for use its own
+    /// Google OAuth client — the app's consent screen has an Internal audience,
+    /// so no outside account can sign in with the built-in client at all. See
+    /// `ClubOAuthClientStore` for why that is the design and not a workaround.
+    ///
+    /// Collapsed by default, and below the button: the overwhelmingly common
+    /// case is a coach who should press "Sign in with Google" and nothing else.
+    /// It starts expanded only when there is no client configured at all, which
+    /// on a Mac without a client-secrets file is the one situation where this
+    /// section is the only way forward.
+    private var clubClientSection: some View {
+        DisclosureGroup(isExpanded: $isShowingClubSetup) {
+            VStack(alignment: .leading, spacing: 10) {
+                if let savedClientID {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Using your club's client")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Use built-in") {
+                            store.clear()
+                            self.savedClientID = nil
+                            clientIDField = ""
+                            clientIDError = nil
+                        }
+                        .font(.caption)
+                    }
+                    Text(savedClientID)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                TextField("Client ID", text: $clientIDField, prompt: Text("…apps.googleusercontent.com"))
+                    .textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #endif
+
+                if let clientIDError {
+                    Text(clientIDError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Save") { saveClubClientID() }
+                        .disabled(clientIDField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                // The two values a club cannot guess. Everything else about
+                // the setup is in the linked walkthrough, so this stays short
+                // enough to read standing up at a race.
+                Text("In Google Cloud Console, create an OAuth client of type **iOS** with "
+                     + "bundle ID `\(ClubOAuthClientStore.redirectScheme)`, and give its consent "
+                     + "screen the scope `drive.readonly` with audience **Internal**. "
+                     + "Full walkthrough: docs/google-oauth-club-setup.md")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 8)
+        } label: {
+            Text("Use your club's own Google account")
+                .font(.callout)
+        }
+    }
+
+    private func saveClubClientID() {
+        do {
+            savedClientID = try store.save(clientIDField)
+            clientIDField = ""
+            clientIDError = nil
+            // Any failure from the built-in client is about a client that is no
+            // longer in use, so leaving it on screen would send a club that just
+            // fixed its setup back to debugging the wrong thing.
+            model.clearSignInError()
+        } catch {
+            clientIDError = error.localizedDescription
         }
     }
 
@@ -127,7 +243,17 @@ struct GoogleDriveSheet: View {
     /// redirect — blocked since October 2022 — so the iPad redirects through
     /// the reverse-DNS scheme in `IOSOAuthPresenter.callbackScheme` while the
     /// Mac keeps its loopback listener.
+    /// A club-supplied client wins over the built-in one on both platforms —
+    /// see `ClubOAuthClientStore`. It is always an iOS-type client with no
+    /// secret, redirecting through the one scheme every club registers against,
+    /// because Google blocks loopback for iOS clients and asking each club for a
+    /// second Desktop client just to keep the Mac's listener would double the
+    /// setup.
     private static func configuration() -> GoogleOAuthConfiguration? {
+        ClubOAuthClientStore().configuration(fallingBackTo: builtInConfiguration())
+    }
+
+    private static func builtInConfiguration() -> GoogleOAuthConfiguration? {
         #if os(macOS)
         return GoogleClientSecretsLoader.load()
         #else

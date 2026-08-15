@@ -18,7 +18,10 @@ struct SkiVideoViewerApp: App {
     @StateObject private var model = ViewerModel(
         input: AppKitInputSource(),
         folderPicker: AppKitFolderPicker(),
-        oauthPresenter: AppKitOAuthPresenter()
+        // Not AppKitOAuthPresenter directly: that one only speaks loopback,
+        // which the built-in Desktop client uses but a club-supplied iOS
+        // client is forbidden. MacOAuthPresenter picks between the two.
+        oauthPresenter: MacOAuthPresenter()
     )
     private let initialDirectory: URL?
     private let secondaryScreens = MacSecondaryScreenPresenter()

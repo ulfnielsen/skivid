@@ -348,6 +348,17 @@ public final class ViewerModel: ObservableObject {
 
     /// Signs in and asks which drives this account can see. Fetches nothing:
     /// the library is gigabytes and a coach has picked no clip yet.
+    /// Clears a failed sign-in's message without attempting another.
+    ///
+    /// The drive sheet calls this when a club saves its own OAuth client id:
+    /// whatever is on screen describes a client that is no longer in use, and
+    /// leaving it there sends someone who has just fixed their setup back to
+    /// debugging the thing they replaced. `signIn` clears it too, but only once
+    /// the next attempt starts — too late to stop the reading.
+    public func clearSignInError() {
+        signInError = nil
+    }
+
     public func signIn(with provider: any RemoteLibraryProvider) async {
         signInError = nil
         do {

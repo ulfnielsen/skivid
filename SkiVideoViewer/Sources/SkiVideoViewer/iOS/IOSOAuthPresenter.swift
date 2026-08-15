@@ -19,22 +19,43 @@ import UIKit
 /// registers.
 @MainActor
 final class IOSOAuthPresenter: NSObject, OAuthPresenter {
-    /// Must match the `CFBundleURLTypes` entry `iPad-Info.plist` registers
-    /// for the iPad target, or Google's redirect goes to a scheme the app
-    /// never receives. Pinned by `IOSRedirectTests`.
+    /// The **built-in** client's redirect: Google issues an iOS client's id
+    /// already reversed into exactly this form
+    /// (`com.googleusercontent.apps.<client-id>`), and this is the real one for
+    /// the client registered against bundle id `ch.ski.video-viewer.ipad`.
     ///
-    /// A placeholder: Google issues an iOS OAuth client's id already reversed
-    /// into exactly this form (`com.googleusercontent.apps.<client-id>`), and
-    /// no such client is registered yet for bundle id
-    /// `ch.ski.video-viewer.ipad` — the human partner has a Desktop client
-    /// only. Sign-in cannot succeed until one is registered and this string
-    /// is replaced with the real reversed client id.
+    /// Must match a `CFBundleURLTypes` entry in `iPad-Info.plist`, or Google's
+    /// redirect goes to a scheme the app never receives. Pinned by
+    /// `IOSRedirectTests`.
+    ///
+    /// A club-supplied client does **not** use this — see `schemeForThisFlow`.
     static let callbackScheme = "com.googleusercontent.apps.1075094033080-autj2djudlifsgtr0rd51910531ig1qt"
+
+    private let store: ClubOAuthClientStore
 
     /// Kept alive for the duration of the flow — `ASWebAuthenticationSession`
     /// does not retain itself, and a session deallocated mid-flight cancels
     /// silently.
     private var session: ASWebAuthenticationSession?
+
+    /// Chosen in `prepareRedirectURI` and reused by `authorize` rather than
+    /// recomputed. The redirect URI is a query parameter of the authorization
+    /// URL, so a club id saved *between* the two calls would otherwise send
+    /// Google one scheme and listen on another — a `redirect_uri_mismatch`
+    /// that would read as a Google problem rather than a race here.
+    private var schemeInFlight: String?
+
+    init(store: ClubOAuthClientStore = ClubOAuthClientStore()) {
+        self.store = store
+        super.init()
+    }
+
+    /// The built-in client keeps its own reverse-DNS scheme; a club-supplied
+    /// client comes back through the one shared scheme every club registers
+    /// its client against. Both are in `iPad-Info.plist`.
+    private var schemeForThisFlow: String {
+        store.clientID == nil ? Self.callbackScheme : ClubOAuthClientStore.redirectScheme
+    }
 
     func prepareRedirectURI() async throws -> String {
         // Matches the `.customScheme` branch of `GoogleOAuth.redirectURI(for:)`
@@ -42,14 +63,17 @@ final class IOSOAuthPresenter: NSObject, OAuthPresenter {
         // here) exactly, the same duplication `AppKitOAuthPresenter` accepts
         // for its loopback URI: this presenter drives `authorize` directly
         // rather than through that function.
-        "\(Self.callbackScheme):/oauth2redirect"
+        let scheme = schemeForThisFlow
+        schemeInFlight = scheme
+        return "\(scheme):/oauth2redirect"
     }
 
     func authorize(authorizationURL: URL, redirectURI: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
+        let scheme = schemeInFlight ?? schemeForThisFlow
+        return try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(
                 url: authorizationURL,
-                callbackURLScheme: Self.callbackScheme
+                callbackURLScheme: scheme
             ) { callbackURL, error in
                 if let callbackURL {
                     continuation.resume(returning: callbackURL)
