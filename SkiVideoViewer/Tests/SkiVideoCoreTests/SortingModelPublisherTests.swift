@@ -10,12 +10,15 @@ import XCTest
 /// The pipeline is `FakeMediaPipeline` (from `FakeSeams.swift`, already used
 /// elsewhere in this target), so nothing here depends on AVFoundation. The
 /// resize itself runs on a background `OperationQueue` — see
-/// `SortingModel.enqueueResize` — so these tests only assert on the move of
-/// the original, which `tagCurrentVideo()` performs synchronously before it
-/// returns. Coverage for the path handed to the resize queue already exists
-/// in `SortingModelResizeQueueTests.testPipelineReceivesOrganizedAndResizedPathsPerClip`,
-/// which can afford to wait for the background job to finish; this file does
-/// not duplicate that wait.
+/// `SortingModel.enqueueResize` — so most of these tests only assert on the
+/// move of the original, which `tagCurrentVideo()` performs synchronously
+/// before it returns, and do not wait for the background job to finish.
+/// `testAReadOnlySessionWritesNothingToTheSource` is the exception: what it
+/// pins can only be observed after the background job runs, so it polls
+/// `completedResizes` the way `SortingModelResizeQueueTests` does. Coverage
+/// for the path handed to the resize queue in the non-read-only case already
+/// exists in
+/// `SortingModelResizeQueueTests.testPipelineReceivesOrganizedAndResizedPathsPerClip`.
 @MainActor
 final class SortingModelPublisherTests: XCTestCase {
     private var root: URL!
@@ -118,18 +121,32 @@ final class SortingModelPublisherTests: XCTestCase {
     }
 
     /// A read-only session must write its resize somewhere that is not the
-    /// card. Fails if `keepsSourceIntact` is ignored and the session still
-    /// builds a `LocalFolderPublisher` over the source — the mistake that
-    /// would put `organized/` on a coach's SD card.
+    /// card, and must never write an athlete tag into the card's original.
+    ///
+    /// The directory-listing comparison alone can only prove the first half:
+    /// a real pipeline's `writeMetadata` uses `replaceItemAt`, which swaps a
+    /// file's contents without changing what `contentsOfDirectory` reports,
+    /// so a metadata write into the card's original would pass that check
+    /// undetected. Deleting `enqueueResize`'s `if !skipSourceMetadata` gate
+    /// was verified by hand to leave every test in this file green before
+    /// this assertion existed. `FakeMediaPipeline.metadataCalls`
+    /// (`Tests/SkiVideoCoreTests/FakeSeams.swift:134`) is the part of the
+    /// fake that actually sees the call regardless of what it did to disk,
+    /// so asserting it is empty is what closes the gap — and
+    /// `resizeCalls.first?.source` pins that the resize itself reads the
+    /// clip on the card in place, per `ReadOnlySourcePublisher.prepare`,
+    /// rather than a moved copy.
     func testAReadOnlySessionWritesNothingToTheSource() async throws {
         let card = root.appendingPathComponent("DCIM")
         try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
-        try Data(repeating: 0, count: 16).write(to: card.appendingPathComponent("C0001.MP4"))
+        let clip = card.appendingPathComponent("C0001.MP4")
+        try Data(repeating: 0, count: 16).write(to: clip)
         let before = try FileManager.default.contentsOfDirectory(atPath: card.path)
         let output = root.appendingPathComponent("app-storage")
+        let pipeline = FakeMediaPipeline()
 
         let model = await MainActor.run { () -> SortingModel in
-            let model = SortingModel(mediaPipeline: FakeMediaPipeline())
+            let model = SortingModel(mediaPipeline: pipeline)
             model.sourcePath = card.path
             model.eventTitle = "Brunni"
             model.keepsSourceIntact = true
@@ -141,6 +158,11 @@ final class SortingModelPublisherTests: XCTestCase {
             model.athleteQuery = "Ada Example"
             model.addNewAthleteAndTag()
         }
+        // The resize itself runs on the background operation queue — see
+        // `SortingModel.enqueueResize` — so `metadataCalls`/`resizeCalls`
+        // are not populated yet the instant `addNewAthleteAndTag` returns.
+        // Drained the same way `SortingModelResizeQueueTests` does.
+        try await waitForResizes(model, count: 1)
 
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(atPath: card.path), before,
@@ -150,6 +172,35 @@ final class SortingModelPublisherTests: XCTestCase {
             FileManager.default.fileExists(atPath: output.path),
             "the resize target directory should have been created under the output root"
         )
+        XCTAssertTrue(
+            pipeline.metadataCalls.isEmpty,
+            "a read-only session must never write athlete metadata into the source"
+        )
+        // `resolvingSymlinksInPath()` on both sides: `FileManager
+        // .contentsOfDirectory` returns paths through `/private/var`, while
+        // `clip` was built from `FileManager.default.temporaryDirectory`
+        // directly, which on this OS version does not include `/private` —
+        // an unrelated quirk this test must not mistake for a moved file.
+        XCTAssertEqual(
+            pipeline.resizeCalls.first?.source.resolvingSymlinksInPath(),
+            clip.resolvingSymlinksInPath(),
+            "the resize must read the clip on the card in place, not a moved copy"
+        )
+    }
+
+    /// Polls `completedResizes` rather than depending on ordering with the
+    /// background `OperationQueue`, exactly as `SortingModelResizeQueueTests
+    /// .waitForResizes` does — duplicated here rather than shared because
+    /// that one lives in a different `XCTestCase`.
+    private func waitForResizes(_ model: SortingModel, count: Int) async throws {
+        let deadline = Date().addingTimeInterval(20)
+        while model.completedResizes < count {
+            if Date() > deadline {
+                XCTFail("timed out with \(model.completedResizes) of \(count) resizes done")
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 
     private func makeSource(named name: String) throws -> URL {

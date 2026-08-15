@@ -266,24 +266,30 @@ final class CompareOnIPadUITests: XCTestCase {
         }
     }
 
-    /// Sort & Resize has no iPad UI — the pipeline behind it is portable now,
-    /// but the screen itself is built around a Mac window and folder picker.
-    /// Its button must be absent, not merely disabled — a visible control that
-    /// does nothing is the regression this guards, and it is why the seam
-    /// carries one flag per screen.
-    func testSortIsNotOfferedOnIPad() {
+    /// Sort & Resize now has an iPad UI: the pipeline it drives runs
+    /// in-process on AVFoundation and compiles for iOS, and `SortingSheet` is
+    /// plain SwiftUI, so there is no longer anything Mac-only standing in the
+    /// way. The button must be present, and tapping it must actually open the
+    /// sorting sheet rather than merely exist — asserting on "Start Tagging",
+    /// a control that only exists inside the sheet, is what tells the two
+    /// apart. Before this test, nothing proved the sheet opens at all on
+    /// iPad.
+    func testTappingSortOpensTheSortingSheet() {
         let app = launchPastTheFolderPicker()
 
+        let sort = app.buttons["Sort & Resize…"]
         XCTAssertTrue(
-            app.buttons["Compare Videos…"].waitForExistence(timeout: 30),
-            "wait for the toolbar before asserting something is absent from it"
+            sort.waitForExistence(timeout: 30),
+            "the iPad toolbar must offer Sort & Resize"
         )
-        XCTAssertFalse(
-            app.buttons["Sort & Resize…"].exists,
-            "Sort cannot work on iPad, so it must not appear as a dead button"
+        sort.tap()
+
+        XCTAssertTrue(
+            app.buttons["Start Tagging"].waitForExistence(timeout: 30),
+            "tapping Sort & Resize must present the sorting sheet"
         )
 
-        attachScreenshot(named: "toolbar")
+        attachScreenshot(named: "sorting-sheet")
     }
 
     /// Closing must return to the viewer, or the cover is a trap: iPad has no

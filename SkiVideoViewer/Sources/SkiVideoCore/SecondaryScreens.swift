@@ -5,11 +5,13 @@ import Foundation
 /// that cannot show a screen simply hides its button rather than offering a
 /// dead control.
 ///
-/// One flag per screen, not one for both: iPad can present Compare but not
-/// Sort. The media pipeline is no longer the obstacle — it runs in-process on
-/// AVFoundation and compiles for iOS — but no iPad sorting UI has been built,
-/// so there is still nothing to present. A single flag would force the two to
-/// be revealed together.
+/// One flag per screen, not one for both: the two screens were built and
+/// enabled on separate schedules, so a single flag would have forced them to
+/// be revealed together. Both are now true on every platform this app ships —
+/// iPad presents Compare and Sort exactly as macOS does, with
+/// `SortingModel.keepsSourceIntact` steering the latter away from writing to
+/// the source when it is backed by a card in the camera rather than a folder
+/// on disk.
 ///
 /// Both flags must be answered by a constant. `ContentView` reads them while
 /// building `body` and does not observe the presenter, so a value computed from

@@ -26,15 +26,23 @@ struct SortingSheet: View {
     ) {
         _isPresented = isPresented
         self.openResizedLibrary = openResizedLibrary
-        let sortingModel = SortingModel(
-            mediaPipeline: mediaPipeline,
-            input: input,
-            folderPicker: folderPicker,
-            defaultNamesURL: defaultNamesURL
-        )
-        sortingModel.keepsSourceIntact = keepsSourceIntact
-        sortingModel.outputRoot = outputRoot
-        _model = StateObject(wrappedValue: sortingModel)
+        // Built inside `StateObject`'s autoclosure so it only runs once, the
+        // first time this view is materialised. `SortingSheet` is created
+        // fresh from `.fullScreenCover(item:)`'s content closure on iPad,
+        // which SwiftUI can re-evaluate more than once per presentation —
+        // wrapped, a model, an `AVPlayer`, and a picker were being
+        // constructed and immediately discarded on every such re-evaluation.
+        _model = StateObject(wrappedValue: {
+            let sortingModel = SortingModel(
+                mediaPipeline: mediaPipeline,
+                input: input,
+                folderPicker: folderPicker,
+                defaultNamesURL: defaultNamesURL
+            )
+            sortingModel.keepsSourceIntact = keepsSourceIntact
+            sortingModel.outputRoot = outputRoot
+            return sortingModel
+        }())
     }
 
     var body: some View {
@@ -62,11 +70,23 @@ struct SortingSheet: View {
         }
     }
 
+    /// What the setup screen tells the coach the session is about to do —
+    /// which differs by `keepsSourceIntact`, because on iPad this is the one
+    /// screen where a coach could reassure themselves the card is safe. The
+    /// two variants must not drift from `SortingModel.beginSorting`'s actual
+    /// choice of `ClipPublisher`.
+    private var setupDescription: String {
+        if model.keepsSourceIntact {
+            return "Choose a flat folder of raw clips. The event date is taken from the first video file. The source is left exactly as it is — nothing there is moved, renamed, or edited. Each tagged clip is resized into a copy under organized_resize/<event>/<athlete> in this app's storage, and only that copy carries the athlete metadata. Only one resize runs at a time."
+        }
+        return "Choose a flat folder of raw clips. The event date is taken from the first video file. Each tagged clip moves into organized/<event>/<athlete>, gets its athlete metadata written, then is resized into the matching organized_resize folder. Only one resize runs at a time."
+    }
+
     private var setupView: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Sort & Resize Videos")
                 .font(.title.bold())
-            Text("Choose a flat folder of raw clips. The event date is taken from the first video file. Each tagged clip moves into organized/<event>/<athlete>, gets its athlete metadata written, then is resized into the matching organized_resize folder. Only one resize runs at a time.")
+            Text(setupDescription)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -155,8 +175,21 @@ struct SortingSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(model.progressLabel)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(model.progressLabel)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    // The one always-available way out once tagging has
+                    // started: `fullScreenCover` has no interactive
+                    // dismissal of its own, and every other exit on this
+                    // screen is conditional — "Open Resized Library" only
+                    // appears once every resize has succeeded, so a single
+                    // failed clip left nothing on screen to tap before this
+                    // existed. Placed here, outside the `if`/`else` above, so
+                    // it survives both while a clip is loaded and once
+                    // tagging has finished.
+                    Button("Close") { isPresented = false }
+                }
                 if model.currentVideo != nil {
                     HStack {
                         TextField("Type athlete name, then Return", text: $model.athleteQuery)

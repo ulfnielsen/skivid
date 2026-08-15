@@ -314,7 +314,15 @@ public final class SortingModel: ObservableObject {
         player.play()
     }
 
+    /// Appends the new name to the on-disk `athletes.txt` so future sessions
+    /// see it too. Skipped entirely when `keepsSourceIntact` is true: on
+    /// iPad, `namesPath` comes from the same Files picker the coach used to
+    /// choose the source, which reopens wherever they last were — often the
+    /// SD card itself. A read-only session must not write there, even to
+    /// append one line, so the new name only lives in `athleteNames` for the
+    /// rest of this session, which `addNewAthleteAndTag` already updated.
     private func persistNewAthlete(_ athlete: String) {
+        guard !keepsSourceIntact else { return }
         let path = namesPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return }
         let url = URL(fileURLWithPath: path)
