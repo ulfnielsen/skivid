@@ -377,12 +377,31 @@ struct KeychainTokenStore: OAuthTokenStore {
         if status == errSecItemNotFound {
             var item = attributes
             item[kSecValueData as String] = Data(token.utf8)
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-                throw DriveError.tokenExchange("Could not save the Google sign-in token in Keychain.")
+            let addStatus = SecItemAdd(item as CFDictionary, nil)
+            guard addStatus == errSecSuccess else {
+                throw DriveError.tokenExchange(Self.describe(addStatus, verb: "save"))
             }
         } else if status != errSecSuccess {
-            throw DriveError.tokenExchange("Could not update the Google sign-in token in Keychain.")
+            throw DriveError.tokenExchange(Self.describe(status, verb: "update"))
         }
+    }
+
+    /// Carries the `OSStatus` into the message, and names the one failure that
+    /// is a build problem rather than a runtime one.
+    ///
+    /// `errSecMissingEntitlement` (-34018) means the app has no keychain
+    /// access group, which on iOS is granted by code signing — an unsigned
+    /// build gets no Keychain at all. Without the number this surfaces as
+    /// "could not update the token", which reads like a transient failure
+    /// worth retrying, and retrying an unsigned build never works.
+    private static func describe(_ status: OSStatus, verb: String) -> String {
+        let detail = SecCopyErrorMessageString(status, nil) as String? ?? "no detail"
+        if status == errSecMissingEntitlement {
+            return "Keychain refused to \(verb) the Google sign-in token: this build has no "
+                + "keychain entitlement (\(status)). On iOS that comes from code signing — an "
+                + "unsigned build cannot store a token no matter how well sign-in went."
+        }
+        return "Could not \(verb) the Google sign-in token in Keychain: \(detail) (\(status))."
     }
 
     func remove(account: String) {

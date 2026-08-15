@@ -74,8 +74,15 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: true
-        CODE_SIGNING_REQUIRED: false
-        CODE_SIGNING_ALLOWED: false
+        # Signed for the Keychain, not for distribution. iOS gates Keychain
+        # access behind the `application-identifier` entitlement, and only
+        # code signing grants it — so with signing off, Google sign-in
+        # completes, exchanges the code, and then cannot store the refresh
+        # token: SecItemAdd returns errSecMissingEntitlement (-34018) and the
+        # coach is told to sign in again, forever. This target used to set
+        # CODE_SIGNING_ALLOWED: false, which is why.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 9LTFHV87LB
     # Declared here so xcodegen writes a *shared* scheme with the UI tests
     # attached. Without it xcodebuild autocreates a scheme that builds but
     # cannot `test`, and `xcodebuild test -scheme SkiVideoViewer-iPad` finds
