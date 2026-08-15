@@ -110,7 +110,34 @@ struct GoogleDriveSheet: View {
     /// `signInSection` can say so instead of offering a button that reaches
     /// Google only to be refused as a misconfigured client.
     private static func makeProvider() -> GoogleDriveProvider? {
-        guard let configuration = GoogleClientSecretsLoader.load() else { return nil }
+        guard let configuration = configuration() else { return nil }
         return GoogleDriveProvider(configuration: configuration)
+    }
+
+    /// Where each platform's OAuth client comes from — and they genuinely
+    /// differ, rather than one being a fallback for the other.
+    ///
+    /// macOS reads a Desktop client from a `client_secret_*.json` beside the
+    /// repo, which keeps a credential out of git and lets the file be swapped
+    /// without a rebuild. iPadOS cannot: it has no home directory to search,
+    /// and no such file exists on a device. Its client is compiled in.
+    ///
+    /// They are also different *clients*, not the same one reached two ways.
+    /// Google issues an iOS client no secret and refuses it a loopback
+    /// redirect — blocked since October 2022 — so the iPad redirects through
+    /// the reverse-DNS scheme in `IOSOAuthPresenter.callbackScheme` while the
+    /// Mac keeps its loopback listener.
+    private static func configuration() -> GoogleOAuthConfiguration? {
+        #if os(macOS)
+        return GoogleClientSecretsLoader.load()
+        #else
+        return GoogleOAuthConfiguration(
+            clientID: "1075094033080-autj2djudlifsgtr0rd51910531ig1qt.apps.googleusercontent.com",
+            // Google issues none for an iOS client, and sending an empty one
+            // is rejected — which is why the field is optional at all.
+            clientSecret: nil,
+            redirectKind: .customScheme(IOSOAuthPresenter.callbackScheme)
+        )
+        #endif
     }
 }

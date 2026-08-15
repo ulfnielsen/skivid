@@ -29,7 +29,7 @@ final class IOSOAuthPresenter: NSObject, OAuthPresenter {
     /// `ch.ski.video-viewer.ipad` — the human partner has a Desktop client
     /// only. Sign-in cannot succeed until one is registered and this string
     /// is replaced with the real reversed client id.
-    static let callbackScheme = "com.googleusercontent.apps.REPLACE-WITH-IOS-CLIENT-ID"
+    static let callbackScheme = "com.googleusercontent.apps.1075094033080-autj2djudlifsgtr0rd51910531ig1qt"
 
     /// Kept alive for the duration of the flow — `ASWebAuthenticationSession`
     /// does not retain itself, and a session deallocated mid-flight cancels
