@@ -77,6 +77,20 @@ class Probe(NamedTuple):
     pix_fmt: str
     duration: float
     has_audio: bool
+    width: int = 0
+    height: int = 0
+
+    @property
+    def has_odd_dimension(self) -> bool:
+        """4:2:0 stores chroma at half resolution in both axes, so libx264
+        refuses an odd width or height outright: "width not divisible by 2".
+
+        Real footage hits this — a phone clip through resize_video.py came out
+        1215x2160 — and the original is 4:4:4, where the constraint does not
+        apply, which is exactly why it survived the first encode and fails this
+        one.
+        """
+        return self.width % 2 == 1 or self.height % 2 == 1
 
     @property
     def unsupported_reason(self) -> Optional[str]:
@@ -135,10 +149,12 @@ def probe(path: Path) -> Optional[Probe]:
         pix_fmt=video.get("pix_fmt", ""),
         duration=duration,
         has_audio=any(s.get("codec_type") == "audio" for s in streams),
+        width=int(video.get("width") or 0),
+        height=int(video.get("height") or 0),
     )
 
 
-def reencode(source: Path, destination: Path) -> None:
+def reencode(source: Path, destination: Path, original: Probe, crf: int) -> None:
     """Convert to 8-bit 4:2:0, changing nothing else that can be preserved.
 
     Audio is stream-copied rather than re-encoded: it decodes fine already, and
@@ -149,13 +165,17 @@ def reencode(source: Path, destination: Path) -> None:
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(source),
+    ]
+    if original.has_odd_dimension:
+        # Rounds down to the nearest even size, losing at most one row or
+        # column. Applied only when needed: an unconditional scale filter would
+        # put every clip in the library through the scaler for nothing.
+        command += ["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+    command += [
         "-c:v", "libx264",
         "-profile:v", "high",
         "-pix_fmt", TARGET_PIX_FMT,
-        # Visually lossless for camera footage, and this is a one-off pass over
-        # clips that were already encoded once — worth spending bits to avoid a
-        # visible second generation.
-        "-crf", "18",
+        "-crf", str(crf),
         "-preset", "medium",
         "-c:a", "copy",
         "-movflags", "+faststart",
@@ -173,6 +193,15 @@ def verify(original: Probe, converted_path: Path) -> Optional[str]:
         return f"converted file is {result.pix_fmt}, expected {TARGET_PIX_FMT}"
     if result.unsupported_reason is not None:
         return f"converted file is still unplayable ({result.unsupported_reason})"
+    if original.has_odd_dimension:
+        # At most one row or column was trimmed to reach an even size.
+        if abs(result.width - original.width) > 1 or abs(result.height - original.height) > 1:
+            return (
+                f"converted size {result.width}x{result.height} is not the expected "
+                f"even-rounded {original.width}x{original.height}"
+            )
+    elif (result.width, result.height) != (original.width, original.height):
+        return f"converted size {result.width}x{result.height} != {original.width}x{original.height}"
     if original.has_audio and not result.has_audio:
         return "conversion lost the audio track"
     if original.duration == original.duration:  # not NaN
@@ -194,7 +223,7 @@ def local_videos(root: Path) -> Iterator[Path]:
             yield path
 
 
-def convert_local(path: Path, *, apply: bool) -> str:
+def convert_local(path: Path, *, apply: bool, crf: int) -> str:
     original = probe(path)
     if original is None:
         return f"SKIP  {path} (unreadable)"
@@ -207,7 +236,7 @@ def convert_local(path: Path, *, apply: bool) -> str:
     with tempfile.TemporaryDirectory() as directory:
         converted = Path(directory) / path.name
         try:
-            reencode(path, converted)
+            reencode(path, converted, original, crf)
         except subprocess.CalledProcessError as error:
             return f"FAIL  {path}: ffmpeg failed: {error.stderr.strip()[:200]}"
         problem = verify(original, converted)
@@ -303,7 +332,7 @@ def index_videos(index_path: Path) -> list[dict]:
     return clips
 
 
-def convert_drive_file(service, item: dict, *, apply: bool) -> str:
+def convert_drive_file(service, item: dict, *, apply: bool, crf: int) -> str:
     from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
     name = item["name"]
@@ -341,7 +370,7 @@ def convert_drive_file(service, item: dict, *, apply: bool) -> str:
 
         converted = Path(directory) / f"converted-{name}"
         try:
-            reencode(downloaded, converted)
+            reencode(downloaded, converted, original, crf)
         except subprocess.CalledProcessError as error:
             return f"FAIL  {label}: ffmpeg failed: {error.stderr.strip()[:200]}"
         problem = verify(original, converted)
@@ -446,6 +475,15 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         help="Actually convert. Without it nothing is written and every clip is only reported.",
     )
     parser.add_argument(
+        "--crf",
+        type=int,
+        default=21,
+        help="x264 quality, lower is better. Default 21, chosen by measuring a real "
+             "1080p50 clip from the library: it lands within 1%% of the source file "
+             "size at 46.1dB PSNR / 0.986 SSIM. CRF 18 measured 47.5dB — "
+             "indistinguishable — for 47%% more storage.",
+    )
+    parser.add_argument(
         "--sample",
         type=int,
         metavar="N",
@@ -483,7 +521,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     counts = {"FIXED": 0, "WOULD": 0, "OK": 0, "FAIL": 0, "SKIP": 0}
     if args.local:
         for path in local_videos(args.local):
-            line = convert_local(path, apply=args.apply)
+            line = convert_local(path, apply=args.apply, crf=args.crf)
             print(line, flush=True)
             counts[line.split()[0]] += 1
     elif args.from_index:
@@ -510,7 +548,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             args.client_secrets or default_client_secrets(), args.token, args.scope
         )
         for item in clips:
-            line = convert_drive_file(service, item, apply=args.apply)
+            line = convert_drive_file(service, item, apply=args.apply, crf=args.crf)
             print(line, flush=True)
             counts[line.split()[0]] += 1
     else:
@@ -519,7 +557,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         )
         try:
             for item in drive_videos(service, args.drive_folder):
-                line = convert_drive_file(service, item, apply=args.apply)
+                line = convert_drive_file(service, item, apply=args.apply, crf=args.crf)
                 print(line, flush=True)
                 counts[line.split()[0]] += 1
         except Exception as error:  # googleapiclient.errors.HttpError and friends
