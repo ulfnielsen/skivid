@@ -117,6 +117,41 @@ final class SortingModelPublisherTests: XCTestCase {
         XCTAssertEqual(model.queuedResizes, 0, "a collision must not enqueue a resize job")
     }
 
+    /// A read-only session must write its resize somewhere that is not the
+    /// card. Fails if `keepsSourceIntact` is ignored and the session still
+    /// builds a `LocalFolderPublisher` over the source — the mistake that
+    /// would put `organized/` on a coach's SD card.
+    func testAReadOnlySessionWritesNothingToTheSource() async throws {
+        let card = root.appendingPathComponent("DCIM")
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try Data(repeating: 0, count: 16).write(to: card.appendingPathComponent("C0001.MP4"))
+        let before = try FileManager.default.contentsOfDirectory(atPath: card.path)
+        let output = root.appendingPathComponent("app-storage")
+
+        let model = await MainActor.run { () -> SortingModel in
+            let model = SortingModel(mediaPipeline: FakeMediaPipeline())
+            model.sourcePath = card.path
+            model.eventTitle = "Brunni"
+            model.keepsSourceIntact = true
+            model.outputRoot = output
+            model.beginSorting()
+            return model
+        }
+        await MainActor.run {
+            model.athleteQuery = "Ada Example"
+            model.addNewAthleteAndTag()
+        }
+
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: card.path), before,
+            "a read-only session must leave the card exactly as it found it"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: output.path),
+            "the resize target directory should have been created under the output root"
+        )
+    }
+
     private func makeSource(named name: String) throws -> URL {
         let url = root.appendingPathComponent(name)
         try Data(repeating: 0, count: 16).write(to: url)

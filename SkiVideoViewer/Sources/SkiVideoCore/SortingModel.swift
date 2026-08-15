@@ -26,6 +26,13 @@ public final class SortingModel: ObservableObject {
     @Published public private(set) var status = "Choose a folder of raw clips."
     @Published public var errorMessage: String?
     @Published public private(set) var completedOutputDirectory: URL?
+    /// True when the source must not be written to — an SD card still holding
+    /// the only copy of a session. Set before `beginSorting`.
+    @Published public var keepsSourceIntact = false
+    /// Where a source-preserving session writes its resizes. Ignored when
+    /// `keepsSourceIntact` is false, because that session writes beside the
+    /// source the way it always has.
+    @Published public var outputRoot: URL = SortingModel.defaultOutputRoot()
 
     public let player = AVPlayer()
     private let resizeQueue: OperationQueue = {
@@ -80,6 +87,14 @@ public final class SortingModel: ObservableObject {
         // keys. An input source that is live from construction would, hence the
         // explicit disable here.
         input?.setEnabled(false)
+    }
+
+    /// The app's Documents directory, which on iPadOS is what
+    /// `UIFileSharingEnabled` exposes under "On My iPad" in Files — so a
+    /// coach can reach the results without this app's help.
+    static func defaultOutputRoot() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Sorted", isDirectory: true)
     }
 
     public var currentVideo: URL? {
@@ -175,12 +190,21 @@ public final class SortingModel: ObservableObject {
             eventDate = SortingLibrary.suggestedEventDate(from: videos[0])
             eventFolder = try SortingLibrary.eventFolder(date: eventDate, title: eventTitle)
             sourceDirectory = source
-            let resizedRoot = source.appendingPathComponent("organized_resize", isDirectory: true)
-            resizedDirectory = resizedRoot
-            publisher = LocalFolderPublisher(
-                organizedRoot: source.appendingPathComponent("organized", isDirectory: true),
-                resizedRoot: resizedRoot
-            )
+            if keepsSourceIntact {
+                // `resizedDirectory` is set from the same root handed to the
+                // publisher below, not derived separately — a read-only
+                // session's resize never lands under `source`, so
+                // `completedOutputDirectory` must not point there either.
+                resizedDirectory = outputRoot
+                publisher = ReadOnlySourcePublisher(resizedRoot: outputRoot)
+            } else {
+                let resizedRoot = source.appendingPathComponent("organized_resize", isDirectory: true)
+                resizedDirectory = resizedRoot
+                publisher = LocalFolderPublisher(
+                    organizedRoot: source.appendingPathComponent("organized", isDirectory: true),
+                    resizedRoot: resizedRoot
+                )
+            }
             rawVideos = videos
             currentIndex = 0
             queuedResizes = 0
