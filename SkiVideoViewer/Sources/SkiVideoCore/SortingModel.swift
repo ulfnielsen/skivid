@@ -36,7 +36,15 @@ public final class SortingModel: ObservableObject {
         return queue
     }()
     private var sourceDirectory: URL?
-    private var organizedDirectory: URL?
+    /// The session's end-stage. Nil until `beginSorting` chooses one.
+    ///
+    /// Defaults to `LocalFolderPublisher` over directories derived from the
+    /// source, which is exactly what this model did inline before the seam
+    /// existed — so a Mac session behaves identically.
+    private var publisher: ClipPublisher?
+    /// Kept alongside `publisher` purely so `completeIfPossible` can report
+    /// where the resized library landed; `ClipPublisher` does not expose its
+    /// root back out.
     private var resizedDirectory: URL?
     private var eventFolder = ""
     private var taggingFinished = false
@@ -167,8 +175,12 @@ public final class SortingModel: ObservableObject {
             eventDate = SortingLibrary.suggestedEventDate(from: videos[0])
             eventFolder = try SortingLibrary.eventFolder(date: eventDate, title: eventTitle)
             sourceDirectory = source
-            organizedDirectory = source.appendingPathComponent("organized", isDirectory: true)
-            resizedDirectory = source.appendingPathComponent("organized_resize", isDirectory: true)
+            let resizedRoot = source.appendingPathComponent("organized_resize", isDirectory: true)
+            resizedDirectory = resizedRoot
+            publisher = LocalFolderPublisher(
+                organizedRoot: source.appendingPathComponent("organized", isDirectory: true),
+                resizedRoot: resizedRoot
+            )
             rawVideos = videos
             currentIndex = 0
             queuedResizes = 0
@@ -195,32 +207,20 @@ public final class SortingModel: ObservableObject {
             return
         }
         guard let video = currentVideo,
-              let organizedDirectory,
-              let resizedDirectory,
+              let publisher,
               let athlete = resolvedAthlete else {
             status = "Keep typing until one athlete matches, or add a new athlete."
             return
         }
         do {
             let athlete = try SortingLibrary.athleteFolderName(athlete)
-            let organizedTarget = organizedDirectory
-                .appendingPathComponent(eventFolder, isDirectory: true)
-                .appendingPathComponent(athlete, isDirectory: true)
-                .appendingPathComponent(video.lastPathComponent)
-            let resizedTarget = resizedDirectory
-                .appendingPathComponent(eventFolder, isDirectory: true)
-                .appendingPathComponent(athlete, isDirectory: true)
-                .appendingPathComponent(video.lastPathComponent)
-            guard !FileManager.default.fileExists(atPath: organizedTarget.path),
-                  !FileManager.default.fileExists(atPath: resizedTarget.path) else {
-                throw SortingError.outputExists(organizedTarget.path)
-            }
-            try FileManager.default.createDirectory(
-                at: organizedTarget.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+            let targets = try publisher.prepare(source: video, athlete: athlete, event: eventFolder)
+            enqueueResize(
+                source: targets.resizeSource,
+                destination: targets.resizeDestination,
+                athlete: athlete,
+                skipSourceMetadata: publisher.maySkipSourceMetadata
             )
-            try FileManager.default.moveItem(at: video, to: organizedTarget)
-            enqueueResize(source: organizedTarget, destination: resizedTarget, athlete: athlete)
             athleteQuery = ""
             removeCurrentVideo()
         } catch {
@@ -302,7 +302,7 @@ public final class SortingModel: ObservableObject {
         }
     }
 
-    private func enqueueResize(source: URL, destination: URL, athlete: String) {
+    private func enqueueResize(source: URL, destination: URL, athlete: String, skipSourceMetadata: Bool) {
         queuedResizes += 1
         let pipeline = mediaPipeline
         resizeQueue.addOperation { [weak self] in
@@ -310,7 +310,13 @@ public final class SortingModel: ObservableObject {
             let box = ResultBox()
             Task.detached {
                 do {
-                    try await pipeline.writeMetadata(athlete: athlete, to: source)
+                    if !skipSourceMetadata {
+                        // Writes an athlete tag into the *original*. Skipped for
+                        // a read-only source: on an SD card this is a write to
+                        // the only archive of the session, and failing here
+                        // would abort a clip that resizes perfectly well.
+                        try await pipeline.writeMetadata(athlete: athlete, to: source)
+                    }
                     try await pipeline.resize(
                         source: source,
                         destination: destination,
