@@ -154,16 +154,27 @@ struct GoogleDriveSheet: View {
                         .disabled(clientIDField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
-                // The two values a club cannot guess. Everything else about
-                // the setup is in the linked walkthrough, so this stays short
-                // enough to read standing up at a race.
-                Text("In Google Cloud Console, create an OAuth client of type **iOS** with "
-                     + "bundle ID `\(ClubOAuthClientStore.redirectScheme)`, and give its consent "
-                     + "screen the scope `drive.readonly` with audience **Internal**. "
-                     + "Full walkthrough: docs/google-oauth-club-setup.md")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The values a club cannot guess. Everything else is in the
+                // linked walkthrough, so this stays short enough to read
+                // standing up at a race.
+                //
+                // Deliberately no markdown: SwiftUI parses it only in string
+                // *literals*, and these were once written as `+`-concatenated
+                // expressions, which put "type **iOS**" on screen with the
+                // asterisks showing. Structure carries the emphasis instead —
+                // and the bundle id gets its own line so it can be selected
+                // and copied, which is what someone mid-setup actually wants.
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("In Google Cloud Console, create an OAuth client of type iOS with this bundle ID:")
+                    Text(ClubOAuthClientStore.redirectScheme)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                    Text("Set its consent screen to audience Internal, with the scope drive.readonly. "
+                         + "Full walkthrough: docs/google-oauth-club-setup.md")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 8)
         } label: {

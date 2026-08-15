@@ -108,5 +108,8 @@ targets:
         GENERATE_INFOPLIST_FILE: true
         TARGETED_DEVICE_FAMILY: "2"
         TEST_TARGET_NAME: SkiVideoViewer-iPad
-        CODE_SIGNING_REQUIRED: false
-        CODE_SIGNING_ALLOWED: false
+        # Matches the app target's signing. A signed app under test cannot be
+        # launched by an unsigned runner, and the app must be signed at all
+        # because iOS grants Keychain access only through an entitlement.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 9LTFHV87LB
