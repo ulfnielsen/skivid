@@ -53,6 +53,16 @@ UNSUPPORTED_PROFILES = {
     "High 4:4:4 Predictive": "10-bit 4:4:4",
 }
 
+# Codecs AVFoundation decodes on iOS without help. HEVC is here because that is
+# what an iPhone or a modern camera writes, and a club's Drive fills up with it
+# as soon as anyone uploads their own footage — flagging those would mean
+# re-encoding clips that already play perfectly.
+#
+# Everything absent from this list is treated as unplayable, which is the safe
+# direction: VP9 and AV1 in particular arrive from browser and editor exports
+# and AVPlayer cannot open either.
+NATIVELY_PLAYABLE_CODECS = {"hevc", "h264", "mpeg4", "mjpeg"}
+
 # What resize_video.py pins its output to, and what this converts to.
 TARGET_PIX_FMT = "yuv420p"
 
@@ -70,12 +80,22 @@ class Probe(NamedTuple):
 
     @property
     def unsupported_reason(self) -> Optional[str]:
-        """Why an iPad cannot play this, or None if it can."""
-        if self.codec != "h264":
-            # HEVC Main10 decodes fine on iOS; a bit-depth rule written across
-            # codecs would flag clips that play.
+        """Why an iPad cannot play this, or None if it can.
+
+        Two populations end up in a club's Drive and they fail differently.
+        Clips this pipeline produced are H.264, and the ones from before
+        2026-08-01 are in profiles iOS has no decoder for. Clips a coach
+        uploaded from a phone or laptop are whatever their device exports —
+        usually HEVC, which iOS plays natively, but a browser or editor export
+        can be VP9 or AV1, which AVFoundation does not decode at all.
+        """
+        if self.codec == "h264":
+            return UNSUPPORTED_PROFILES.get(self.profile)
+        if self.codec in NATIVELY_PLAYABLE_CODECS:
             return None
-        return UNSUPPORTED_PROFILES.get(self.profile)
+        # Anything else: AVPlayer has no decoder, so it is as unplayable as the
+        # 4:4:4 clips even though it got there a completely different way.
+        return self.codec or "an unrecognised codec"
 
 
 def probe(path: Path) -> Optional[Probe]:
@@ -232,6 +252,42 @@ def drive_videos(service, folder_id: str) -> Iterator[dict]:
                 break
 
 
+def default_index_path() -> Optional[Path]:
+    """The app's own index of the library, if exactly one is present.
+
+    `~/Library/Application Support/SkiVideoViewer/RemoteLibrary/<key>.skiindex.json`
+    is written per Drive root, so more than one means more than one library and
+    the caller has to say which.
+    """
+    directory = (
+        Path.home() / "Library" / "Application Support"
+        / "SkiVideoViewer" / "RemoteLibrary"
+    )
+    matches = sorted(directory.glob("*.skiindex.json")) if directory.is_dir() else []
+    return matches[0] if len(matches) == 1 else None
+
+
+def index_videos(index_path: Path) -> list[dict]:
+    """Every clip SkiVideoViewer knows about, from its own index.
+
+    Preferred over walking folders, because the two can disagree and only this
+    one matters: it is precisely the set the app will try to play. Folder
+    traversal additionally depends on what the OAuth scope can *see* —
+    `drive.file` reaches only files its client uploaded — so a library that
+    reached Drive by more than one route enumerates short, silently, and
+    reports success over a partial run.
+    """
+    data = json.loads(index_path.read_text())
+    files = data.get("files", [])
+    if not files:
+        raise SystemExit(f"{index_path} lists no files — is it the right index?")
+    return [
+        {"id": entry["id"], "name": entry.get("name", entry["id"]), "path": entry.get("path", "")}
+        for entry in files
+        if Path(entry.get("name", "")).suffix.lower() in VIDEO_SUFFIXES
+    ]
+
+
 def convert_drive_file(service, item: dict, *, apply: bool) -> str:
     from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
@@ -239,11 +295,20 @@ def convert_drive_file(service, item: dict, *, apply: bool) -> str:
     with tempfile.TemporaryDirectory() as directory:
         downloaded = Path(directory) / name
         request = service.files().get_media(fileId=item["id"], supportsAllDrives=True)
-        with open(downloaded, "wb") as handle:
-            downloader = MediaIoBaseDownload(handle, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
+        try:
+            with open(downloaded, "wb") as handle:
+                downloader = MediaIoBaseDownload(handle, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+        except Exception as error:
+            # One unreachable clip must not end a run over hundreds. A 403 here
+            # usually means --scope drive.file cannot reach a file this client
+            # did not upload; the summary counts it so a partial run cannot
+            # pass for a complete one.
+            status = getattr(getattr(error, "resp", None), "status", None)
+            detail = f"HTTP {status}" if status else type(error).__name__
+            return f"FAIL  {name}: could not download ({detail})"
 
         original = probe(downloaded)
         if original is None:
@@ -346,10 +411,27 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--local", type=Path, help="Directory tree to convert in place")
     source.add_argument("--drive-folder", help="Drive folder or shared drive id to convert in place")
+    source.add_argument(
+        "--from-index",
+        nargs="?",
+        const="auto",
+        metavar="PATH",
+        help="Take the clip list from SkiVideoViewer's own index instead of walking "
+             "folders — the authoritative set, since it is exactly what the app plays. "
+             "Defaults to the one under ~/Library/Application Support/SkiVideoViewer.",
+    )
     parser.add_argument(
         "--apply",
         action="store_true",
         help="Actually convert. Without it nothing is written and every clip is only reported.",
+    )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        metavar="N",
+        help="Only look at the first N clips. A clip's codec cannot be known without "
+             "its bytes, so a full Drive dry run downloads the whole library — tens of "
+             "gigabytes — to answer a question a handful of clips usually settles.",
     )
     parser.add_argument(
         "--client-secrets",
@@ -382,6 +464,33 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     if args.local:
         for path in local_videos(args.local):
             line = convert_local(path, apply=args.apply)
+            print(line, flush=True)
+            counts[line.split()[0]] += 1
+    elif args.from_index:
+        index_path = (
+            default_index_path() if args.from_index == "auto" else Path(args.from_index)
+        )
+        if index_path is None or not index_path.is_file():
+            raise SystemExit(
+                "No SkiVideoViewer index found. Open the club library in the app "
+                "once so it writes one, or pass the path: --from-index <file>.skiindex.json"
+            )
+        clips = index_videos(index_path)
+        total = len(clips)
+        if args.sample:
+            clips = clips[: args.sample]
+        # Says what was left out. A cap that reports only what it looked at
+        # reads as "the library is fine" when it means "these few were".
+        print(
+            f"{total} clips in {index_path.name}"
+            + (f" — looking at the first {len(clips)}\n" if args.sample else "\n"),
+            flush=True,
+        )
+        service = build_drive_service(
+            args.client_secrets or default_client_secrets(), args.token, args.scope
+        )
+        for item in clips:
+            line = convert_drive_file(service, item, apply=args.apply)
             print(line, flush=True)
             counts[line.split()[0]] += 1
     else:
@@ -421,6 +530,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         f"{counts['WOULD'] + counts['FIXED']} need converting, "
         f"{counts['FAIL']} failed, {counts['SKIP']} skipped."
     )
+    # The failure mode this guards against is a run that looks complete and is
+    # not: with --scope drive.file every clip a coach uploaded themselves is
+    # unreachable, and without this the only sign is a FAIL line that scrolled
+    # past hundreds of clips ago.
+    if counts["FAIL"] and args.scope == "drive.file":
+        print(
+            f"\n{counts['FAIL']} clips could not be handled. If they are ones people "
+            f"uploaded to Drive themselves rather than through upload_to_drive.py, "
+            f"that is expected: --scope drive.file only reaches files this OAuth "
+            f"client created. Re-run with --scope drive to cover them.",
+            file=sys.stderr,
+        )
     # A failure is worth a non-zero exit: over hundreds of clips the summary
     # scrolls away, and this is what a wrapping script can act on.
     return 1 if counts["FAIL"] else 0
