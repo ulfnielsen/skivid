@@ -20,6 +20,7 @@ final class SecondaryScreensTests: XCTestCase {
         }
 
         func presentSorting(
+            libraryAthletes: [AthleteGroup],
             openResizedLibrary: @escaping (URL) -> Void,
             onClose: @escaping () -> Void
         ) {
@@ -41,6 +42,7 @@ final class SecondaryScreensTests: XCTestCase {
         ) {}
 
         func presentSorting(
+            libraryAthletes: [AthleteGroup],
             openResizedLibrary: @escaping (URL) -> Void,
             onClose: @escaping () -> Void
         ) {}
@@ -71,7 +73,7 @@ final class SecondaryScreensTests: XCTestCase {
         // The view hides the buttons, but a stray call must not trap.
         let presenter = UnavailablePresenter()
         presenter.presentComparison(initialLeftVideo: nil, openLibrary: [], prepare: { _ in nil }) {}
-        presenter.presentSorting(openResizedLibrary: { _ in }) {}
+        presenter.presentSorting(libraryAthletes: [], openResizedLibrary: { _ in }) {}
         XCTAssertEqual(presenter.comparisonCalls, 1)
         XCTAssertEqual(presenter.sortingCalls, 1)
     }

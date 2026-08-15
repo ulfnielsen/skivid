@@ -593,6 +593,7 @@ private final class NoSecondaryScreens: SecondaryScreenPresenter {
     }
 
     func presentSorting(
+        libraryAthletes: [AthleteGroup],
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {

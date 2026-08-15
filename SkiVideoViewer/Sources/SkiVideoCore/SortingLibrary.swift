@@ -82,8 +82,14 @@ public enum SortingLibrary {
         return names.filter { normalized($0).contains(key) }.prefix(8).map { $0 }
     }
 
-    private static func normalized(_ value: String) -> String {
-        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    /// Case- and whitespace-insensitive comparison key for an athlete name.
+    ///
+    /// Internal rather than private: `AthleteRoster` de-duplicates a library
+    /// name against a locally-added one with the same treatment, and must not
+    /// grow a second normaliser that could drift from this one.
+    static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 }
 

@@ -62,19 +62,30 @@ public final class SortingModel: ObservableObject {
     /// a folder picker cannot open the two "Choose…" panels.
     private let input: PlaybackInputSource?
     private let folderPicker: FolderPicker?
+    /// The open library's athlete names, one per (athlete, event) pair —
+    /// snapshotted at construction, the same way `defaultNamesURL` is read
+    /// once rather than watched. `reloadNames()` merges it with the names
+    /// file and `AthleteRoster`'s local additions every time either changes.
+    private let libraryAthletes: [AthleteGroup]
 
     /// `defaultNamesURL` is injected rather than derived: `~/Ski/athletes.txt`
     /// is a macOS convention, and the core must not assume a home-directory
     /// layout. Nil, or a path that does not exist, leaves the field empty.
+    ///
+    /// `libraryAthletes` defaults to empty so existing callers — mostly tests
+    /// — are unaffected; both app call sites pass the open library's
+    /// `ViewerModel.athletes` explicitly.
     public init(
         mediaPipeline: MediaPipeline,
         input: PlaybackInputSource? = nil,
         folderPicker: FolderPicker? = nil,
-        defaultNamesURL: URL? = nil
+        defaultNamesURL: URL? = nil,
+        libraryAthletes: [AthleteGroup] = []
     ) {
         self.mediaPipeline = mediaPipeline
         self.input = input
         self.folderPicker = folderPicker
+        self.libraryAthletes = libraryAthletes
         namesPath = defaultNamesURL.map { url in
             FileManager.default.fileExists(atPath: url.path) ? url.path : ""
         } ?? ""
@@ -162,11 +173,22 @@ public final class SortingModel: ObservableObject {
         reloadNames()
     }
 
+    /// Both platforms get library names: this is additive, not a
+    /// replacement. A Mac session keeps whatever `athletes.txt` provides —
+    /// `SortingLibrary.athleteNames(from:)`, unchanged, in the file's own
+    /// order, which existing tests pin — and gains the open library's names,
+    /// plus any added locally on this device, on top: appended after, not
+    /// interleaved, and not used to re-sort the file's list. An iPad session
+    /// has no names file, so the roster is its only source.
     public func reloadNames() {
         let url = namesPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : URL(fileURLWithPath: namesPath)
-        athleteNames = SortingLibrary.athleteNames(from: url)
+        let fileNames = SortingLibrary.athleteNames(from: url)
+        let rosterNames = AthleteRoster.merged(library: libraryAthletes)
+        let fileKeys = Set(fileNames.map(SortingLibrary.normalized))
+        let namesOnlyInRoster = rosterNames.filter { !fileKeys.contains(SortingLibrary.normalized($0)) }
+        athleteNames = fileNames + namesOnlyInRoster
     }
 
     /// Internal: the model subscribes itself to `input.onIntent`, so nothing
@@ -315,14 +337,25 @@ public final class SortingModel: ObservableObject {
     }
 
     /// Appends the new name to the on-disk `athletes.txt` so future sessions
-    /// see it too. Skipped entirely when `keepsSourceIntact` is true: on
-    /// iPad, `namesPath` comes from the same Files picker the coach used to
-    /// choose the source, which reopens wherever they last were — often the
-    /// SD card itself. A read-only session must not write there, even to
-    /// append one line, so the new name only lives in `athleteNames` for the
-    /// rest of this session, which `addNewAthleteAndTag` already updated.
+    /// see it too — unless `keepsSourceIntact` is true. On iPad, `namesPath`
+    /// comes from the same Files picker the coach used to choose the source,
+    /// which reopens wherever they last were — often the SD card itself. A
+    /// read-only session must not write there, even to append one line, so
+    /// it writes the name to `AthleteRoster` instead: local Application
+    /// Support storage, not the card, and still there next time this athlete
+    /// has no clips yet to be found by library scanning alone.
     private func persistNewAthlete(_ athlete: String) {
-        guard !keepsSourceIntact else { return }
+        guard !keepsSourceIntact else {
+            do {
+                try AthleteRoster.addLocally(athlete)
+            } catch {
+                // The tag is still valid for this session even if it could
+                // not be remembered for the next one — matching the
+                // athletes.txt failure path below.
+                status = "Added \(athlete) for this session (could not save it for next time)."
+            }
+            return
+        }
         let path = namesPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return }
         let url = URL(fileURLWithPath: path)

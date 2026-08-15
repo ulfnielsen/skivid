@@ -24,14 +24,24 @@ final class SortingModelPublisherTests: XCTestCase {
     private var root: URL!
     private var namesFile: URL!
 
+    private var previousAthleteRosterStoreRoot: URL!
+
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("sorting-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         namesFile = root.appendingPathComponent("athletes.txt")
+        // `testAReadOnlySessionWritesNothingToTheSource` calls
+        // `addNewAthleteAndTag()` with `keepsSourceIntact = true`, which now
+        // routes through `AthleteRoster.addLocally` — this must not write into
+        // the developer's real Application Support. See `AthleteRosterTests`
+        // for the same guard's rationale.
+        previousAthleteRosterStoreRoot = AthleteRoster.storeRoot
+        AthleteRoster.storeRoot = root.appendingPathComponent("AthleteRoster", isDirectory: true)
     }
 
     override func tearDownWithError() throws {
+        AthleteRoster.storeRoot = previousAthleteRosterStoreRoot
         try? FileManager.default.removeItem(at: root)
         root = nil
         namesFile = nil

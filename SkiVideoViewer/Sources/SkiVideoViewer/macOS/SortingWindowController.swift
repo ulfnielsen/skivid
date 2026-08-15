@@ -9,8 +9,15 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
 
     /// `@MainActor` because it now builds the two `@MainActor` seam instances
     /// the sorting model needs. Every caller is already on the main actor.
+    ///
+    /// `libraryAthletes` comes from the already-open `ViewerModel.athletes` —
+    /// see `MacSecondaryScreenPresenter.presentSorting`. If a window is
+    /// already showing, this call's names are dropped along with its other
+    /// parameters; that mirrors the existing early return below and is not
+    /// new to this change.
     @MainActor
     func show(
+        libraryAthletes: [AthleteGroup],
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -49,6 +56,7 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
             // assume a home-directory layout, so the platform supplies it.
             defaultNamesURL: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Ski/athletes.txt"),
+            libraryAthletes: libraryAthletes,
             // Unchanged Mac behaviour: the source is a folder on this Mac, not
             // a card, so the session still organizes it in place.
             // `outputRoot` is passed for the pairing's sake even though it is

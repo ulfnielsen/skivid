@@ -136,6 +136,7 @@ struct ContentView: View {
                 Button {
                     model.setKeyboardControlsEnabled(false)
                     secondaryScreens.presentSorting(
+                        libraryAthletes: model.athletes,
                         openResizedLibrary: { outputDirectory in
                             model.openDirectory(outputDirectory)
                         },

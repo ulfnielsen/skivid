@@ -14,6 +14,11 @@ struct SortingSheet: View {
     /// wrong. Requiring both forces every call site — the Mac window
     /// controller included — to state the pairing outright, even when the
     /// answer is `(false, SortingModel.defaultOutputRoot())`, same as before.
+    /// `libraryAthletes` has no default, unlike `SortingModel`'s own
+    /// parameter of the same name: both call sites — `SortingWindowController`
+    /// on macOS and `SkiVideoViewerApp_iOS`'s full-screen cover — have an open
+    /// `ViewerModel` in scope and must state its `athletes` outright rather
+    /// than silently falling back to an empty roster.
     init(
         isPresented: Binding<Bool>,
         openResizedLibrary: @escaping (URL) -> Void,
@@ -21,6 +26,7 @@ struct SortingSheet: View {
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
         defaultNamesURL: URL?,
+        libraryAthletes: [AthleteGroup],
         keepsSourceIntact: Bool,
         outputRoot: URL
     ) {
@@ -37,7 +43,8 @@ struct SortingSheet: View {
                 mediaPipeline: mediaPipeline,
                 input: input,
                 folderPicker: folderPicker,
-                defaultNamesURL: defaultNamesURL
+                defaultNamesURL: defaultNamesURL,
+                libraryAthletes: libraryAthletes
             )
             sortingModel.keepsSourceIntact = keepsSourceIntact
             sortingModel.outputRoot = outputRoot
@@ -77,7 +84,7 @@ struct SortingSheet: View {
     /// choice of `ClipPublisher`.
     private var setupDescription: String {
         if model.keepsSourceIntact {
-            return "Choose a flat folder of raw clips. The event date is taken from the first video file. The source is left exactly as it is — nothing there is moved, renamed, or edited. Each tagged clip is resized into a copy under organized_resize/<event>/<athlete> in this app's storage, and only that copy carries the athlete metadata. Only one resize runs at a time."
+            return "Choose a flat folder of raw clips. The event date is taken from the first video file. The source is left exactly as it is — nothing there is moved, renamed, or edited. Each tagged clip is resized into a copy under Sorted/<event>/<athlete> in this app's Documents, and only that copy carries the athlete metadata. Only one resize runs at a time."
         }
         return "Choose a flat folder of raw clips. The event date is taken from the first video file. Each tagged clip moves into organized/<event>/<athlete>, gets its athlete metadata written, then is resized into the matching organized_resize folder. Only one resize runs at a time."
     }
