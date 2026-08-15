@@ -7,24 +7,34 @@ struct SortingSheet: View {
     let openResizedLibrary: (URL) -> Void
     @FocusState private var athleteFieldIsFocused: Bool
 
+    /// `keepsSourceIntact` and `outputRoot` have no default here, deliberately:
+    /// `outputRoot` on `SortingModel` is silently ignored whenever
+    /// `keepsSourceIntact` is false, so a default for one and not the other
+    /// would let a call site set just one and never notice the other was
+    /// wrong. Requiring both forces every call site — the Mac window
+    /// controller included — to state the pairing outright, even when the
+    /// answer is `(false, SortingModel.defaultOutputRoot())`, same as before.
     init(
         isPresented: Binding<Bool>,
         openResizedLibrary: @escaping (URL) -> Void,
         mediaPipeline: MediaPipeline,
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
-        defaultNamesURL: URL?
+        defaultNamesURL: URL?,
+        keepsSourceIntact: Bool,
+        outputRoot: URL
     ) {
         _isPresented = isPresented
         self.openResizedLibrary = openResizedLibrary
-        _model = StateObject(
-            wrappedValue: SortingModel(
-                mediaPipeline: mediaPipeline,
-                input: input,
-                folderPicker: folderPicker,
-                defaultNamesURL: defaultNamesURL
-            )
+        let sortingModel = SortingModel(
+            mediaPipeline: mediaPipeline,
+            input: input,
+            folderPicker: folderPicker,
+            defaultNamesURL: defaultNamesURL
         )
+        sortingModel.keepsSourceIntact = keepsSourceIntact
+        sortingModel.outputRoot = outputRoot
+        _model = StateObject(wrappedValue: sortingModel)
     }
 
     var body: some View {

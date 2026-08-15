@@ -34,6 +34,38 @@ struct SkiVideoViewerApp_iOS: App {
                     closeWindow: { secondaryScreens.dismissComparison() }
                 )
             }
+            .fullScreenCover(item: $secondaryScreens.sorting) { request in
+                SortingSheet(
+                    // `SortingSheet` speaks `isPresented`, not `closeWindow`
+                    // like `ComparisonView` — this binding is what lets its
+                    // own Cancel / Open Resized Library buttons close the
+                    // cover the same way clearing `secondaryScreens.sorting`
+                    // does everywhere else.
+                    isPresented: Binding(
+                        get: { secondaryScreens.sorting != nil },
+                        set: { isPresented in
+                            if !isPresented { secondaryScreens.dismissSorting() }
+                        }
+                    ),
+                    openResizedLibrary: request.openResizedLibrary,
+                    mediaPipeline: AVFoundationMediaPipeline(),
+                    // Same inert source as Compare, for the same reason:
+                    // Phase 4 owns iPad input, so this screen is driven by its
+                    // on-screen controls only, same as the Mac's arrow-key
+                    // shortcuts are simply absent here rather than emulated.
+                    input: InertInputSource(),
+                    folderPicker: UIKitFolderPicker(),
+                    // `~/Ski/athletes.txt` is a macOS convention; iPadOS has no
+                    // equivalent default location, so autocomplete starts
+                    // empty until the coach picks a names file explicitly.
+                    defaultNamesURL: nil,
+                    // The one pairing this initializer exists to make explicit:
+                    // an iPad's source is a Files location — very often the SD
+                    // card itself — so this session must never write into it.
+                    keepsSourceIntact: true,
+                    outputRoot: SortingModel.defaultOutputRoot()
+                )
+            }
         }
     }
 }

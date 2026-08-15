@@ -92,7 +92,13 @@ public final class SortingModel: ObservableObject {
     /// The app's Documents directory, which on iPadOS is what
     /// `UIFileSharingEnabled` exposes under "On My iPad" in Files — so a
     /// coach can reach the results without this app's help.
-    static func defaultOutputRoot() -> URL {
+    ///
+    /// `public` so the iPad call site can pass it to `outputRoot` explicitly
+    /// alongside `keepsSourceIntact = true`, rather than relying on it being
+    /// this property's default — `outputRoot` is ignored whenever
+    /// `keepsSourceIntact` is false, so a call site that sets one and not the
+    /// other is easy to get wrong silently.
+    public static func defaultOutputRoot() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Sorted", isDirectory: true)
     }

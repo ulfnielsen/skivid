@@ -1,15 +1,19 @@
 import Foundation
 import SkiVideoCore
 
-/// iPad has no separate windows, so Compare is a full-screen cover: this object
-/// publishes the request and `SkiVideoViewerApp_iOS` renders it.
+/// iPad has no separate windows, so Compare and Sort & Resize are both
+/// full-screen covers: this object publishes the request and
+/// `SkiVideoViewerApp_iOS` renders it.
 ///
-/// Sort stays unavailable, but no longer for the reason it once was: the
-/// pipeline it drives is `AVFoundationMediaPipeline`, which runs in-process and
-/// compiles for iOS. What is missing is the sorting UI itself — the screen is
-/// built around a Mac window and a folder picker that have no iPad counterpart
-/// yet — so there is nothing to present. Reporting `canPresentSorting == false`
-/// keeps its button off the toolbar instead of offering a dead control.
+/// Sort now works on iPad. Its pipeline, `AVFoundationMediaPipeline`, runs
+/// in-process and compiles for iOS; its screen, `SortingSheet`, is plain
+/// SwiftUI with no AppKit dependency, unlike the `SortingWindowController`
+/// that hosts the same view on macOS. An iPad session's source is a Files
+/// location — very often the SD card still holding the only copy of a
+/// training session — so the session built here sets
+/// `SortingModel.keepsSourceIntact = true` and pairs it with `.outputRoot`,
+/// which writes resizes into the app's own storage instead of moving a
+/// coach's originals out of wherever they came from.
 ///
 /// Both flags are constants on purpose: `ContentView` reads them while building
 /// `body` and does not observe this object, so a value that changed at runtime
@@ -26,10 +30,22 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
         let onClose: () -> Void
     }
 
+    /// `Identifiable` for the same reason as `ComparisonRequest`, and, like it,
+    /// carries no `SortingModel` of its own — `SkiVideoViewerApp_iOS` builds
+    /// `SortingSheet` (and the `SortingModel` inside it) when this request is
+    /// consumed, passing `keepsSourceIntact: true` and `outputRoot:` into its
+    /// initializer so both are set before anything is presented.
+    struct SortingRequest: Identifiable {
+        let id = UUID()
+        let openResizedLibrary: (URL) -> Void
+        let onClose: () -> Void
+    }
+
     @Published var comparison: ComparisonRequest?
+    @Published var sorting: SortingRequest?
 
     var canPresentComparison: Bool { true }
-    var canPresentSorting: Bool { false }
+    var canPresentSorting: Bool { true }
 
     func presentComparison(
         initialLeftVideo: URL?,
@@ -49,9 +65,10 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
-        // Sort & Resize needs the AVFoundation pipeline from phase 2. Calling
-        // this is harmless; `canPresentSorting` keeps the button off the
-        // toolbar so it should not happen.
+        sorting = SortingRequest(
+            openResizedLibrary: openResizedLibrary,
+            onClose: onClose
+        )
     }
 
     /// Clears the cover and then runs the request's `onClose`, which is what
@@ -61,6 +78,15 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
     func dismissComparison() {
         let request = comparison
         comparison = nil
+        request?.onClose()
+    }
+
+    /// Mirrors `dismissComparison`: clear first, then run `onClose` exactly
+    /// once so a second `dismissSorting` (SwiftUI can call the cover's
+    /// dismissal path more than once) is a no-op.
+    func dismissSorting() {
+        let request = sorting
+        sorting = nil
         request?.onClose()
     }
 }

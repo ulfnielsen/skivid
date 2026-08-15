@@ -48,7 +48,13 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
             // The macOS convention the model used to hardcode. The core cannot
             // assume a home-directory layout, so the platform supplies it.
             defaultNamesURL: FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Ski/athletes.txt")
+                .appendingPathComponent("Ski/athletes.txt"),
+            // Unchanged Mac behaviour: the source is a folder on this Mac, not
+            // a card, so the session still organizes it in place.
+            // `outputRoot` is passed for the pairing's sake even though it is
+            // ignored while `keepsSourceIntact` is false.
+            keepsSourceIntact: false,
+            outputRoot: SortingModel.defaultOutputRoot()
         )
         let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let window = NSWindow(
