@@ -225,10 +225,13 @@ def convert_local(path: Path, *, apply: bool) -> str:
 
 def drive_videos(service, folder_id: str) -> Iterator[dict]:
     """Every video under a folder or shared drive, recursively."""
-    pending = [folder_id]
+    # Each entry carries the folder names walked to reach it, so a clip can be
+    # reported by where it lives rather than by a camera filename that recurs
+    # across every athlete in the library.
+    pending: list[tuple[str, list[str]]] = [(folder_id, [])]
     seen: set[str] = set()
     while pending:
-        parent = pending.pop()
+        parent, ancestors = pending.pop()
         page_token = None
         while True:
             response = service.files().list(
@@ -244,9 +247,9 @@ def drive_videos(service, folder_id: str) -> Iterator[dict]:
                     continue
                 seen.add(item["id"])
                 if item["mimeType"] == "application/vnd.google-apps.folder":
-                    pending.append(item["id"])
+                    pending.append((item["id"], [*ancestors, item["name"]]))
                 elif item["mimeType"].startswith("video/"):
-                    yield item
+                    yield {**item, "display": "/".join([*ancestors, item["name"]])}
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
@@ -281,17 +284,34 @@ def index_videos(index_path: Path) -> list[dict]:
     files = data.get("files", [])
     if not files:
         raise SystemExit(f"{index_path} lists no files — is it the right index?")
-    return [
-        {"id": entry["id"], "name": entry.get("name", entry["id"]), "path": entry.get("path", "")}
-        for entry in files
-        if Path(entry.get("name", "")).suffix.lower() in VIDEO_SUFFIXES
-    ]
+    clips = []
+    for entry in files:
+        name = entry.get("name", entry["id"])
+        if Path(name).suffix.lower() not in VIDEO_SUFFIXES:
+            continue
+        # `path` is the folder components the app derives athlete and event
+        # from — ["Harry Korrodi", "2026-01-14_Brunni"] — so joining them with
+        # the file name gives the location a coach would recognise in Drive.
+        # Names alone are useless here: the library is full of C0027.MP4 and
+        # the same camera filename recurs across athletes and events.
+        components = entry.get("path") or []
+        clips.append({
+            "id": entry["id"],
+            "name": name,
+            "display": "/".join([*components, name]),
+        })
+    return clips
 
 
 def convert_drive_file(service, item: dict, *, apply: bool) -> str:
     from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
     name = item["name"]
+    # Where the clip lives, for every line this function prints. The bare file
+    # name is ambiguous across a library where each athlete's camera writes
+    # C0001.MP4; the temp file below still uses `name`, because that is what
+    # ffmpeg needs a valid filename for.
+    label = item.get("display") or name
     with tempfile.TemporaryDirectory() as directory:
         downloaded = Path(directory) / name
         request = service.files().get_media(fileId=item["id"], supportsAllDrives=True)
@@ -308,25 +328,25 @@ def convert_drive_file(service, item: dict, *, apply: bool) -> str:
             # pass for a complete one.
             status = getattr(getattr(error, "resp", None), "status", None)
             detail = f"HTTP {status}" if status else type(error).__name__
-            return f"FAIL  {name}: could not download ({detail})"
+            return f"FAIL  {label}: could not download ({detail})"
 
         original = probe(downloaded)
         if original is None:
-            return f"SKIP  {name} (unreadable)"
+            return f"SKIP  {label} (unreadable)"
         reason = original.unsupported_reason
         if reason is None:
-            return f"OK    {name} ({original.profile}, {original.pix_fmt})"
+            return f"OK    {label} ({original.profile}, {original.pix_fmt})"
         if not apply:
-            return f"WOULD {name} ({reason} -> {TARGET_PIX_FMT})"
+            return f"WOULD {label} ({reason} -> {TARGET_PIX_FMT})"
 
         converted = Path(directory) / f"converted-{name}"
         try:
             reencode(downloaded, converted)
         except subprocess.CalledProcessError as error:
-            return f"FAIL  {name}: ffmpeg failed: {error.stderr.strip()[:200]}"
+            return f"FAIL  {label}: ffmpeg failed: {error.stderr.strip()[:200]}"
         problem = verify(original, converted)
         if problem is not None:
-            return f"FAIL  {name}: {problem} — Drive file left alone"
+            return f"FAIL  {label}: {problem} — Drive file left alone"
 
         # update(), not create(): the file id is what SkiVideoViewer keys a
         # clip's annotations and cached analysis by, so a new file would orphan
@@ -336,7 +356,7 @@ def convert_drive_file(service, item: dict, *, apply: bool) -> str:
             media_body=MediaFileUpload(str(converted), resumable=True),
             supportsAllDrives=True,
         ).execute()
-    return f"FIXED {name} ({reason} -> {TARGET_PIX_FMT})"
+    return f"FIXED {label} ({reason} -> {TARGET_PIX_FMT})"
 
 
 def _import_google_libraries():
@@ -528,7 +548,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print(
         f"\n{counts['OK']} already fine, "
         f"{counts['WOULD'] + counts['FIXED']} need converting, "
-        f"{counts['FAIL']} failed, {counts['SKIP']} skipped."
+        f"{counts['FAIL']} failed, {counts['SKIP']} skipped.",
+        flush=True,
     )
     # The failure mode this guards against is a run that looks complete and is
     # not: with --scope drive.file every clip a coach uploaded themselves is
