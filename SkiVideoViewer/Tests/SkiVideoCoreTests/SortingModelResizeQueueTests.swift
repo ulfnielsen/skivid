@@ -59,6 +59,7 @@ final class SortingModelResizeQueueTests: XCTestCase {
     private var workingDirectory: URL!
     private var sourceDirectory: URL!
     private var namesFile: URL!
+    private var previousAthleteRosterStoreRoot: URL!
     private let athletes = ["Alfa", "Bravo", "Charlie"]
 
     override func setUp() async throws {
@@ -77,9 +78,16 @@ final class SortingModelResizeQueueTests: XCTestCase {
         }
         namesFile = workingDirectory.appendingPathComponent("athletes.txt")
         try athletes.joined(separator: "\n").write(to: namesFile, atomically: true, encoding: .utf8)
+        // `makeModel` constructs a `SortingModel`, whose `init` calls
+        // `reloadNames()` → `AthleteRoster.merged`, which reads
+        // `AthleteRoster.storeRoot` — see `SortingFlowTests` for why this must
+        // never be the developer's real Application Support.
+        previousAthleteRosterStoreRoot = AthleteRoster.storeRoot
+        AthleteRoster.storeRoot = workingDirectory.appendingPathComponent("AthleteRoster", isDirectory: true)
     }
 
     override func tearDown() async throws {
+        AthleteRoster.storeRoot = previousAthleteRosterStoreRoot
         if let workingDirectory {
             try? FileManager.default.removeItem(at: workingDirectory)
         }

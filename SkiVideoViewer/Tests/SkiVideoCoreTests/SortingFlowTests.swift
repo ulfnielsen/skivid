@@ -15,6 +15,7 @@ import XCTest
 final class SortingFlowTests: XCTestCase {
     private var root: URL!
     private var namesFile: URL!
+    private var previousAthleteRosterStoreRoot: URL!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -25,9 +26,19 @@ final class SortingFlowTests: XCTestCase {
             try Data(name.utf8).write(to: root.appendingPathComponent(name))
         }
         namesFile = root.appendingPathComponent("athletes.txt")
+        // Every `makeModel()` here now calls `reloadNames()` → `AthleteRoster
+        // .merged`, which reads `AthleteRoster.storeRoot`. Left at its default,
+        // that is the developer's real `~/Library/Application Support/
+        // SkiVideoViewer/LocalAthletes.json` — this project has polluted that
+        // directory three times already, and reading it (rather than writing)
+        // is just as capable of making these assertions depend on whatever a
+        // real card session happened to add there before this test ran.
+        previousAthleteRosterStoreRoot = AthleteRoster.storeRoot
+        AthleteRoster.storeRoot = root.appendingPathComponent("AthleteRoster", isDirectory: true)
     }
 
     override func tearDown() async throws {
+        AthleteRoster.storeRoot = previousAthleteRosterStoreRoot
         if let root { try? FileManager.default.removeItem(at: root) }
         try await super.tearDown()
     }

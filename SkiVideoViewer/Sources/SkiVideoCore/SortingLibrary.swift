@@ -82,14 +82,20 @@ public enum SortingLibrary {
         return names.filter { normalized($0).contains(key) }.prefix(8).map { $0 }
     }
 
-    /// Case- and whitespace-insensitive comparison key for an athlete name.
+    /// Case-insensitive comparison key for an athlete name. Deliberately does
+    /// *not* trim: `matches(for:names:)`, right above, relies on a
+    /// whitespace-only query folding to a non-empty key, so it is treated as
+    /// real search text (and, for these names, matches nothing) rather than
+    /// as an empty query, which shows the first 8 names instead. Callers that
+    /// need whitespace insensitivity too — `bestAthleteName` above, and
+    /// `AthleteRoster.deduplicated` in this module's other file — trim before
+    /// calling this.
     ///
     /// Internal rather than private: `AthleteRoster` de-duplicates a library
-    /// name against a locally-added one with the same treatment, and must not
-    /// grow a second normaliser that could drift from this one.
+    /// name against a locally-added one with the same case-folding, and must
+    /// not grow a second normaliser that could drift from this one.
     static func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 }
 

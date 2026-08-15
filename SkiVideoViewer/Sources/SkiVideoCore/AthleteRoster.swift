@@ -43,8 +43,13 @@ public enum AthleteRoster {
 
     /// Library names merged with locally-added ones, de-duplicated and
     /// sorted. When a name collides — case- or whitespace-insensitively —
-    /// the library's spelling wins, since it is the one every clip on disk
-    /// actually agrees with.
+    /// the library's spelling wins *within this merge*, since it is the one
+    /// every clip on disk actually agrees with.
+    ///
+    /// This says nothing about `SortingModel.reloadNames`, which merges this
+    /// list with `athletes.txt` separately and lets the file's spelling win
+    /// there instead, because the file is listed first — preserving what a
+    /// Mac session already showed before this roster existed.
     public static func merged(library: [AthleteGroup]) -> [String] {
         deduplicated(names(inLibrary: library) + localNames())
     }
@@ -62,17 +67,20 @@ public enum AthleteRoster {
         try save(names)
     }
 
-    /// Case- and whitespace-insensitive de-duplication, matching
-    /// `SortingLibrary.normalized(_:)` — first occurrence wins, so a
-    /// caller that wants the library's spelling to win over a locally-added
-    /// one must list the library's names first.
+    /// Case- and whitespace-insensitive de-duplication. The whitespace half
+    /// is this function's own job — `SortingLibrary.normalized(_:)` only
+    /// case-folds, deliberately, so trimming here rather than there — and the
+    /// case half reuses `normalized(_:)` rather than a second implementation.
+    /// First occurrence wins, so a caller that wants the library's spelling
+    /// to win over a locally-added one must list the library's names first.
     private static func deduplicated(_ names: [String]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
         for name in names {
-            let key = SortingLibrary.normalized(name)
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = SortingLibrary.normalized(trimmed)
             guard !key.isEmpty, seen.insert(key).inserted else { continue }
-            result.append(name)
+            result.append(trimmed)
         }
         return result.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
