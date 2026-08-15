@@ -49,7 +49,7 @@ public struct ClubOAuthClientStore {
     /// It is the shipped Mac app's bundle identifier (`AppBundle/Info.plist`),
     /// which is also the string `docs/google-oauth-club-setup.md` tells a club
     /// to type into Google's Bundle ID field.
-    public static let redirectScheme = "ch.ski.video-viewer"
+    public static let redirectScheme = "dk.dyregod.video-viewer"
 
     /// Every Google OAuth client id ends in this. Checked before storing so the
     /// predictable paste error — the client *secret*, or the bare project

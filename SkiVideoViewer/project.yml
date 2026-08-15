@@ -1,6 +1,6 @@
 name: SkiVideoViewer
 options:
-  bundleIdPrefix: ch.ski
+  bundleIdPrefix: dk.dyregod
   deploymentTarget:
     macOS: "13.0"
     iOS: "17.0"
@@ -22,14 +22,14 @@ targets:
         product: SkiVideoCore
     settings:
       base:
-        # Deliberately NOT ch.ski.video-viewer, which belongs to the shipping
+        # Deliberately NOT dk.dyregod.video-viewer, which belongs to the shipping
         # hand-assembled AppBundle/ (CFBundleVersion 7, built by build_app.sh).
         # Building this target runs lsregister over the derived-data bundle, so
         # sharing the identifier registered a competing, higher-versioned,
         # icon-less "SkiVideoViewer" that `open -b`, the Dock and Open With
         # could resolve to instead of the real app. Take the shipping
         # identifier only when this target becomes the shipping path.
-        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.xcode
+        PRODUCT_BUNDLE_IDENTIFIER: dk.dyregod.video-viewer.xcode
         PRODUCT_NAME: SkiVideoViewer
         SWIFT_VERSION: "5.0"
         MARKETING_VERSION: "1.0"
@@ -62,7 +62,7 @@ targets:
         product: SkiVideoCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad
+        PRODUCT_BUNDLE_IDENTIFIER: dk.dyregod.video-viewer.ipad
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: SkiVideoViewer
         SWIFT_VERSION: "5.0"
@@ -116,7 +116,7 @@ targets:
         product: SkiVideoCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: dk.dyregod.video-viewer.ipad.uitests
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: true
         TARGETED_DEVICE_FAMILY: "2"

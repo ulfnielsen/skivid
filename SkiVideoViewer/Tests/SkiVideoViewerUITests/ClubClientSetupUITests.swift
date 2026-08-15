@@ -59,7 +59,7 @@ final class ClubClientSetupUITests: XCTestCase {
         // every club-supplied sign-in fails with redirect_uri_mismatch, so the
         // string being on screen at all is the thing worth pinning.
         XCTAssertTrue(
-            app.staticTexts.allElementsBoundByIndex.contains { $0.label.contains("ch.ski.video-viewer") },
+            app.staticTexts.allElementsBoundByIndex.contains { $0.label.contains("dk.dyregod.video-viewer") },
             "the sheet never names the bundle id to register; a club cannot complete setup "
                 + "from what it can see"
         )

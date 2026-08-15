@@ -54,7 +54,7 @@ Under **APIs & Services → Credentials → Create Credentials → OAuth client 
 - **Application type: iOS.** Choose iOS even if your coaches only use Macs.
   The app uses this client type on both, because Google no longer allows the
   Mac-style sign-in method for new configurations.
-- **Bundle ID:** `ch.ski.video-viewer`
+- **Bundle ID:** `dk.dyregod.video-viewer`
 
   Type it exactly. This is what tells Google it is safe to hand the sign-in
   result back to this app, and sign-in fails with `redirect_uri_mismatch` if
@@ -81,7 +81,7 @@ is a personal Google account, not part of a Workspace organisation. Only a
 Workspace can have Internal apps. Use an account on your club's domain.
 
 **`redirect_uri_mismatch` when signing in.** The Bundle ID in step 4 does not
-match. It must be exactly `ch.ski.video-viewer` — no `.ipad`, no club name
+match. It must be exactly `dk.dyregod.video-viewer` — no `.ipad`, no club name
 appended, no trailing space.
 
 **"This app is blocked" or an unverified-app warning.** The consent screen is

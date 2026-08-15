@@ -21,8 +21,15 @@ import UIKit
 final class IOSOAuthPresenter: NSObject, OAuthPresenter {
     /// The **built-in** client's redirect: Google issues an iOS client's id
     /// already reversed into exactly this form
-    /// (`com.googleusercontent.apps.<client-id>`), and this is the real one for
-    /// the client registered against bundle id `ch.ski.video-viewer.ipad`.
+    /// (`com.googleusercontent.apps.<client-id>`).
+    ///
+    /// That client was registered against bundle id `ch.ski.video-viewer.ipad`,
+    /// which this app no longer uses — and it keeps working anyway, because the
+    /// reverse-DNS redirect is derived from the *client id*, not the bundle id.
+    /// Only the `<bundle-id>:/oauth2redirect` form depends on what was
+    /// registered, and nothing here uses that form for the built-in client.
+    /// A club-supplied client does, which is why `ClubOAuthClientStore` has to
+    /// name a bundle id clubs actually register against.
     ///
     /// Must match a `CFBundleURLTypes` entry in `iPad-Info.plist`, or Google's
     /// redirect goes to a scheme the app never receives. Pinned by

@@ -63,11 +63,11 @@ always redirect through a custom scheme, on macOS as well as iPadOS.
 `ASWebAuthenticationSession` exists on both, so this removes a platform
 difference rather than adding one.
 
-**The redirect scheme is `ch.ski.video-viewer`** — the shipped Mac app's
+**The redirect scheme is `dk.dyregod.video-viewer`** — the shipped Mac app's
 bundle identifier, and the string a club is told to enter as the Bundle ID
 when creating its client. Both apps register it.
 
-The built-in client keeps its existing `ch.ski.video-viewer.ipad` scheme,
+The built-in client keeps its existing `dk.dyregod.video-viewer.ipad` scheme,
 because that is what it was registered with and re-registering it would
 break the home club's sign-in. Both schemes therefore appear in the iPad's
 `Info.plist`; which one is used follows from which configuration is active,
@@ -133,13 +133,13 @@ stays short enough to read standing up at a race.
 - Clearing restores the built-in.
 - A saved id survives relaunch.
 - Rejected input is not stored, and the previous value survives the attempt.
-- The redirect scheme for a club-supplied id is `ch.ski.video-viewer`, and
+- The redirect scheme for a club-supplied id is `dk.dyregod.video-viewer`, and
   it is registered in both apps' `Info.plist` — a scheme the app does not
   register is a redirect that never comes back.
 
   **Parse the plists; do not search them as text.** The text version was
   written first and could not fail: the Mac bundle's `CFBundleIdentifier` is
-  *also* `ch.ski.video-viewer`, so `contains(...)` stayed true after the URL
+  *also* `dk.dyregod.video-viewer`, so `contains(...)` stayed true after the URL
   scheme was deleted outright. Caught only by deliberately breaking it. The
   assertion has to reach into `CFBundleURLTypes` specifically.
 

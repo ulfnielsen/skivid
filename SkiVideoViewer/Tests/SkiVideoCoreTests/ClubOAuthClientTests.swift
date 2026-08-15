@@ -183,7 +183,7 @@ final class ClubOAuthClientTests: XCTestCase {
     ///
     /// Parses the plist rather than searching it as text, and that is not
     /// fastidiousness — a text search was written first and **could not fail**.
-    /// The Mac bundle's `CFBundleIdentifier` is `ch.ski.video-viewer`, the same
+    /// The Mac bundle's `CFBundleIdentifier` is `dk.dyregod.video-viewer`, the same
     /// string as the scheme, so `contents.contains(...)` stayed true after the
     /// URL scheme was deleted outright. Deleting it is now caught because the
     /// assertion reaches into `CFBundleURLTypes` specifically.

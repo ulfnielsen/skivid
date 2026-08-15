@@ -345,7 +345,13 @@ protocol OAuthTokenStore: Sendable {
 /// a different file in the same module, needs to name it as the internal
 /// initialiser's default `tokenStore` value.
 struct KeychainTokenStore: OAuthTokenStore {
-    private let service = "ch.ski.video-viewer.google-drive"
+    /// Renamed from `ch.ski.video-viewer.google-drive` with the rest of the
+    /// bundle identifiers. The Keychain looks items up by this string, so
+    /// anyone holding a token written under the old name is silently signed
+    /// out once and has to sign in again — the old item is not migrated, and
+    /// deliberately: it is one tap to replace and a migration path would
+    /// outlive its usefulness immediately.
+    private let service = "dk.dyregod.video-viewer.google-drive"
 
     init() {}
 

@@ -30,7 +30,7 @@ public final class SortingModel: ObservableObject {
     public let player = AVPlayer()
     private let resizeQueue: OperationQueue = {
         let queue = OperationQueue()
-        queue.name = "ch.ski.video-viewer.resize"
+        queue.name = "dk.dyregod.video-viewer.resize"
         queue.maxConcurrentOperationCount = 1
         queue.qualityOfService = .userInitiated
         return queue

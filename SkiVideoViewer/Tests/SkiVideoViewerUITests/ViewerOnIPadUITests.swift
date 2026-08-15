@@ -46,7 +46,7 @@ import XCTest
 ///
 ///     ffmpeg -y -f lavfi -i "color=c=0xF0F0F0:size=1280x720:rate=30:duration=8" \
 ///       -c:v libx264 -pix_fmt yuv420p /tmp/viewer-fixture/Snow/run1-bright-snow.mp4
-///     C=$(xcrun simctl get_app_container <udid> ch.ski.video-viewer.ipad data)
+///     C=$(xcrun simctl get_app_container <udid> dk.dyregod.video-viewer.ipad data)
 ///     cp -R /tmp/viewer-fixture/Snow "$C/Documents/"
 ///
 /// `-pix_fmt yuv420p` is not optional: without it ffmpeg negotiates up to 10-bit
