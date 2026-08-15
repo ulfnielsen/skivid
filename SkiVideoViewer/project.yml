@@ -52,12 +52,18 @@ targets:
       # the toolbar's Compare button opens it as a full-screen cover.
       - path: Sources/SkiVideoViewer/Shared
       - path: Sources/SkiVideoViewer/iOS
+      # The app icon. iOS will not take one from a loose PNG the way
+      # AppBundle/Info.plist's CFBundleIconFile does on the Mac — it has to
+      # come out of a compiled asset catalog — so this exists for the iPad
+      # alone and holds the same artwork.
+      - path: iPad-Assets.xcassets
     dependencies:
       - package: SkiVideoCore
         product: SkiVideoCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: SkiVideoViewer
         SWIFT_VERSION: "5.0"
         MARKETING_VERSION: "1.0"
