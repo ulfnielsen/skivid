@@ -19,10 +19,23 @@ final class ClubOAuthClientTests: XCTestCase {
 
     private let clubID = "555-club.apps.googleusercontent.com"
 
+    /// One fixed suite for the whole class, **not** a per-test UUID.
+    ///
+    /// A UUID per test isolates them perfectly and leaves a plist per test in
+    /// the developer's real `~/Library/Preferences`: `cfprefsd` flushes the
+    /// file asynchronously, so a `tearDown` that removes the domain and unlinks
+    /// the file still loses the race, and a first version of this suite left 63
+    /// of them behind. A fixed name bounds that at one file, named after this
+    /// class, and `setUp` empties it so tests remain independent.
+    private static let fixedSuiteName = "ClubOAuthClientTests"
+
     override func setUp() {
         super.setUp()
-        suiteName = "ClubOAuthClientTests.\(UUID().uuidString)"
+        suiteName = Self.fixedSuiteName
         defaults = UserDefaults(suiteName: suiteName)
+        // Cleared here rather than trusted from tearDown, so a test that
+        // crashed mid-run cannot leak a client id into the next one.
+        defaults.removePersistentDomain(forName: suiteName)
         store = ClubOAuthClientStore(defaults: defaults)
     }
 

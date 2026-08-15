@@ -101,6 +101,13 @@ targets:
       - path: Tests/SkiVideoViewerUITests
     dependencies:
       - target: SkiVideoViewer-iPad
+      # Linked so ClipPlayabilityOnIOSTests can call the real
+      # ClipPlayability against real files. The question it answers —
+      # "does *this* device's decoder accept 10-bit 4:4:4 H.264?" — has a
+      # different answer on macOS, where the SwiftPM suites run, so it
+      # cannot be asked there.
+      - package: SkiVideoCore
+        product: SkiVideoCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ch.ski.video-viewer.ipad.uitests

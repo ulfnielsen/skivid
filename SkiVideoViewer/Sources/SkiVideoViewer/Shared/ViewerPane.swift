@@ -107,6 +107,34 @@ struct ViewerPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottomLeading) { caption }
         .overlay(alignment: .topTrailing) { statusChip }
+        .overlay(alignment: .top) { unsupportedFormatBanner }
+    }
+
+    /// Shown when this device cannot decode the current clip's video.
+    ///
+    /// Top-centre, which is the one edge not already spoken for — the caption
+    /// holds bottom-leading, the status chip top-trailing, the zoom chip
+    /// bottom-trailing.
+    ///
+    /// `allowsHitTesting(false)`, like the caption and the status chip: it
+    /// floats over the play/pause tap target and a banner that claimed hits
+    /// would eat it. There is nothing to tap here anyway — the remedy is in
+    /// the club's library, not on this screen.
+    @ViewBuilder
+    private var unsupportedFormatBanner: some View {
+        if let message = model.unsupportedFormatMessage {
+            Text(message)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: 460)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.top, 12)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
     }
 
     /// The zoom control, over the letterbox rather than in the control bar.

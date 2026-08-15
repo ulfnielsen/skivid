@@ -70,6 +70,11 @@ public final class ViewerModel: ObservableObject {
     /// Why the last sign-in failed, for the sheet to show inline. Nil clears
     /// it on the next attempt.
     @Published public private(set) var signInError: String?
+
+    /// Set when the current clip's video track cannot be decoded here — the
+    /// symptom is audio with a blank frame, which otherwise looks like the
+    /// fetch failed. Nil for every clip that plays.
+    @Published public private(set) var unsupportedFormatMessage: String?
     /// True while any clip's bytes are being fetched. No view reads this
     /// yet — plan 3 is what puts a spinner on screen instead of an empty
     /// player — but the flag and the counter behind it are exercised by
@@ -924,6 +929,28 @@ public final class ViewerModel: ObservableObject {
         observeDuration(of: item)
         player.pause()
         status = "Paused"
+        checkPlayability(of: playbackURL)
+    }
+
+    /// Reports a clip this device cannot decode, so sound-with-no-picture
+    /// reads as a known format problem rather than a broken download. See
+    /// `ClipPlayability` for why the library contains such clips at all.
+    ///
+    /// Asynchronous because it loads a track, and the answer arrives after the
+    /// player already has the item — deliberately: making playback wait on
+    /// this would delay every clip that is perfectly fine to warn about the
+    /// few that are not.
+    private func checkPlayability(of url: URL) {
+        unsupportedFormatMessage = nil
+        Task { [weak self] in
+            let message = await ClipPlayability.unsupportedVideoMessage(for: url)
+            guard let self, let message else { return }
+            // The coach may have moved on while the track loaded. Without this
+            // the warning would attach to whichever clip is on screen when the
+            // answer lands, which is the wrong one.
+            guard self.currentPlaybackURL == url else { return }
+            self.unsupportedFormatMessage = message
+        }
     }
 
     private func seek(seconds: Double) {
