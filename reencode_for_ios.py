@@ -274,11 +274,58 @@ def convert_drive_file(service, item: dict, *, apply: bool) -> str:
     return f"FIXED {name} ({reason} -> {TARGET_PIX_FMT})"
 
 
+def _import_google_libraries():
+    """The Drive libraries, or an explanation of where they actually live.
+
+    They are not installed in the system Python — they are in this directory's
+    `.venv`, the same one `upload_to_drive.py` needs. Running this script with a
+    bare `python3` therefore dies with `ModuleNotFoundError: No module named
+    'google'`, which says nothing about the venv sitting right beside it.
+    """
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+    except ImportError as error:
+        venv_python = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+        hint = (
+            f"Run it with that instead:\n\n    {venv_python} {Path(__file__).name} ...\n"
+            if venv_python.is_file()
+            else "Create one, then:\n\n    pip install "
+                 "google-api-python-client google-auth-oauthlib\n"
+        )
+        raise SystemExit(
+            f"The Google Drive libraries are not available to this Python "
+            f"({sys.executable}).\n\n{hint}\n"
+            f"(Local mode needs none of this — only --drive-folder does.)\n\n"
+            f"Original error: {error}"
+        ) from error
+    return Request, Credentials, InstalledAppFlow, build
+
+
+def default_client_secrets() -> Path:
+    """The first `client_secret*.json` beside this script.
+
+    Google names the file after the client id, so the literal
+    `client_secret.json` this used to default to matches nothing anyone
+    actually downloads. Sorted for determinism when a directory holds more than
+    one — the same rule `GoogleClientSecretsLoader` follows in the app.
+    """
+    here = Path(__file__).resolve().parent
+    matches = sorted(here.glob("client_secret*.json"))
+    return matches[0] if matches else here / "client_secret.json"
+
+
 def build_drive_service(client_secrets: Path, token: Path, scope: str):
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
+    Request, Credentials, InstalledAppFlow, build = _import_google_libraries()
+
+    if not client_secrets.is_file() and not token.is_file():
+        raise SystemExit(
+            f"No credentials: expected {client_secrets} or an existing {token}.\n"
+            f"Point at them with --client-secrets / --token — the same files "
+            f"upload_to_drive.py uses."
+        )
 
     scopes = [f"https://www.googleapis.com/auth/{scope}"]
     creds = None
@@ -304,7 +351,12 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Actually convert. Without it nothing is written and every clip is only reported.",
     )
-    parser.add_argument("--client-secrets", type=Path, default=Path("client_secret.json"))
+    parser.add_argument(
+        "--client-secrets",
+        type=Path,
+        default=None,
+        help="Defaults to the first client_secret*.json beside this script.",
+    )
     parser.add_argument("--token", type=Path, default=Path("token.json"))
     parser.add_argument(
         "--scope",
@@ -322,7 +374,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 2
 
     if not args.apply:
-        print("Dry run — nothing will be written. Pass --apply to convert.\n")
+        # Flushed, or stdout buffering lets a stderr message overtake it and the
+        # banner lands underneath the error it was meant to precede.
+        print("Dry run — nothing will be written. Pass --apply to convert.\n", flush=True)
 
     counts = {"FIXED": 0, "WOULD": 0, "OK": 0, "FAIL": 0, "SKIP": 0}
     if args.local:
@@ -331,11 +385,36 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             print(line, flush=True)
             counts[line.split()[0]] += 1
     else:
-        service = build_drive_service(args.client_secrets, args.token, args.scope)
-        for item in drive_videos(service, args.drive_folder):
-            line = convert_drive_file(service, item, apply=args.apply)
-            print(line, flush=True)
-            counts[line.split()[0]] += 1
+        service = build_drive_service(
+            args.client_secrets or default_client_secrets(), args.token, args.scope
+        )
+        try:
+            for item in drive_videos(service, args.drive_folder):
+                line = convert_drive_file(service, item, apply=args.apply)
+                print(line, flush=True)
+                counts[line.split()[0]] += 1
+        except Exception as error:  # googleapiclient.errors.HttpError and friends
+            # A traceback here is unreadable and blames the wrong thing: the
+            # overwhelmingly common causes are a mistyped id and a scope that
+            # cannot see the folder, neither of which is a bug in this script.
+            status = getattr(getattr(error, "resp", None), "status", None)
+            if status == 404:
+                print(
+                    f"\nDrive has no folder '{args.drive_folder}' visible to this account.\n"
+                    f"Check the id, and note that --scope is currently {args.scope}: "
+                    f"drive.file only reaches files this OAuth client uploaded. "
+                    f"If the clips got into Drive another way, pass --scope drive.",
+                    file=sys.stderr,
+                )
+                return 2
+            if status == 403:
+                print(
+                    f"\nDrive refused access to '{args.drive_folder}' (403). The signed-in "
+                    f"account is probably not a member of that shared drive.",
+                    file=sys.stderr,
+                )
+                return 2
+            raise
 
     print(
         f"\n{counts['OK']} already fine, "
