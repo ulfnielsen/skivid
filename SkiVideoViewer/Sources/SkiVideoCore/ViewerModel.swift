@@ -437,13 +437,16 @@ public final class ViewerModel: ObservableObject {
     /// screen.
     @discardableResult
     public func chooseRoot(
-        _ root: RemoteFolder, cache: ClipCache, convention: FolderConvention = .eventThenAthlete
+        _ root: RemoteFolder, cache: ClipCache,
+        convention: FolderConvention = .eventThenAthlete,
+        rebuilding: Bool = false
     ) async -> Bool {
         signInError = nil
         guard let remoteProvider else { return false }
         do {
             try await openRemoteLibrary(
-                provider: remoteProvider, root: root, cache: cache, convention: convention
+                provider: remoteProvider, root: root, cache: cache,
+                convention: convention, rebuilding: rebuilding
             )
             availableRoots = []
             return true
@@ -460,13 +463,22 @@ public final class ViewerModel: ObservableObject {
     /// knows the convention it was built with (see `RemoteLibraryIndex.load`)
     /// and keeps it regardless of what is passed here, so reopening a drive
     /// never silently relabels an already-indexed library.
+    ///
+    /// `rebuilding` throws the stored index away first, so the drive is listed
+    /// from scratch. The escape hatch for state no refresh can correct — a
+    /// path that was never resolved, a clip the change feed never mentioned —
+    /// and the reason it is a parameter rather than its own method is that
+    /// everything after the discard is identical, and a second copy of this
+    /// function is a second place for the two to drift apart.
     public func openRemoteLibrary(
         provider: any RemoteLibraryProvider,
         root: RemoteFolder,
         cache: ClipCache,
-        convention: FolderConvention = .eventThenAthlete
+        convention: FolderConvention = .eventThenAthlete,
+        rebuilding: Bool = false
     ) async throws {
-        status = "Listing \(root.name)…"
+        status = rebuilding ? "Rebuilding \(root.name)…" : "Listing \(root.name)…"
+        if rebuilding { RemoteLibraryIndex.discard(forRoot: root.id) }
 
         // A stored index plus a cursor makes a relaunch a delta. Page tokens
         // never expire and Drive coalesces its change log per file, so an app

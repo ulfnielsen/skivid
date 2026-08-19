@@ -211,6 +211,34 @@ final class SignInWiringTests: XCTestCase {
         }
     }
 
+    /// "Rebuild library" must actually list the drive again. Asserted on the
+    /// enumeration count for the same reason as the test above: a rebuild that
+    /// quietly reloaded the stored index would show an identical sidebar, and
+    /// the whole point of the action is what it does to state the sidebar
+    /// cannot show — a path the change feed left empty.
+    func testRebuildingListsTheDriveAgainRatherThanCatchingUp() async throws {
+        try await withTemporaryIndexStore {
+            let (model, provider, cache) = try remoteModel(files: [
+                remoteFile("a", "run1.mp4", ["Neuss 2026", "Ada"]),
+            ])
+            let root = RemoteFolder(id: "d1", name: "Club")
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+            try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+            XCTAssertEqual(provider.enumerateCallCount, 1, "the ordinary second open is a delta")
+
+            try await model.openRemoteLibrary(
+                provider: provider, root: root, cache: cache, rebuilding: true
+            )
+
+            XCTAssertEqual(provider.enumerateCallCount, 2, "the rebuild sweeps")
+            XCTAssertEqual(
+                provider.changesRequestedSince.count, 1,
+                "and asks for no delta, having nothing to catch up from"
+            )
+            XCTAssertEqual(model.athletes.map(\.name), ["Ada"])
+        }
+    }
+
     /// A clip uploaded while the app was closed appears without a re-sweep.
     /// The new clip is what proves the change was applied rather than the
     /// stored index simply reloaded.

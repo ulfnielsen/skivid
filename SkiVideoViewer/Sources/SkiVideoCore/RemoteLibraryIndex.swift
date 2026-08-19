@@ -153,7 +153,17 @@ public struct RemoteLibraryIndex: Equatable {
     /// subtly wrong. A newer version matters too: a build ahead of this one
     /// could have changed the stored shape in a way today's decoder cannot
     /// detect, only misread.
-    public static let currentVersion = 1
+    ///
+    /// **2 since 2026-08-19.** Version 1 indexes are not merely older, they
+    /// are wrong: the change feed resolved a changed clip's path against the
+    /// folders in the change page alone, so every clip whose bytes changed
+    /// under an untouched folder was stored with an empty path — 63 of the
+    /// operator's 407, surfacing as an athlete named after the drive. Nothing
+    /// stored can repair that, because the names it lost were never written
+    /// down; only a re-sweep can. Refusing version 1 is what makes every
+    /// installation carrying those paths sweep once, on its own, without
+    /// anyone having to know to ask.
+    public static let currentVersion = 2
 
     /// Where indexes are written. Application Support rather than Caches: an
     /// index is cheap to rebuild but a purge would turn every launch into a
@@ -208,6 +218,16 @@ public struct RemoteLibraryIndex: Equatable {
             cursor: stored.cursor,
             convention: stored.convention ?? .eventThenAthlete
         )
+    }
+
+    /// Throws the stored index away, so the next open sweeps the drive again.
+    ///
+    /// For the state no recomputation reaches: a path that was never resolved,
+    /// a clip the change feed never mentioned. Deliberately silent about
+    /// failure — the file not being there is exactly the state this wants, and
+    /// a caller that cannot delete it will sweep anyway and overwrite it.
+    public static func discard(forRoot rootID: String) {
+        try? FileManager.default.removeItem(at: storeURL(forRoot: rootID))
     }
 
     /// A copy of this index carrying `cursor`. For the sweep path: a fresh

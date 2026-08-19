@@ -331,24 +331,143 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     static func folderPath(
         of record: DriveRecord, in folders: [String: DriveRecord], rootID: String
     ) -> [String] {
+        walkFolders(from: record.parents?.first, in: folders, rootID: rootID).names
+    }
+
+    /// The same walk, also saying *which* parent it could not resolve.
+    ///
+    /// The sweep never needs that — one `corpora=drive` listing carries every
+    /// folder in the drive, so anything missing from it is missing from Drive.
+    /// The change feed does: it carries only the folders that changed, so a
+    /// walk that stops early there is usually a folder that simply did not
+    /// change, and knowing its id is what lets `resolvedFolderPaths` go and
+    /// fetch it. Returning it costs the sweep nothing.
+    static func walkFolders(
+        from parent: String?, in folders: [String: DriveRecord], rootID: String
+    ) -> (names: [String], unresolved: String?) {
         var names: [String] = []
         // `seen` is what terminates this: each folder id can be consumed once,
         // so the walk is bounded by the number of known folders whether or not
         // the parent links form a cycle.
         var seen: Set<String> = []
-        var current = record.parents?.first
+        var current = parent
         while let id = current, id != rootID, !seen.contains(id) {
             seen.insert(id)
-            guard let folder = folders[id] else { break }
+            guard let folder = folders[id] else { return (names.reversed(), id) }
             names.append(folder.name)
             current = folder.parents?.first
         }
-        return names.reversed()
+        return (names.reversed(), nil)
+    }
+
+    /// The folder path of each record, fetching by id any parent folder the
+    /// caller does not already have.
+    ///
+    /// **The change feed cannot resolve a path on its own, and assuming it
+    /// could is what emptied 63 of this operator's 407 paths.** A change page
+    /// carries the records that changed and nothing else, so a clip whose
+    /// *bytes* changed while its folders did not — every clip the re-encode
+    /// pass rewrote, `Nora1_resized.MP4` and 62 others — arrived with parent
+    /// ids that were nowhere in the page. The walk stopped at the first of
+    /// them and the clip was filed under no folder at all, which
+    /// `RemoteLibraryIndex` groups under the root's own name: an athlete
+    /// called "Videos" holding 63 clips.
+    ///
+    /// The index cannot supply the missing names either — `RemoteFile` stores
+    /// resolved folder *names*, never parent ids, so there is no chain in it
+    /// to walk. Drive is the only source, so Drive is asked.
+    ///
+    /// Bounded by the number of *distinct* unknown folders, not by the number
+    /// of changed clips: every fetch is remembered for the rest of the drain,
+    /// as is every id Drive would not show, so a hundred re-encoded clips in
+    /// one folder cost one extra request in total.
+    private func resolvedFolderPaths(
+        of records: [DriveRecord], knownFolders: [String: DriveRecord], rootID: String
+    ) async throws -> [[String]] {
+        var folders = knownFolders
+        /// Ids Drive answered 404 for. Cached as firmly as the successes: a
+        /// trashed folder shared by many clips must cost one request, not one
+        /// per clip.
+        var invisible: Set<String> = []
+        var paths: [[String]] = []
+        for record in records {
+            // Terminates because each turn either finishes the walk or adds a
+            // key to `folders`/`invisible` that the next walk cannot ask for
+            // again.
+            while true {
+                let walk = Self.walkFolders(
+                    from: record.parents?.first, in: folders, rootID: rootID
+                )
+                guard let missing = walk.unresolved, !invisible.contains(missing) else {
+                    paths.append(walk.names)
+                    break
+                }
+                guard let fetched = try await folderRecord(id: missing) else {
+                    invisible.insert(missing)
+                    paths.append(walk.names)
+                    break
+                }
+                folders[missing] = fetched
+            }
+        }
+        return paths
+    }
+
+    /// One folder, by id, or nil when Drive will not show it to this account.
+    ///
+    /// Only `parents` and `name` are asked for — this record exists to be
+    /// walked, never to become a `RemoteFile`. A record that is not a folder
+    /// answers nil too: a file cannot be a parent, so treating one as a path
+    /// component would invent a folder that does not exist.
+    private func folderRecord(id: String) async throws -> DriveRecord? {
+        var components = URLComponents(
+            string: "https://www.googleapis.com/drive/v3/files"
+        )!
+        // Appended through `path` so an id that is not URL-safe is encoded
+        // rather than reshaping the request.
+        components.path += "/\(id)"
+        components.queryItems = [
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "id,name,mimeType,parents"),
+        ]
+        guard let record: DriveRecord = try await getIfVisible(components) else { return nil }
+        return record.mimeType == Self.folderMimeType ? record : nil
     }
 
     // MARK: - Requests
 
     private func get<T: Decodable>(_ components: URLComponents) async throws -> T {
+        let (data, response) = try await fetch(components)
+        guard (200...299).contains(response.statusCode) else {
+            throw Self.describeFailure(data: data, response: response)
+        }
+        return try Self.decode(data)
+    }
+
+    /// The same request, with "Drive will not show me this" answered as nil
+    /// rather than thrown.
+    ///
+    /// Only the parent-folder lookup wants that, and only for 404: a folder
+    /// that was trashed, or that this account cannot see, is an ordinary state
+    /// of the data rather than a failure, and Drive answers *both* with 404
+    /// — it deliberately does not distinguish "gone" from "not yours".
+    /// Everything else still throws, 403 included: Drive uses 403 for rate
+    /// limits and quota, and reading one of those as "that folder does not
+    /// exist" would file a whole page of clips one level shallow and persist
+    /// it, which is the failure this call exists to fix.
+    private func getIfVisible<T: Decodable>(_ components: URLComponents) async throws -> T? {
+        let (data, response) = try await fetch(components)
+        if response.statusCode == 404 { return nil }
+        guard (200...299).contains(response.statusCode) else {
+            throw Self.describeFailure(data: data, response: response)
+        }
+        return try Self.decode(data)
+    }
+
+    /// The authorized request and its one silent refresh, with no opinion
+    /// about the status code — that judgement differs between callers, so it
+    /// belongs to them.
+    private func fetch(_ components: URLComponents) async throws -> (Data, HTTPURLResponse) {
         guard var token = token() else { throw RemoteLibraryError.notSignedIn }
         guard let url = components.url else {
             throw RemoteLibraryError.api("Could not build a request to Google Drive.")
@@ -384,10 +503,10 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
             }
             (data, response) = try await transport.data(for: request(bearer: token))
         }
+        return (data, response)
+    }
 
-        guard (200...299).contains(response.statusCode) else {
-            throw Self.describeFailure(data: data, response: response)
-        }
+    private static func decode<T: Decodable>(_ data: Data) throws -> T {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
@@ -554,11 +673,11 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
             }
         }
 
-        // A change gives a file id and its parents, not a path. Resolving the
-        // folder names needs the tree, which only a sweep has — so a changed
-        // file arrives with the parent chain this page could resolve, and a
-        // caller wanting more must re-sweep. In practice a new clip's folders
-        // are already in the index from the last sweep.
+        // A change gives a file id and its parents, not a path, and the page
+        // carries only the folders that changed too — which for a clip whose
+        // bytes changed under an untouched folder is none of them. The rest
+        // are fetched by id; see `resolvedFolderPaths` for what assuming
+        // otherwise cost.
         let folders = Dictionary(
             changed.filter { $0.mimeType == Self.folderMimeType }.map { ($0.id, $0) },
             // Drive can report one record twice — results shift mid-pagination,
@@ -567,19 +686,21 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
             // on a routine refresh.
             uniquingKeysWith: { first, _ in first }
         )
+        let changedFiles = changed.filter { $0.mimeType != Self.folderMimeType }
+        let paths = try await resolvedFolderPaths(
+            of: changedFiles, knownFolders: folders, rootID: rootID
+        )
         return RemoteLibraryChanges(
-            changed: changed
-                .filter { $0.mimeType != Self.folderMimeType }
-                .map { record in
-                    RemoteFile(
-                        id: record.id,
-                        name: record.name,
-                        path: Self.folderPath(of: record, in: folders, rootID: rootID),
-                        size: Int64(record.size ?? "") ?? 0,
-                        contentVersion: record.headRevisionId,
-                        md5: record.md5Checksum
-                    )
-                },
+            changed: zip(changedFiles, paths).map { record, path in
+                RemoteFile(
+                    id: record.id,
+                    name: record.name,
+                    path: path,
+                    size: Int64(record.size ?? "") ?? 0,
+                    contentVersion: record.headRevisionId,
+                    md5: record.md5Checksum
+                )
+            },
             removed: removed,
             cursor: nextCursor ?? cursor
         )

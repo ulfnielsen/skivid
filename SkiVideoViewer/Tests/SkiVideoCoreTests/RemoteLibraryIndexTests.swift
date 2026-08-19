@@ -233,6 +233,55 @@ final class RemoteLibraryIndexTests: XCTestCase {
         }
     }
 
+    /// The reset for the orphaned paths. A version 1 index is not merely old,
+    /// it is wrong: the change feed resolved a changed clip's folders against
+    /// the change page alone, so every clip whose bytes changed under an
+    /// untouched folder was stored with an empty path — 63 of the operator's
+    /// 407, grouped under the drive's own name as an athlete called "Videos".
+    /// The names are not recoverable from anything stored, so the only repair
+    /// is a re-sweep, and refusing the file is what makes it happen by itself.
+    ///
+    /// The fixture is a real version 1 payload, orphan included, so this fails
+    /// if `currentVersion` is ever put back.
+    func testAVersionOneIndexIsRefusedSoOrphanedPathsAreSweptAway() async throws {
+        try await withTemporaryIndexStore {
+            try FileManager.default.createDirectory(
+                at: RemoteLibraryIndex.storeRoot, withIntermediateDirectories: true
+            )
+            try Data("""
+            {"version":1,"providerIdentifier":"gdrive","rootName":"Videos","cursor":"t1",\
+            "convention":"eventThenAthlete","files":[{"id":"a","name":"Nora1_resized.MP4",\
+            "path":[],"size":1,"contentVersion":"r2"}]}
+            """.utf8).write(to: RemoteLibraryIndex.storeURL(forRoot: "d1"))
+
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
+        }
+    }
+
+    /// The manual escape hatch, for a cached index that is wrong in a way the
+    /// version gate has already let through. Asserted by loading the file back
+    /// rather than by `discard` returning, because it returns nothing.
+    func testDiscardingLeavesNothingToLoad() async throws {
+        try await withTemporaryIndexStore {
+            try RemoteLibraryIndex(
+                providerIdentifier: "gdrive", files: [file("a", "run.mp4", ["E", "Ada"])]
+            ).save(forRoot: "d1")
+            XCTAssertNotNil(RemoteLibraryIndex.load(forRoot: "d1"))
+
+            RemoteLibraryIndex.discard(forRoot: "d1")
+
+            XCTAssertNil(RemoteLibraryIndex.load(forRoot: "d1"))
+        }
+    }
+
+    /// Discarding an index that was never written is the state the caller
+    /// wanted, not a failure — and nothing about it may throw.
+    func testDiscardingAnIndexThatIsNotThereIsHarmless() async {
+        await withTemporaryIndexStore {
+            RemoteLibraryIndex.discard(forRoot: "never-saved")
+        }
+    }
+
     func testAnUnreadableIndexLoadsAsNilRatherThanThrowing() async throws {
         try await withTemporaryIndexStore {
             try FileManager.default.createDirectory(

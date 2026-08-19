@@ -20,6 +20,11 @@ struct GoogleDriveSheet: View {
     /// says otherwise — this sheet is the one place that convention is
     /// "settable when a remote library is opened," per the design.
     @State private var folderConvention: FolderConvention = .eventThenAthlete
+    /// Whether picking a drive should throw its cached index away first. Not
+    /// persisted: a rebuild is something a coach asks for once, when something
+    /// looks wrong, and a switch that stayed on would turn every later open
+    /// into a full sweep of the drive.
+    @State private var isRebuilding = false
 
     /// Where a club-supplied OAuth client id is read and written. A struct over
     /// `UserDefaults`, so holding one costs nothing and it needs no `@StateObject`;
@@ -233,10 +238,27 @@ struct GoogleDriveSheet: View {
                 .pickerStyle(.segmented)
             }
 
+            // The way out of a cached index that is wrong in a way no refresh
+            // can correct — the paths this operator's re-encode pass emptied
+            // being the case it was built for. Off by default and stated in
+            // its own caption, because it costs a full listing of the drive
+            // and the ordinary open is a delta.
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Rebuild library", isOn: $isRebuilding)
+                Text("Lists the whole drive again instead of catching up. "
+                     + "Use it when clips are filed under the wrong folder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             List(model.availableRoots, id: \.id) { root in
                 Button(root.name) {
                     Task {
-                        if await model.chooseRoot(root, cache: cache, convention: folderConvention) {
+                        if await model.chooseRoot(
+                            root, cache: cache,
+                            convention: folderConvention, rebuilding: isRebuilding
+                        ) {
                             isPresented = false
                         }
                     }

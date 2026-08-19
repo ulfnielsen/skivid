@@ -604,6 +604,145 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(changes.changed[0].path, ["Neuss 2026"])
     }
 
+    /// **The 63 orphans.** Measured in the operator's own cached index
+    /// (`995fa97fce4dc6ed.skiindex.json`, 2026-08-19): 407 files, 63 of them
+    /// stored with `path: []` — real clips such as `Nora1_resized.MP4`, 20 of
+    /// whose names also appear among properly foldered files, in a drive with
+    /// no loose videos in its root at all. They are what the re-encode pass
+    /// touched: rewriting a clip's bytes changes the file and not the folders
+    /// above it, so the change page carried the clip and none of its parents,
+    /// the walk stopped at the first unknown id, and `RemoteLibraryIndex`
+    /// grouped the pathless result under the root's own name — an athlete
+    /// called "Videos" with 63 clips in it.
+    ///
+    /// The fixture is that exact shape: a changed clip whose two parent
+    /// folders are nowhere in the page. Against the unfixed code its path is
+    /// `[]`.
+    func testAChangedClipWhoseFoldersDidNotChangeKeepsThem() async throws {
+        transport.responses = [
+            .init(json: """
+            {"newStartPageToken":"t2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"Nora1_resized.MP4","mimeType":"video/mp4",
+                       "parents":["event"],"size":"1","headRevisionId":"r2"}}
+            ]}
+            """),
+            .init(json: """
+            {"id":"event","name":"2026-01-14_Brunni",
+             "mimeType":"application/vnd.google-apps.folder","parents":["athlete"]}
+            """),
+            .init(json: """
+            {"id":"athlete","name":"Nora Nielsen",
+             "mimeType":"application/vnd.google-apps.folder","parents":["d1"]}
+            """),
+        ]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed[0].path, ["Nora Nielsen", "2026-01-14_Brunni"])
+    }
+
+    /// The cost of the fetch above, bounded. Three clips re-encoded in one
+    /// folder must ask Drive for that folder once, not once each — the
+    /// operator's 63 orphans sit in a couple of dozen folders, so a per-clip
+    /// lookup would turn one refresh into 63 extra round trips.
+    ///
+    /// Asserted on the request count, which is the only thing that tells a
+    /// cached lookup from a repeated one: the resolved paths are identical
+    /// either way.
+    func testAnUnknownParentIsFetchedOncePerDrainNotOncePerClip() async throws {
+        transport.responses = [
+            .init(json: """
+            {"newStartPageToken":"t2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"a.mp4","mimeType":"video/mp4","parents":["athlete"],"size":"1"}},
+              {"fileId":"f2","removed":false,
+               "file":{"id":"f2","name":"b.mp4","mimeType":"video/mp4","parents":["athlete"],"size":"1"}},
+              {"fileId":"f3","removed":false,
+               "file":{"id":"f3","name":"c.mp4","mimeType":"video/mp4","parents":["athlete"],"size":"1"}}
+            ]}
+            """),
+            .init(json: """
+            {"id":"athlete","name":"Nora Nielsen",
+             "mimeType":"application/vnd.google-apps.folder","parents":["d1"]}
+            """),
+        ]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed.map(\.path), [["Nora Nielsen"], ["Nora Nielsen"], ["Nora Nielsen"]])
+        XCTAssertEqual(transport.requests.count, 2, "one change page and one folder lookup")
+    }
+
+    /// Drive answers 404 both for a folder that was trashed and for one this
+    /// account may not see — it deliberately does not distinguish them. Either
+    /// way the clip is kept with what could be resolved, the same rule the
+    /// sweep applies to a parent missing from its listing: losing a clip is
+    /// worse than filing it one level shallow.
+    func testAParentDriveWillNotShowLeavesTheClipShallowRatherThanFailing() async throws {
+        transport.responses = [
+            .init(json: """
+            {"newStartPageToken":"t2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"a.mp4","mimeType":"video/mp4","parents":["gone"],"size":"1"}}
+            ]}
+            """),
+            .init(status: 404, json: #"{"error":{"code":404,"message":"File not found: gone."}}"#),
+        ]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed.map(\.id), ["f1"])
+        XCTAssertEqual(changes.changed[0].path, [])
+    }
+
+    /// A 404 is data; anything else is not. Drive answers 403 for rate limits
+    /// and quota, and a refresh that read one of those as "that folder does not
+    /// exist" would file a whole page of clips under no folder and *persist*
+    /// it — the exact defect this lookup exists to fix, re-entered through the
+    /// error path. Failing leaves the stored index and its cursor untouched, so
+    /// the next attempt resolves the same clips properly.
+    func testARefusedParentLookupFailsTheRefreshRatherThanFilingTheClipShallow() async {
+        transport.responses = [
+            .init(json: """
+            {"newStartPageToken":"t2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"a.mp4","mimeType":"video/mp4","parents":["athlete"],"size":"1"}}
+            ]}
+            """),
+            .init(
+                status: 403,
+                json: #"{"error":{"code":403,"message":"User rate limit exceeded."}}"#
+            ),
+        ]
+
+        do {
+            let changes = try await provider.changes(since: "t1", forRoot: "d1")
+            XCTFail("expected a 403 to throw, got \(changes.changed.map(\.path))")
+        } catch {
+            XCTAssertTrue("\(error)".contains("rate limit"), "got \(error)")
+        }
+    }
+
+    /// A parent id that turns out to name a file, not a folder, must not become
+    /// a path component: Drive would then have invented a folder that does not
+    /// exist, and the clip would group under it.
+    func testAParentThatIsNotAFolderIsNotUsedAsAPathComponent() async throws {
+        transport.responses = [
+            .init(json: """
+            {"newStartPageToken":"t2","changes":[
+              {"fileId":"f1","removed":false,
+               "file":{"id":"f1","name":"a.mp4","mimeType":"video/mp4","parents":["odd"],"size":"1"}}
+            ]}
+            """),
+            .init(json: #"{"id":"odd","name":"notes.txt","mimeType":"text/plain","parents":["d1"]}"#),
+        ]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed[0].path, [])
+    }
+
     // MARK: - Errors
 
     /// Drive answers an unauthenticated media request with an HTML block page.
