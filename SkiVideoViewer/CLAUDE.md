@@ -18,9 +18,12 @@ macOS + iPadOS SwiftUI app for reviewing ski training footage.
   tests covering the mutated code; that habit is what made runs feel constant.
 - `--filter SkiVideoCoreTests` covers the core module and opens no windows —
   the right loop for anything not touching views.
-- `CorrectedStartEndToEndTests` fails ~2 in 9 runs even idle. Not a flake:
-  `ComparisonModel.applySync` latches the sync anchor before its own async
-  seeks land. Don't chase it as an environment problem.
+- `CorrectedStartEndToEndTests` used to fail ~2 in 12 runs even idle — never a
+  flake: `ComparisonModel.applySync` latched the sync anchor by reading the
+  playheads back after its own fire-and-forget seeks. It now latches the
+  clamped times it was *asked* for, and passed 14 consecutive runs. If an
+  anchor ever looks stale again, suspect a `currentTime()` read, not the
+  machine.
 - `CorePurityTests` fails the build if anything under `Sources/SkiVideoCore`
   names AppKit or UIKit.
 

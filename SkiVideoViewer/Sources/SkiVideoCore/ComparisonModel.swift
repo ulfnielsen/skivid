@@ -808,18 +808,67 @@ public final class ComparisonModel: ObservableObject {
         status = "Scrubbing together"
     }
 
+    /// The operator's own frame: whatever they scrubbed to *is* the anchor, so
+    /// reading it off the playheads is exactly right here — the clips are
+    /// already parked where they were left, and no seek of ours is in flight.
+    /// `applySync` cannot read them that way; see `latchSyncPoints`.
     public func setSyncPoints() {
+        guard beginSync() else { return }
+        latchSyncPoints(left: leftPlayer.currentTime(), right: rightPlayer.currentTime())
+        status = "Synchronized from L \(Timecode.string(leftTime)) and R \(Timecode.string(rightTime))."
+    }
+
+    /// The two things every sync does before anything is latched: refuse
+    /// without a pair, and stop the clips. Shared so that `applySync` cannot
+    /// drift from `setSyncPoints` on either — it used to get both by calling
+    /// `setSyncPoints()` outright, which is also how it inherited the
+    /// playhead read that was the bug.
+    ///
+    /// The pause comes before the seeks in `applySync`, not after them as it
+    /// once did — a clip still running would otherwise carry on past the time
+    /// just seeked to. It is safe to move only because the anchor no longer
+    /// depends on when the seeks become visible: with the pause first, a
+    /// `currentTime()` read after the seeks returns the *old* playhead every
+    /// time (measured), where after the pause it usually returned the new one.
+    private func beginSync() -> Bool {
         guard hasTwoVideos else {
             status = "Choose both videos before setting sync points."
-            return
+            return false
         }
         pauseBoth()
-        leftSyncPoint = leftPlayer.currentTime()
-        rightSyncPoint = rightPlayer.currentTime()
+        return true
+    }
+
+    /// Latches the anchor at two *given* times, rather than at whatever the
+    /// players happen to report.
+    ///
+    /// `AVPlayer.seek` is fire-and-forget and not synchronously visible — the
+    /// same measured lag `playSynced` documents — so a caller that seeks and
+    /// then reads `currentTime()` back is asking the player a timing question,
+    /// not the caller's own question, and sometimes gets the pre-seek playhead.
+    ///
+    /// **It mostly looks fine, which is why it survived two features.**
+    /// Measured: `AVPlayer` normally reports a pending seek's target time
+    /// immediately, so the read usually agreed with the request; the disagreement
+    /// showed up as `CorrectedStartEndToEndTests` failing 2 runs in 12 on an idle
+    /// machine, anchored at 0.0 instead of the second it had just asked for.
+    /// Also measured, and the reason this must be structural rather than a
+    /// reordering: keep the read but move it ahead of `pauseBoth`, and it
+    /// anchors at 0.0 *every* time.
+    ///
+    /// That number is not cosmetic — `ComparisonView.persistCorrections` writes
+    /// the anchor into the athlete's sidecar as a corrected run start, so a lost
+    /// race overwrites the operator's own judgement on disk while the status
+    /// line confidently reports the time that was asked for.
+    ///
+    /// `syncOrigin` is `.manual` here because latching is what
+    /// `setSyncPoints()` means; `applySync` overwrites it afterwards.
+    private func latchSyncPoints(left: CMTime, right: CMTime) {
+        leftSyncPoint = left
+        rightSyncPoint = right
         isSynced = true
         syncOrigin = .manual
         target = .both
-        status = "Synchronized from L \(Timecode.string(leftTime)) and R \(Timecode.string(rightTime))."
     }
 
     /// Seeks both clips to the given times and syncs there.
@@ -830,17 +879,28 @@ public final class ComparisonModel: ObservableObject {
     /// ignorance is what lets the detection layer change without touching
     /// transport code.
     ///
-    /// Times are clamped into each clip's duration by `seek(_:to:)`: a detected
-    /// start can be negative or at the first frame (a run already in progress
-    /// when the camera rolled) or, in principle, beyond the end, and either
-    /// would otherwise leave the pair half-synced — which is worse than not
-    /// syncing at all. Clamping is not repeated here; doing it twice would mean
-    /// the rule lived in two places.
+    /// Times are clamped into each clip's duration by `clampedSeekTarget`: a
+    /// detected start can be negative or at the first frame (a run already in
+    /// progress when the camera rolled) or, in principle, beyond the end, and
+    /// either would otherwise leave the pair half-synced — which is worse than
+    /// not syncing at all. The clamp is asked for once, here, and the answer is
+    /// both seeked to and latched, so the two cannot disagree; `seek(_:to:)`
+    /// applies the same clamp again on the way through, which is a no-op on an
+    /// already-clamped time.
     ///
-    /// Sync itself is established by `setSyncPoints()` and nothing else, so the
-    /// `L_cur - L_sync == R_cur - R_sync` invariant is set up the one existing
-    /// way. `syncOrigin` is overwritten *after* that call, because
-    /// `setSyncPoints` credits the operator.
+    /// **The clamped request is what is latched — the playheads are never read
+    /// back.** See `latchSyncPoints` for the race that reading them was.
+    ///
+    /// A duration that has not loaded yet contributes *no* upper bound
+    /// (`lastSeekableSecond` returns `.infinity` for a NaN duration), so on an
+    /// unloaded pair the latched anchor is simply the request with negatives
+    /// raised to 0 — the same time the seek is given, which is the only
+    /// self-consistent answer available before the bound is known.
+    /// `normalizeSyncPoints()` slides the pair back into range on the first
+    /// `returnToSyncPoints()` once the duration has arrived.
+    ///
+    /// `syncOrigin` is overwritten *after* the latch, because latching means
+    /// `setSyncPoints()`, which credits the operator.
     /// - Parameter corrected: whether either of these times is the operator's
     ///   correction rather than the detector's measurement. It changes one word
     ///   of the status and nothing else: the model still does not learn where
@@ -849,12 +909,18 @@ public final class ComparisonModel: ObservableObject {
     ///   times the detector never produced — a sentence that is wrong in
     ///   exactly the case the correction exists for.
     public func applySync(left: TimeInterval, right: TimeInterval, corrected: Bool = false) {
-        seek(leftPlayer, to: left)
-        seek(rightPlayer, to: right)
-        setSyncPoints()
-        // `setSyncPoints` refuses without two videos, and a refused sync must
-        // not be attributed to a detection that never took effect.
-        guard isSynced else { return }
+        // A refused sync must not be attributed to a detection that never took
+        // effect — and must not seek either, which syncing off a single loaded
+        // clip used to do before the guard moved ahead of the seeks.
+        guard beginSync() else { return }
+        let leftTarget = clampedSeekTarget(for: leftPlayer, to: left)
+        let rightTarget = clampedSeekTarget(for: rightPlayer, to: right)
+        seek(leftPlayer, to: leftTarget)
+        seek(rightPlayer, to: rightTarget)
+        latchSyncPoints(
+            left: CMTime(seconds: leftTarget, preferredTimescale: 600),
+            right: CMTime(seconds: rightTarget, preferredTimescale: 600)
+        )
         syncOrigin = .detected(left: left, right: right)
         let source = corrected ? "corrected" : "detected"
         status = "Synced from \(source) starts · L \(Timecode.string(left)) · R \(Timecode.string(right))"

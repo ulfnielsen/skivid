@@ -594,7 +594,7 @@ struct ComparisonView: View {
 
     /// How far the pair's anchor must move before it counts as a correction.
     ///
-    /// Not zero: `applySync` seeks and re-reads the playheads through
+    /// Not zero: `applySync` latches its anchor as
     /// `CMTime(seconds:preferredTimescale: 600)`, so a start that was merely
     /// re-applied can differ from the stored one by up to 1/600s. 10ms is
     /// comfortably above that and comfortably below one frame at 50fps (20ms),

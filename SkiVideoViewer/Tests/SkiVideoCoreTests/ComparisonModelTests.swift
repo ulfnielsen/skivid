@@ -1677,6 +1677,68 @@ final class ComparisonBoundsTests: XCTestCase {
         XCTAssertEqual(model.syncOrigin, .detected(left: 3, right: 7))
     }
 
+    /// **The anchor, pinned to the request.** Real media loaded and then
+    /// deliberately *not* waited on: `hasTwoVideos` is true the moment `load`
+    /// sets the items, and the seeks `applySync` issues cannot have completed
+    /// by the next line — `AVPlayer.seek` is fire-and-forget.
+    ///
+    /// **Nothing here pumps the run loop, and nothing may be added that does.**
+    /// A test that settles first pins the race rather than the fix: it asserts
+    /// what the anchor becomes once the seeks land, which is the one state a
+    /// playhead-reading version also reaches.
+    ///
+    /// What this cannot claim is that it fails on demand against the version
+    /// that read `currentTime()` back. Measured, it does not: `AVPlayer`
+    /// usually reports a *pending* seek's target time straight away, which is
+    /// why reading the playheads back looked correct for two whole features and
+    /// only lost the race about 2 runs in 12 (`CorrectedStartEndToEndTests`,
+    /// which anchored at 0.0 on those runs). Move the read ahead of the pause
+    /// and the same version anchors at 0.0 every time — measured, all three
+    /// `applySync` cases here. Both are the same defect: the anchor was a
+    /// question about `AVPlayer`'s internal state rather than about the number
+    /// the caller passed in.
+    func testApplySyncAnchorsOnTheTimesAskedForBeforeAnySeekCanLand() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        temporaryDirectory = root
+        let model = ComparisonModel()
+        defer { model.close() }
+        model.load(try makeRealVideoFile(in: root, name: "left.mov", seconds: 25), side: .left)
+        model.load(try makeRealVideoFile(in: root, name: "right.mov", seconds: 25), side: .right)
+        XCTAssertEqual(model.leftPlayer.currentTime().seconds, 0, accuracy: 1e-9,
+                       "precondition: a freshly loaded clip sits at 0, which is what a lost race latches")
+
+        model.applySync(left: 18.29, right: 12.04)
+
+        XCTAssertTrue(model.isSynced)
+        XCTAssertEqual(model.leftSyncPoint.seconds, 18.29, accuracy: 1.0 / 600,
+                       """
+                       the anchor is \(model.leftSyncPoint.seconds) where 18.29 was asked for; \
+                       the status chip would still say 18.29 and the sidecar would get this
+                       """)
+        XCTAssertEqual(model.rightSyncPoint.seconds, 12.04, accuracy: 1.0 / 600)
+    }
+
+    /// And what is latched is the *clamped* request, exactly. A detected start
+    /// of 9999s on a 20s clip must anchor at 20.0 — the bound `clampedSeekTarget`
+    /// applied and the time the seek was actually given — however far the clip
+    /// itself gets. Also unpumped, for the reason above.
+    func testApplySyncLatchesTheClampedRequestNotWhereThePlayerLands() throws {
+        let model = try makeRealMediaModel(leftSeconds: 12, rightSeconds: 20)
+        defer { model.close() }
+
+        model.applySync(left: -3, right: 9_999)
+
+        XCTAssertEqual(model.leftSyncPoint.seconds, 0, accuracy: 1.0 / 600,
+                       "a start before the first frame clamps to 0, and 0 is what the anchor must hold")
+        XCTAssertEqual(model.rightSyncPoint.seconds, model.rightDuration, accuracy: 1.0 / 600,
+                       """
+                       the anchor is \(model.rightSyncPoint.seconds) where the clamp is \
+                       \(model.rightDuration); anything else means the playhead was read back
+                       """)
+    }
+
     /// The half the zero-byte fixtures cannot see. A detected start at or before
     /// the first frame, and one past the end of its clip, in the same call: both
     /// must land on a real frame and the pair must end up fully synced, because
