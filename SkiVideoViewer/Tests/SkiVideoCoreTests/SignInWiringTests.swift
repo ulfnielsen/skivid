@@ -120,6 +120,75 @@ final class SignInWiringTests: XCTestCase {
         XCTAssertNil(model.signInError, "a working pick must clear an earlier failure's message")
     }
 
+    // MARK: - Resuming a previous session
+
+    /// The complaint: "I don't understand why I have to login with google every
+    /// time I run the app."
+    ///
+    /// A session Google still honours must carry the coach straight to the
+    /// drive list. Asserted on `connectCallCount` staying at zero, which is the
+    /// only thing that separates this from an ordinary sign-in — the drive list
+    /// looks identical either way, and it is the browser the coach is
+    /// complaining about.
+    func testAResumableSessionOffersTheDrivesWithNoBrowser() async throws {
+        let (model, provider, _) = try remoteModel(files: [])
+        provider.canResumeSession = true
+        provider.rootsToReturn = [RemoteFolder(id: "d1", name: "Club Footage")]
+
+        await model.resumeSignIn(with: provider)
+
+        XCTAssertEqual(model.availableRoots.map(\.name), ["Club Footage"])
+        XCTAssertEqual(provider.connectCallCount, 0, "resuming must not open the browser")
+        XCTAssertNil(model.signInError)
+    }
+
+    /// Nothing to resume — a first run, or a token Google has since refused —
+    /// must land the coach on the ordinary sign-in prompt. An empty drive list
+    /// is what shows that button, and there must be no error message: an
+    /// automatic attempt that found nothing is not a failure the coach did
+    /// anything to cause, and a red banner about it reads as a bug.
+    func testWithNothingToResumeTheSheetStaysOnTheOrdinarySignInPrompt() async throws {
+        let (model, provider, _) = try remoteModel(files: [])
+        provider.canResumeSession = false
+
+        await model.resumeSignIn(with: provider)
+
+        XCTAssertEqual(provider.resumeCallCount, 1, "the silent path is tried first")
+        XCTAssertTrue(model.availableRoots.isEmpty, "an empty drive list is what shows the button")
+        XCTAssertNil(model.signInError, "nothing to resume is not a failure to report")
+        XCTAssertEqual(provider.connectCallCount, 0, "the browser opens when the coach asks, not before")
+    }
+
+    /// The one resume outcome that must *not* be silent. The credential was
+    /// accepted and the drive listing still failed, so something is wrong that
+    /// the coach cannot infer from a sign-in button — and an empty library that
+    /// looks like a bug is worse than being told what happened.
+    func testAResumedSessionThatCannotListDrivesSaysWhy() async throws {
+        let (model, provider, _) = try remoteModel(files: [])
+        provider.canResumeSession = true
+        provider.rootsError = RemoteLibraryError.api("Google Drive returned HTTP 500")
+
+        await model.resumeSignIn(with: provider)
+
+        let message = try XCTUnwrap(model.signInError, "a resumed session that then failed must say so")
+        XCTAssertTrue(message.contains("500"), "got \(message)")
+        XCTAssertTrue(model.availableRoots.isEmpty, "and must not look like a library with no drives")
+    }
+
+    /// After a resume finds nothing, the button still has to work. A resume
+    /// that left the model in a half-signed-in state would take the coach's one
+    /// remaining way in with it.
+    func testSigningInStillWorksAfterAResumeFoundNothing() async throws {
+        let (model, provider, _) = try remoteModel(files: [])
+        provider.canResumeSession = false
+        await model.resumeSignIn(with: provider)
+
+        await model.signIn(with: provider)
+
+        XCTAssertEqual(model.availableRoots.map(\.name), ["Test Drive"])
+        XCTAssertEqual(provider.connectCallCount, 1)
+    }
+
     // MARK: - Relaunch
 
     /// The whole point of the cursor: a second open must not list the drive

@@ -74,6 +74,24 @@ struct GoogleDriveSheet: View {
         }
         .padding(24)
         .frame(width: 420)
+        // Where the silent resume happens: when this sheet opens, not at app
+        // launch. Nothing should touch the network until the coach asks for
+        // the library — a cold launch that quietly reaches out to Google is
+        // surprising in a tool that mostly opens local folders, and at a race
+        // it spends someone's tethered data on a library they may not open.
+        // Opening this sheet is the moment they have asked, and it is early
+        // enough to save them the browser. `.task` and not `.onAppear` so the
+        // work is cancelled with the sheet if it is dismissed mid-request.
+        .task {
+            // A fresh provider each time rather than one held in `@State`:
+            // saving a club client id below changes which OAuth client this
+            // sheet should use, and a captured provider would keep signing in
+            // as the previous one.
+            guard model.availableRoots.isEmpty, let provider = GoogleDriveSheet.makeProvider() else {
+                return
+            }
+            await model.resumeSignIn(with: provider)
+        }
     }
 
     private var signInSection: some View {

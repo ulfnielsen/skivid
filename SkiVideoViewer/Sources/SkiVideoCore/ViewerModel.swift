@@ -364,6 +364,52 @@ public final class ViewerModel: ObservableObject {
         signInError = nil
     }
 
+    /// Tries to pick up the previous session's sign-in without a browser, and
+    /// lists the drives if it worked.
+    ///
+    /// The operator's complaint was "I don't understand why I have to login
+    /// with google every time I run the app." The credential to avoid that was
+    /// already in the Keychain; what was missing was anything that reached it
+    /// before the interactive flow.
+    ///
+    /// **Where this runs is deliberate: the Club Library sheet calls it when it
+    /// opens, not the app at launch.** Nothing should touch the network until
+    /// the coach asks for the library, and a cold launch that silently reaches
+    /// out to Google is surprising in a tool that mostly opens local folders —
+    /// on a phone tether at a race it is also someone's data. Opening the sheet
+    /// is the moment the coach has asked, and it is early enough to save them
+    /// the browser.
+    ///
+    /// Three outcomes, and the difference between the last two is the whole
+    /// point:
+    ///
+    ///  - Resumed and listed: the drive list appears, no browser.
+    ///  - Nothing to resume — first run, or a token Google has since refused:
+    ///    silent, leaving `availableRoots` empty, which is exactly what puts
+    ///    the ordinary "Sign in with Google" button on screen. No error, because
+    ///    an automatic attempt finding nothing is not a failure the coach
+    ///    caused, and a red banner about it reads as a bug.
+    ///  - Resumed and then failed to list: reported. The credential was
+    ///    accepted, so whatever went wrong is not something the coach can infer
+    ///    from a sign-in button — and an empty library that looks like a bug is
+    ///    worse than being told.
+    ///
+    /// Nothing here can leave the coach stuck: every path that does not end in
+    /// a drive list ends at the prompt they would have seen anyway.
+    public func resumeSignIn(with provider: any RemoteLibraryProvider) async {
+        guard await provider.resumeSession() else { return }
+        do {
+            availableRoots = try await provider.roots()
+            remoteProvider = provider
+            status = availableRoots.isEmpty
+                ? "No shared drives are visible to this account."
+                : "Choose a drive"
+        } catch {
+            availableRoots = []
+            signInError = error.localizedDescription
+        }
+    }
+
     public func signIn(with provider: any RemoteLibraryProvider) async {
         signInError = nil
         do {

@@ -25,7 +25,7 @@ enum StorageName {
 /// A cloud source of clips: what the app needs from Drive, and what it would
 /// need from anything else.
 ///
-/// Four methods, because four are what a library that only *reads* requires.
+/// Five methods, because five are what a library that only *reads* requires.
 /// Deliberately absent: writes, thumbnails, quota, search, and a change feed.
 /// A usable change feed exists for only some providers, so when a second one
 /// arrives, delta belongs in its own optional protocol rather than as a stub
@@ -38,6 +38,26 @@ public protocol RemoteLibraryProvider: Sendable {
 
     /// Interactive sign-in. Implementations persist their own refresh token.
     func connect(presenter: OAuthPresenter) async throws
+
+    /// Non-interactive sign-in from whatever a previous session persisted.
+    /// True when the provider can now authorize requests; false when it
+    /// cannot, and a caller that can present UI should then `connect`.
+    ///
+    /// Not `throws`, and that is the design: there is exactly one thing a
+    /// caller can do with any failure here, which is offer the ordinary
+    /// sign-in prompt. A thrown error would invite showing the coach a message
+    /// about a network call they never asked for — "Google Drive could not
+    /// complete the Google sign-in (HTTP 400)" in place of a sign-in button —
+    /// when the honest reading of every failure is simply "not signed in yet".
+    /// The one thing a caller *must* do is offer that prompt: a resume that
+    /// answers false and is met with an empty library looks like a bug, and is
+    /// worse than being asked to sign in.
+    ///
+    /// An implementation that answers true must leave itself able to authorize
+    /// requests, and one that discovers its stored credential was refused
+    /// should discard it — but only when it was refused, never when the
+    /// attempt merely failed to complete.
+    func resumeSession() async -> Bool
 
     /// The top-level containers this provider can enumerate. One element is a
     /// fine answer.
@@ -63,6 +83,15 @@ public protocol RemoteLibraryProvider: Sendable {
     /// Where to fetch this file's bytes. Minted per download and never stored
     /// in the index: any credential in it is short-lived.
     func downloadSource(for file: RemoteFile) async throws -> DownloadSource
+}
+
+public extension RemoteLibraryProvider {
+    /// A provider that persists nothing has no previous session to resume.
+    /// The default is false rather than absent so such a provider states that
+    /// by saying nothing, instead of carrying a stub — and false is the safe
+    /// answer either way: it costs one interactive sign-in, where a wrong true
+    /// would leave a caller believing it can authorize requests it cannot.
+    func resumeSession() async -> Bool { false }
 }
 
 public struct RemoteFolder: Hashable, Sendable {

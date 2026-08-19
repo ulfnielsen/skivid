@@ -148,6 +148,42 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         signIn.store(accessToken)
     }
 
+    /// Picks the previous session back up with no browser: the refresh token
+    /// the last sign-in put in the Keychain, exchanged for a fresh access
+    /// token. This is what stops a coach being sent to Google on every launch
+    /// — the credential to avoid it was already on disk, and until this existed
+    /// nothing reached it from a cold start. `get`'s 401 retry refreshes too,
+    /// but only mid-session: at launch the in-memory access token is nil, so
+    /// the first request throws `.notSignedIn` before any response can arrive
+    /// to be retried.
+    ///
+    /// Returns rather than throws — see the protocol. A caller has one useful
+    /// response to every failure here, which is to offer the ordinary sign-in.
+    public func resumeSession() async -> Bool {
+        guard let signIn else {
+            // Built from the `token:` closure: it supplies credentials on its
+            // own and has no refresh token to exchange, the same reason
+            // `connect` refuses. Nothing to resume, and nothing to unwrap.
+            return false
+        }
+        do {
+            _ = try await signIn.refreshedAccessToken()
+            return true
+        } catch {
+            // Only a refusal justifies deleting the coach's stored sign-in.
+            // A dropped connection or a 503 leaves it exactly where it was, so
+            // the next attempt — on better wifi, tomorrow — still resumes; the
+            // cost of being wrong the other way is a session lost for a reason
+            // the coach cannot see. `GoogleOAuth.isRejection` is the same
+            // judgement `authorize` makes, deliberately shared so the silent
+            // and interactive paths cannot drift apart.
+            if GoogleOAuth.isRejection(error) {
+                signIn.tokenStore.remove(account: signIn.configuration.clientID)
+            }
+            return false
+        }
+    }
+
     public func roots() async throws -> [RemoteFolder] {
         var found: [RemoteFolder] = []
         var pageToken: String?

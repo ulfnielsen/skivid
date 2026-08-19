@@ -14,6 +14,18 @@ public enum DriveError: LocalizedError, Equatable {
     case oauthCallback(String)
     case tokenExchange(String)
     case api(String)
+    /// Google's token endpoint answered, and its answer was "no": the grant it
+    /// was given is not acceptable. For a stored refresh token that means
+    /// revoked access, a changed password, or the roughly six-month idle
+    /// expiry — the token is dead and will stay dead.
+    ///
+    /// Its own case rather than a flavour of `.api` because it is the *only*
+    /// thing that justifies deleting a coach's stored sign-in. Everything else
+    /// a refresh can fail with — a dropped connection, a timeout, a 503 — says
+    /// nothing about whether the token is good, and discarding it on one of
+    /// those signs the coach out for a reason they cannot diagnose. See
+    /// `GoogleOAuth.rejectsTheGrant` for exactly which statuses land here.
+    case grantRejected(String)
     case secureRandomnessUnavailable
     /// The account is outside the club's Workspace. Google refuses these
     /// outright for an Internal app — there is no request-access prompt — so
@@ -25,7 +37,8 @@ public enum DriveError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case let .oauthCallback(message), let .tokenExchange(message), let .api(message):
+        case let .oauthCallback(message), let .tokenExchange(message), let .api(message),
+             let .grantRejected(message):
             return message
         case .secureRandomnessUnavailable:
             return "Could not generate a secure random value for Google sign-in. Please try again."
@@ -157,8 +170,22 @@ enum GoogleOAuth {
                     refreshToken: refreshToken, configuration: configuration, transport: transport
                 )
             } catch {
-                // A revoked or expired refresh token should not permanently prevent a new sign-in.
-                tokenStore.remove(account: configuration.clientID)
+                // A refresh token Google has *refused* is dead, and leaving it
+                // in the Keychain costs a round trip on every future attempt
+                // before falling back here anyway.
+                //
+                // But only that. This used to clear on any error at all, which
+                // meant one dropped connection at the moment a coach opened the
+                // sheet discarded a perfectly good refresh token permanently —
+                // and the browser then came back on every launch after that,
+                // invisibly, because the interactive flow below succeeds and
+                // nothing looks wrong until the next launch.
+                //
+                // Either way execution continues into the interactive flow, so
+                // a coach whose token could not be used is never stuck.
+                if isRejection(error) {
+                    tokenStore.remove(account: configuration.clientID)
+                }
             }
         }
 
@@ -233,6 +260,38 @@ enum GoogleOAuth {
         return try await refreshAccessToken(refreshToken: refreshToken, configuration: configuration, transport: transport)
     }
 
+    /// Whether a token-endpoint status means Google *refused* what it was
+    /// given, as opposed to failing to answer it.
+    ///
+    /// Only 400 and 401. RFC 6749 §5.2 requires 400 with `invalid_grant` for a
+    /// refresh token that is invalid, expired or revoked — which is what
+    /// Google returns for a revoked grant, a changed password and the roughly
+    /// six-month idle expiry alike — and 401 `invalid_client` for credentials
+    /// this client cannot use.
+    ///
+    /// The rest of the 4xx range is deliberately excluded, and that exclusion
+    /// is the point: 429 is rate limiting and 408 is a timeout, neither of
+    /// which says anything about whether the token is good. So is all of 5xx,
+    /// which is Google's own side failing. Whoever widens this to `400...499`
+    /// throws away a working session the first time the app is throttled.
+    static func rejectsTheGrant(_ statusCode: Int) -> Bool {
+        statusCode == 400 || statusCode == 401
+    }
+
+    /// Whether this error means the stored sign-in was refused rather than
+    /// merely unusable right now — the one condition under which a stored
+    /// refresh token may be deleted.
+    ///
+    /// One function so the interactive path (`authorize`, above) and the
+    /// silent one (`GoogleDriveProvider.resumeSession`) cannot drift into
+    /// disagreeing about it. A transport error — no connectivity, a timeout —
+    /// is not a `DriveError` at all and falls out here as false, which is the
+    /// answer: a request that never completed carries no verdict.
+    static func isRejection(_ error: Error) -> Bool {
+        guard let error = error as? DriveError, case .grantRejected = error else { return false }
+        return true
+    }
+
     private static func refreshAccessToken(
         refreshToken: String,
         configuration: GoogleOAuthConfiguration,
@@ -276,11 +335,16 @@ enum GoogleOAuth {
         request.httpBody = tokenRequestBody(values: values, configuration: configuration).data(using: .utf8)
         let (data, response) = try await transport.data(for: request)
         guard (200...299).contains(response.statusCode) else {
-            throw GoogleAPIError.describe(
+            let message = GoogleAPIError.describe(
                 data: data,
                 response: response,
                 action: "complete the Google sign-in"
             )
+            // Same wording either way — what differs is whether a caller
+            // holding a stored refresh token may conclude it is dead.
+            throw rejectsTheGrant(response.statusCode)
+                ? DriveError.grantRejected(message)
+                : DriveError.api(message)
         }
         do {
             return try JSONDecoder().decode(GoogleTokenResponse.self, from: data)
@@ -308,12 +372,15 @@ private struct GoogleAPIError: Decodable {
 
     let error: Details?
 
-    static func describe(data: Data, response: URLResponse, action: String) -> DriveError {
+    /// The message alone, not a `DriveError`: which case it becomes depends on
+    /// whether the status means Google refused the grant, and only the caller
+    /// knows to ask.
+    static func describe(data: Data, response: URLResponse, action: String) -> String {
         let statusCode = (response as? HTTPURLResponse)?.statusCode
         let decoded = try? JSONDecoder().decode(GoogleAPIError.self, from: data)
         let message = decoded?.error?.message ?? "No detail returned by Google."
         let status = statusCode.map { " (HTTP \($0))" } ?? ""
-        return .api("Google Drive could not \(action)\(status): \(message)")
+        return "Google Drive could not \(action)\(status): \(message)"
     }
 }
 

@@ -19,16 +19,31 @@ final class GoogleDriveProviderTests: XCTestCase {
     /// `GoogleOAuth`, starting with no stored credential. A second factory
     /// rather than changing `setUp`, so the pre-existing tests above keep
     /// their fixture untouched.
-    private func makeOAuthBackedProvider() -> GoogleDriveProvider {
+    /// The account key every stored refresh token is filed under — the client
+    /// id, which is what `GoogleOAuth` uses. Named here so the resume tests can
+    /// seed and inspect a store without repeating the literal.
+    private static let clientID = "test-client.apps.googleusercontent.com"
+
+    private func makeOAuthBackedProvider(
+        tokenStore: OAuthTokenStore = InMemoryOAuthTokenStore()
+    ) -> GoogleDriveProvider {
         GoogleDriveProvider(
             configuration: GoogleOAuthConfiguration(
-                clientID: "test-client.apps.googleusercontent.com",
+                clientID: Self.clientID,
                 clientSecret: nil,
                 redirectKind: .loopback
             ),
             transport: transport,
-            tokenStore: InMemoryOAuthTokenStore()
+            tokenStore: tokenStore
         )
+    }
+
+    /// A store already holding a refresh token, as a previous session's
+    /// successful sign-in would have left it.
+    private func storeHolding(_ refreshToken: String) throws -> InMemoryOAuthTokenStore {
+        let store = InMemoryOAuthTokenStore()
+        try store.save(refreshToken, account: Self.clientID)
+        return store
     }
 
     // MARK: - Sign-in
@@ -166,6 +181,178 @@ final class GoogleDriveProviderTests: XCTestCase {
         } catch {
             XCTFail("expected RemoteLibraryError, got \(error)")
         }
+    }
+
+    // MARK: - Resuming a previous session
+
+    /// The complaint this exists for: "I don't understand why I have to login
+    /// with google every time I run the app."
+    ///
+    /// A refresh token left by an earlier session must produce a working
+    /// session with no browser involved. Asserted by handing `resumeSession`
+    /// no presenter at all — it takes none, so an implementation that fell
+    /// back to the interactive flow could not compile — and then by a
+    /// subsequent request carrying the bearer the refresh actually minted,
+    /// which a `resumeSession` that returned true without exchanging anything
+    /// would fail.
+    func testAStoredRefreshTokenResumesTheSessionWithoutTheInteractiveFlow() async throws {
+        let store = try storeHolding("rt-1")
+        let provider = makeOAuthBackedProvider(tokenStore: store)
+        transport.responses = [
+            .init(json: #"{"access_token":"at-1"}"#),
+            .init(json: #"{"drives":[]}"#),
+        ]
+
+        let resumed = await provider.resumeSession()
+
+        XCTAssertTrue(resumed)
+        XCTAssertEqual(transport.requests.first?.url?.host, "oauth2.googleapis.com",
+                       "the one request must be the non-interactive token exchange")
+        _ = try await provider.roots()
+        XCTAssertEqual(
+            transport.requests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer at-1"
+        )
+    }
+
+    /// Nothing stored: nothing to resume, and — the part worth pinning — not
+    /// even a round trip spent discovering that. The caller falls through to
+    /// the ordinary sign-in prompt.
+    func testNoStoredTokenFallsThroughWithoutReachingTheNetwork() async {
+        let provider = makeOAuthBackedProvider()
+
+        let resumed = await provider.resumeSession()
+
+        XCTAssertFalse(resumed)
+        XCTAssertTrue(transport.requests.isEmpty, "there is nothing to ask Google about")
+    }
+
+    /// A provider built from the `token:` closure supplies its credentials
+    /// entirely on its own — there is no refresh token to exchange and no
+    /// configuration to exchange it under. It must answer honestly rather than
+    /// unwrap a nil `signIn`.
+    func testAProviderWithNoSignInFlowCannotResumeAndSaysSo() async {
+        // `setUp`'s provider is exactly that one.
+        let resumed = await provider.resumeSession()
+
+        XCTAssertFalse(resumed)
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    /// Google refusing a stored grant — access revoked, password changed, the
+    /// roughly six-month idle expiry — is an HTTP 400 `invalid_grant` per RFC
+    /// 6749 §5.2. That token is dead: keeping it means every later attempt
+    /// spends a round trip and falls back to the browser anyway.
+    func testARefreshTokenGoogleRejectsIsClearedFromTheStore() async throws {
+        let store = try storeHolding("rt-dead")
+        let provider = makeOAuthBackedProvider(tokenStore: store)
+        transport.responses = [
+            .init(status: 400, json: #"{"error":{"message":"Token has been expired or revoked."}}"#),
+        ]
+
+        let resumed = await provider.resumeSession()
+
+        XCTAssertFalse(resumed)
+        XCTAssertNil(store.load(account: Self.clientID), "a grant Google refused must not be kept")
+    }
+
+    /// The load-bearing half of the same rule, and the only thing here that can
+    /// lose a coach's session for a reason they cannot diagnose: a request that
+    /// never completed says nothing about whether the token is good. A second
+    /// of dropped wifi at a race must not sign the operator out.
+    ///
+    /// Asserted twice over, because "the string is still in the store" would
+    /// also pass against an implementation that had corrupted it: the same
+    /// stored token must go on to resume successfully once the network is back.
+    func testAResumeThatNeverReachedGoogleLeavesTheStoredTokenUsable() async throws {
+        let store = try storeHolding("rt-1")
+        let provider = makeOAuthBackedProvider(tokenStore: store)
+        transport.responses = [
+            .init(failure: URLError(.notConnectedToInternet)),
+            .init(json: #"{"access_token":"at-2"}"#),
+        ]
+
+        let offline = await provider.resumeSession()
+
+        XCTAssertFalse(offline, "a resume that could not complete has not resumed")
+        XCTAssertEqual(store.load(account: Self.clientID), "rt-1", "the token is untouched")
+
+        let backOnline = await provider.resumeSession()
+
+        XCTAssertTrue(backOnline, "the kept token must still work, not merely still be present")
+    }
+
+    /// The sharp edge between the two rules above. A 429 or a 5xx *did*
+    /// complete — unlike a dropped connection — but is Google's own side
+    /// failing, not a verdict on the token. A rule reading "any HTTP error
+    /// means rejected", or "any 4xx", discards a perfectly good session the
+    /// first time Drive rate-limits or hiccups.
+    func testAThrottledOrFailingTokenEndpointDoesNotClearTheStoredToken() async throws {
+        for status in [429, 500, 503] {
+            let store = try storeHolding("rt-1")
+            transport = FakeHTTPTransport()
+            let provider = makeOAuthBackedProvider(tokenStore: store)
+            transport.responses = [
+                .init(status: status, json: #"{"error":{"message":"Backend Error"}}"#),
+            ]
+
+            let resumed = await provider.resumeSession()
+
+            XCTAssertFalse(resumed, "HTTP \(status) is not a session")
+            XCTAssertEqual(
+                store.load(account: Self.clientID), "rt-1",
+                "HTTP \(status) is Google failing, not Google refusing the token"
+            )
+        }
+    }
+
+    /// `connect`'s own resume attempt — it tries the stored token before
+    /// opening a browser — has to obey the same rule, and did not: it cleared
+    /// the token on *any* failure. So one dropped connection at the moment a
+    /// coach opened the sheet discarded a good refresh token for good, and the
+    /// browser came back on every launch after that. Invisible when it happens,
+    /// because the interactive flow that follows succeeds.
+    ///
+    /// The presenter is made to fail so the store's contents can only reflect
+    /// the clear-or-keep decision, not a fresh token written over the top.
+    @MainActor
+    func testConnectKeepsAStoredTokenWhenItsResumeNeverReachedGoogle() async throws {
+        let store = try storeHolding("rt-good")
+        let provider = makeOAuthBackedProvider(tokenStore: store)
+        let presenter = FakeOAuthPresenter()
+        presenter.errorToThrow = DriveError.oauthCallback("no browser here")
+        transport.responses = [.init(failure: URLError(.timedOut))]
+
+        do {
+            try await provider.connect(presenter: presenter)
+            XCTFail("expected the presenter's failure to surface")
+        } catch {}
+
+        XCTAssertEqual(
+            store.load(account: Self.clientID), "rt-good",
+            "a resume that never reached Google says nothing about the token"
+        )
+    }
+
+    /// The companion that stops the fix above from becoming "never clear
+    /// anything": a grant Google actually refused is still dropped on the
+    /// `connect` path, so a revoked token does not sit in the Keychain costing
+    /// a round trip on every future attempt.
+    @MainActor
+    func testConnectClearsAStoredTokenGoogleRefused() async throws {
+        let store = try storeHolding("rt-dead")
+        let provider = makeOAuthBackedProvider(tokenStore: store)
+        let presenter = FakeOAuthPresenter()
+        presenter.errorToThrow = DriveError.oauthCallback("no browser here")
+        transport.responses = [
+            .init(status: 400, json: #"{"error":{"message":"Token has been expired or revoked."}}"#),
+        ]
+
+        do {
+            try await provider.connect(presenter: presenter)
+            XCTFail("expected the presenter's failure to surface")
+        } catch {}
+
+        XCTAssertNil(store.load(account: Self.clientID))
     }
 
     // MARK: - Credentials

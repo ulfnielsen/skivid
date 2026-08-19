@@ -17,6 +17,16 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     /// Thrown by `connect`, so a test can exercise a refused sign-in without
     /// a network or a real Google account.
     var connectError: Error?
+    /// Thrown by `roots()`, so a test can exercise a session that was resumed
+    /// or connected successfully and then could not list the drives — a
+    /// different outcome from having nothing to resume, and one the sheet must
+    /// not swallow.
+    var rootsError: Error?
+    /// What `resumeSession()` answers. False by default: a fake with nothing
+    /// arranged has no previous session, which is the honest answer and the
+    /// state most tests want.
+    var canResumeSession = false
+    private(set) var resumeCallCount = 0
     private(set) var connectCallCount = 0
     private(set) var downloadSourceCallCount = 0
     /// How many times `enumerate` was called — a full sweep. The relaunch
@@ -47,7 +57,15 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
         connectCallCount += 1
     }
 
-    func roots() async throws -> [RemoteFolder] { rootsToReturn }
+    func resumeSession() async -> Bool {
+        resumeCallCount += 1
+        return canResumeSession
+    }
+
+    func roots() async throws -> [RemoteFolder] {
+        if let rootsError { throw rootsError }
+        return rootsToReturn
+    }
 
     func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error> {
         enumerateCallCount += 1

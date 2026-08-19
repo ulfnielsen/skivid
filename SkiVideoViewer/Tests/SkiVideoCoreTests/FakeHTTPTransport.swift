@@ -11,11 +11,30 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
         let status: Int
         let body: Data
         let contentType: String
+        /// Thrown instead of answering, so a queued entry can stand for a
+        /// request that never completed — no connectivity, a timeout, DNS
+        /// gone — as opposed to one the server answered and refused.
+        ///
+        /// The distinction is not decorative: whether a stored refresh token
+        /// survives a failed resume turns on exactly it, and a fake that
+        /// could only produce HTTP statuses cannot express "the request did
+        /// not complete" at all. Queued in sequence rather than set as a flag
+        /// on the whole transport so a test can fail one request and let the
+        /// next succeed, which is what the fall-back paths do.
+        let failure: Error?
 
         init(status: Int = 200, json: String, contentType: String = "application/json") {
             self.status = status
             self.body = Data(json.utf8)
             self.contentType = contentType
+            self.failure = nil
+        }
+
+        init(failure: Error) {
+            self.status = 0
+            self.body = Data()
+            self.contentType = ""
+            self.failure = failure
         }
     }
 
@@ -47,6 +66,9 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
         }
         guard let response else {
             throw RemoteLibraryError.api("FakeHTTPTransport ran out of responses")
+        }
+        if let failure = response.failure {
+            throw failure
         }
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
