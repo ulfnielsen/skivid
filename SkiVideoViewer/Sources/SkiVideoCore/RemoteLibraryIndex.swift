@@ -40,6 +40,14 @@ public struct RemoteLibraryIndex: Equatable {
     /// reload must derive athlete and event the same way the sweep that
     /// built the index did.
     public let convention: FolderConvention
+    /// Whether `convention` is the operator's own pick rather than something
+    /// read off the folders. Stored, because the difference only matters
+    /// *later*: an inferred layout is re-read on every open, so a library that
+    /// becomes legible as more of it is swept lands the right way round on its
+    /// own, while a chosen one is never quietly overruled by that same
+    /// re-reading. Without this the two are indistinguishable on reload and
+    /// one of the two behaviours has to be wrong.
+    public let conventionWasChosen: Bool
     public private(set) var athletes: [AthleteGroup]
     /// Where the change feed resumes, or nil before the first sweep.
     public private(set) var cursor: String?
@@ -51,12 +59,22 @@ public struct RemoteLibraryIndex: Equatable {
         rootName: String = "Unsorted",
         files: [RemoteFile],
         cursor: String? = nil,
-        convention: FolderConvention = .eventThenAthlete
+        // `.athleteThenEvent` since 2026-08-19, and it is the *fallback*, not
+        // a claim about libraries in general: `ViewerModel.openRemoteLibrary`
+        // reads the layout off the folders and only lands here when they say
+        // nothing either way. The old default said event-first — the local
+        // scanner's shape — and the one Shared Drive anyone has measured nests
+        // the other way round, 335 clips of 335. A caller that knows better
+        // passes it; a caller that does not gets the shape the evidence
+        // supports.
+        convention: FolderConvention = .athleteThenEvent,
+        conventionWasChosen: Bool = false
     ) {
         self.providerIdentifier = providerIdentifier
         self.rootName = rootName
         self.cursor = cursor
         self.convention = convention
+        self.conventionWasChosen = conventionWasChosen
 
         var entries: [LibraryGrouping.Entry] = []
         var filesByURL: [URL: RemoteFile] = [:]
@@ -137,6 +155,118 @@ public struct RemoteLibraryIndex: Equatable {
     /// index's — a local clip, or one indexed before a refresh dropped it.
     public func file(for url: URL) -> RemoteFile? { filesByURL[url] }
 
+    /// Every indexed file, in no particular order. What a recomputation reads:
+    /// the grouping is derived from these plus `convention`, so anything that
+    /// changes the convention needs them and nothing else.
+    public var files: [RemoteFile] { Array(filesByURL.values) }
+
+    /// This index read the other way round.
+    ///
+    /// Recomputed from the files already in memory — `init` derives `athletes`
+    /// from `files` and `convention` and stores no folder tree, so changing
+    /// the layout is one pass over the file list and never a byte from Drive.
+    /// That is the whole fix for a layout picker that could not be corrected:
+    /// the data to re-group by was in the index the entire time.
+    public func settingConvention(
+        _ convention: FolderConvention, chosenByOperator: Bool
+    ) -> RemoteLibraryIndex {
+        guard convention != self.convention || chosenByOperator != conventionWasChosen
+        else { return self }
+        return RemoteLibraryIndex(
+            providerIdentifier: providerIdentifier,
+            rootName: rootName,
+            files: files,
+            cursor: cursor,
+            convention: convention,
+            conventionWasChosen: chosenByOperator
+        )
+    }
+
+    /// Which way round these folders go, or nil when they do not say.
+    ///
+    /// Only a clip with two folders above it carries any evidence, and it is
+    /// the *pair* that carries it rather than either name alone: a folder that
+    /// looks like a date is an event — a session is named by when it happened,
+    /// an athlete by who they are — so a pair with exactly one date-shaped
+    /// name votes for whichever layout puts that name in the event slot. A
+    /// pair where both look like dates, or neither does, abstains rather than
+    /// guessing. Majority wins; a tie decides nothing and answers nil, which
+    /// is a real outcome and not an error — the caller has a default for it.
+    ///
+    /// Measured against the operator's drive (995fa97fce4dc6ed.skiindex.json,
+    /// 2026-08-19): 335 clips two deep, `Idun Nielsen/2026-02-25_Hoch-Ybrig`
+    /// and 334 more like it — 335 votes for athlete-first and none against,
+    /// where the index had `eventThenAthlete` stored.
+    ///
+    /// Counted per clip rather than per distinct folder pair, which is the
+    /// measurement above. The two agree on that library; where they would not
+    /// — one enormous folder against many small ones — per clip is the honest
+    /// answer to "how much of what this coach opens is filed which way".
+    public static func inferredConvention(from files: [RemoteFile]) -> FolderConvention? {
+        func decision(byEventLikeness looksLikeAnEvent: (String) -> Bool) -> FolderConvention? {
+            var athleteFirst = 0
+            var eventFirst = 0
+            for file in files where file.path.count >= 2 {
+                let upper = file.path[file.path.count - 2]
+                let lower = file.path[file.path.count - 1]
+                switch (looksLikeAnEvent(upper), looksLikeAnEvent(lower)) {
+                case (true, false): eventFirst += 1
+                case (false, true): athleteFirst += 1
+                default: continue
+                }
+            }
+            if athleteFirst > eventFirst { return .athleteThenEvent }
+            if eventFirst > athleteFirst { return .eventThenAthlete }
+            return nil
+        }
+        // The weaker signal is consulted only where the stronger one does not
+        // decide, and that ordering is the point: an athlete folder carrying a
+        // birth year — "Anna 2010" — reads as an event to the year rule and as
+        // a person to the date rule, so a library that dates its events
+        // properly must never have its answer diluted by one that does not.
+        return decision(byEventLikeness: startsWithADate)
+            ?? decision(byEventLikeness: containsAYear)
+    }
+
+    /// A folder name that opens with a date: `2026-02-25_Hoch-Ybrig`,
+    /// `20251213 Zürs`, `2026-25-04_Hoch-Ybrig` — all three from the
+    /// operator's drive.
+    ///
+    /// The shape is matched and the value never validated, which the third of
+    /// those is the reason for: its month is 25. A mistyped date is still a
+    /// date to whoever named the folder, and a rule that rejected it would
+    /// silently drop evidence for the very libraries that need reading.
+    static func startsWithADate(_ name: String) -> Bool {
+        let characters = Array(name)
+        func isDigit(_ index: Int) -> Bool {
+            characters.indices.contains(index)
+                && characters[index].isASCII && characters[index].isNumber
+        }
+        func digits(_ range: Range<Int>) -> Bool { range.allSatisfy(isDigit) }
+
+        // A leading four-digit year is what makes the rest worth reading: no
+        // athlete's name begins with one.
+        guard digits(0..<4), let year = Int(String(characters[0..<4])),
+              (1900...2999).contains(year)
+        else { return false }
+        // `20251213 Zürs`
+        if digits(4..<8) { return true }
+        // `2026-02-25_Hoch-Ybrig`, and the same with `.`, `_`, `/` or a space.
+        let separators: Set<Character> = ["-", ".", "_", "/", " "]
+        return characters.count >= 10
+            && separators.contains(characters[4]) && digits(5..<7)
+            && separators.contains(characters[7]) && digits(8..<10)
+    }
+
+    /// A folder name carrying a bare four-digit year — `Neuss 2026`, the shape
+    /// this project's own local libraries name an event with. Weaker than a
+    /// date, which is why `inferredConvention` only reaches for it second.
+    static func containsAYear(_ name: String) -> Bool {
+        name.split(whereSeparator: { !($0.isASCII && $0.isNumber) }).contains { token in
+            token.count == 4 && (1900...2999).contains(Int(token) ?? 0)
+        }
+    }
+
     /// The file with this id, or nil when the index holds none. For a
     /// comparison pane, which knows a clip only by the `ClipIdentity` it was
     /// given — unlike `file(for:)`, the sidebar's hot path, this is a linear
@@ -196,9 +326,10 @@ public struct RemoteLibraryIndex: Equatable {
             version: Self.currentVersion,
             providerIdentifier: providerIdentifier,
             rootName: rootName,
-            files: Array(filesByURL.values).sorted { $0.id < $1.id },
+            files: files.sorted { $0.id < $1.id },
             cursor: cursor,
-            convention: convention
+            convention: convention,
+            conventionWasChosen: conventionWasChosen
         )
         try JSONEncoder().encode(stored).write(to: url, options: .atomic)
     }
@@ -216,7 +347,13 @@ public struct RemoteLibraryIndex: Equatable {
             rootName: stored.rootName,
             files: stored.files,
             cursor: stored.cursor,
-            convention: stored.convention ?? .eventThenAthlete
+            // Both fallbacks are unreachable in practice — a version 2 file is
+            // written by this build and always carries both fields — and both
+            // are still the answer that costs least if one ever goes missing:
+            // a layout that says it was inferred gets re-inferred on this very
+            // open, so the wrong guess corrects itself instead of sticking.
+            convention: stored.convention ?? .athleteThenEvent,
+            conventionWasChosen: stored.conventionWasChosen ?? false
         )
     }
 
@@ -257,7 +394,8 @@ public struct RemoteLibraryIndex: Equatable {
             rootName: rootName,
             files: Array(byID.values),
             cursor: changes.cursor,
-            convention: convention
+            convention: convention,
+            conventionWasChosen: conventionWasChosen
         )
     }
 
@@ -268,8 +406,12 @@ public struct RemoteLibraryIndex: Equatable {
         let files: [RemoteFile]
         let cursor: String?
         /// Optional so a file written before this field existed still
-        /// decodes — see `load`, which falls back to `.eventThenAthlete`,
-        /// today's only convention, when it is absent.
+        /// decodes — see `load` for what it falls back to and why that
+        /// fallback is cheap to be wrong about.
         let convention: FolderConvention?
+        /// Optional for the same reason, and separate from `convention`
+        /// because it answers a different question: not which way the folders
+        /// go, but whether anyone said so.
+        let conventionWasChosen: Bool?
     }
 }

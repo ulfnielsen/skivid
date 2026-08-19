@@ -200,4 +200,87 @@ final class RemoteLibraryWiringTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertFalse(model.isPreparingClip)
     }
+
+    // MARK: - Folder layout
+
+    /// **Why the layout picker "never took effect".** `openRemoteLibrary` used
+    /// the convention it was handed only on a *fresh* sweep; a stored index
+    /// kept whatever it was built with, so once a drive had been indexed once
+    /// — which is after the very first open — no pick could reach it again.
+    /// The operator's drive was stored `eventThenAthlete`, and toggling the
+    /// picker changed nothing, "no matter what I do it gets it wrong".
+    ///
+    /// The second open here is the one that used to be ignored. Asserted on
+    /// the sidebar, and on the enumeration count, which is what proves the
+    /// re-grouping came from the files already indexed rather than from
+    /// listing the drive again.
+    func testAChosenLayoutTakesEffectOnAnAlreadyIndexedDrive() async throws {
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["2026-07-16_Neuss", "Ada"]),
+        ])
+        let root = RemoteFolder(id: "d1", name: "Club")
+        try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+        XCTAssertEqual(model.athletes.map(\.name), ["Ada"], "inferred event-first")
+
+        try await model.openRemoteLibrary(
+            provider: provider, root: root, cache: cache, convention: .athleteThenEvent
+        )
+
+        XCTAssertEqual(model.athletes.map(\.name), ["2026-07-16_Neuss"])
+        XCTAssertEqual(model.athletes.map(\.event), ["Ada"])
+        XCTAssertEqual(provider.enumerateCallCount, 1, "re-grouped, not re-listed")
+    }
+
+    /// A pick is a pick. The folders here say event-first as loudly as folders
+    /// can, and the coach who said otherwise must not be argued with on the
+    /// next open — an inference that could overrule a choice would be the same
+    /// bug as a choice that could not be made.
+    func testInferenceNeverOverrulesAChosenLayoutOnALaterOpen() async throws {
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["2026-07-16_Neuss", "Ada"]),
+        ])
+        let root = RemoteFolder(id: "d1", name: "Club")
+        try await model.openRemoteLibrary(
+            provider: provider, root: root, cache: cache, convention: .athleteThenEvent
+        )
+
+        try await model.openRemoteLibrary(provider: provider, root: root, cache: cache)
+
+        XCTAssertEqual(model.athletes.map(\.name), ["2026-07-16_Neuss"])
+    }
+
+    /// The operator's own shape, end to end: dated sessions under named
+    /// people, opened with nothing chosen. Their index stored the opposite and
+    /// showed the dates as athletes.
+    func testAnUnchosenLayoutIsInferredFromTheFoldersThemselves() async throws {
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Idun Nielsen", "2026-02-25_Hoch-Ybrig"]),
+            remoteFile("b", "run2.mp4", ["Nora Nielsen", "20251213 Zürs"]),
+        ])
+
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Videos"), cache: cache
+        )
+
+        XCTAssertEqual(model.athletes.map(\.name), ["Idun Nielsen", "Nora Nielsen"])
+        XCTAssertEqual(
+            model.athletes.map(\.event), ["2026-02-25_Hoch-Ybrig", "20251213 Zürs"]
+        )
+    }
+
+    /// Where the folders say nothing, athlete-first — the shape the one
+    /// measured Shared Drive uses, and a decision that has to be made
+    /// somewhere. Fails if the fallback is ever put back to event-first.
+    func testFoldersThatSayNothingFallBackToAthleteFirst() async throws {
+        let (model, provider, cache) = try remoteModel(files: [
+            remoteFile("a", "run1.mp4", ["Ada", "Session"]),
+        ])
+
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+
+        XCTAssertEqual(model.athletes.map(\.name), ["Ada"])
+        XCTAssertEqual(model.athletes.map(\.event), ["Session"])
+    }
 }

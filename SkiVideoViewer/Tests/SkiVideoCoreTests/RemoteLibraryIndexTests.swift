@@ -59,7 +59,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
     func testAthleteAndEventComeFromTheLastTwoPathComponents() {
         let index = RemoteLibraryIndex(
             providerIdentifier: "gdrive",
-            files: [file("a", "run.mp4", ["Neuss 2026", "Ada"])]
+            files: [file("a", "run.mp4", ["Neuss 2026", "Ada"])],
+            convention: .eventThenAthlete
         )
         XCTAssertEqual(index.athletes.map(\.name), ["Ada"])
         XCTAssertEqual(index.athletes.map(\.event), ["Neuss 2026"])
@@ -70,7 +71,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
     func testAClipOneLevelDownHasAnAthleteButNoEvent() {
         let index = RemoteLibraryIndex(
             providerIdentifier: "gdrive",
-            files: [file("a", "run.mp4", ["Ada"])]
+            files: [file("a", "run.mp4", ["Ada"])],
+            convention: .eventThenAthlete
         )
         XCTAssertEqual(index.athletes.map(\.name), ["Ada"])
         XCTAssertNil(index.athletes[0].event)
@@ -93,7 +95,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
     func testDeeperClipsUseTheTwoFoldersNearestThem() {
         let index = RemoteLibraryIndex(
             providerIdentifier: "gdrive",
-            files: [file("a", "run.mp4", ["2026", "Neuss 2026", "Ada"])]
+            files: [file("a", "run.mp4", ["2026", "Neuss 2026", "Ada"])],
+            convention: .eventThenAthlete
         )
         XCTAssertEqual(index.athletes.map(\.name), ["Ada"])
         XCTAssertEqual(index.athletes.map(\.event), ["Neuss 2026"])
@@ -123,6 +126,127 @@ final class RemoteLibraryIndexTests: XCTestCase {
         XCTAssertEqual(
             index.athletes[0].videos.map(\.lastPathComponent), ["z.mp4", "a.mp4"]
         )
+    }
+
+    // MARK: - Layout
+
+    /// **The operator's drive.** Their index stored `eventThenAthlete` while
+    /// every one of its 335 two-deep clips is filed
+    /// `<athlete>/<dated session>/clip.mp4`, so the sidebar showed dates as
+    /// athletes. These four names are real ones from it, including the two
+    /// shapes a stricter date rule would miss: `20251213 Zürs` has no
+    /// separators, and `2026-25-04_Hoch-Ybrig` has month 25 — a typo, and
+    /// still obviously a date to whoever typed it.
+    func testDatedFoldersUnderNamedOnesInferAthleteFirst() {
+        let inferred = RemoteLibraryIndex.inferredConvention(from: [
+            file("a", "a.mp4", ["Idun Nielsen", "2026-02-25_Hoch-Ybrig"]),
+            file("b", "b.mp4", ["Nora Nielsen", "20251213 Zürs"]),
+            file("c", "c.mp4", ["Harry Korrodi", "2026-01-14_Brunni"]),
+            file("d", "d.mp4", ["Maxi Wiest", "2026-25-04_Hoch-Ybrig"]),
+        ])
+        XCTAssertEqual(inferred, .athleteThenEvent)
+    }
+
+    /// The same rule, the other way round — otherwise this would not be
+    /// inference at all, just a second hardcoded answer.
+    func testDatedFoldersAboveNamedOnesInferEventFirst() {
+        let inferred = RemoteLibraryIndex.inferredConvention(from: [
+            file("a", "a.mp4", ["2026-07-16_Neuss", "Ada"]),
+            file("b", "b.mp4", ["2026-07-17_Neuss", "Bea"]),
+        ])
+        XCTAssertEqual(inferred, .eventThenAthlete)
+    }
+
+    /// Folders that look like nothing in particular decide nothing. Nil is the
+    /// honest answer and a real outcome: the caller has a default for it, and
+    /// a guess here would be indistinguishable from evidence later.
+    func testFoldersWithNoDatesAtAllDecideNothing() {
+        XCTAssertNil(RemoteLibraryIndex.inferredConvention(from: [
+            file("a", "a.mp4", ["Club", "Ada"]),
+            file("b", "b.mp4", ["Club", "Bea"]),
+        ]))
+    }
+
+    /// A clip with fewer than two folders above it has no pair to compare, so
+    /// it abstains — including the pathless clips this whole fix exists
+    /// because of, which must not drag the answer either way.
+    func testClipsWithoutTwoFoldersAboveThemDoNotVote() {
+        XCTAssertNil(RemoteLibraryIndex.inferredConvention(from: [
+            file("a", "a.mp4", []),
+            file("b", "b.mp4", ["2026-01-14_Brunni"]),
+        ]))
+    }
+
+    /// An even split decides nothing rather than tipping on file order.
+    func testAnEvenSplitDecidesNothing() {
+        XCTAssertNil(RemoteLibraryIndex.inferredConvention(from: [
+            file("a", "a.mp4", ["Ada", "2026-07-16_Neuss"]),
+            file("b", "b.mp4", ["2026-07-17_Neuss", "Bea"]),
+        ]))
+    }
+
+    /// A bare year — `Neuss 2026`, the shape the local libraries use — is
+    /// enough where nothing carries a full date.
+    func testABareYearNamesAnEventWhenNothingCarriesADate() {
+        XCTAssertEqual(
+            RemoteLibraryIndex.inferredConvention(from: [
+                file("a", "a.mp4", ["Neuss 2026", "Ada"]),
+            ]),
+            .eventThenAthlete
+        )
+    }
+
+    /// …but only where nothing does. An athlete folder carrying a birth year
+    /// reads as an event to the year rule; a library that dates its sessions
+    /// properly must not have its answer diluted by one clip that does not.
+    /// Two year-only pairs against one dated pair, and the dated one wins.
+    func testADatedFolderOutranksAYearNoMatterHowManyYearsThereAre() {
+        XCTAssertEqual(
+            RemoteLibraryIndex.inferredConvention(from: [
+                file("a", "a.mp4", ["Anna 2010", "Neuss 2026"]),
+                file("b", "b.mp4", ["Bea 2011", "Neuss 2026"]),
+                file("c", "c.mp4", ["Carl", "2026-07-16_Neuss"]),
+            ]),
+            .athleteThenEvent
+        )
+    }
+
+    /// Changing the layout must re-group the clips already indexed and fetch
+    /// nothing. Asserted on the athletes actually changing, because an index
+    /// that merely stored the new convention without re-grouping would look
+    /// identical to its caller until the next reload.
+    func testChangingTheLayoutRegroupsTheFilesAlreadyIndexed() {
+        let index = RemoteLibraryIndex(
+            providerIdentifier: "gdrive",
+            files: [file("a", "run.mp4", ["Ada", "2026-07-16_Neuss"])],
+            convention: .eventThenAthlete
+        )
+        XCTAssertEqual(index.athletes.map(\.name), ["2026-07-16_Neuss"])
+
+        let relaid = index.settingConvention(.athleteThenEvent, chosenByOperator: true)
+
+        XCTAssertEqual(relaid.athletes.map(\.name), ["Ada"])
+        XCTAssertEqual(relaid.athletes.map(\.event), ["2026-07-16_Neuss"])
+        XCTAssertTrue(relaid.conventionWasChosen)
+        XCTAssertEqual(relaid.file(for: relaid.athletes[0].videos[0])?.id, "a",
+                       "the same files, re-grouped — not refetched")
+    }
+
+    /// Whether the layout was chosen or inferred has to survive a reload, or
+    /// the next open cannot tell which of the two rules to apply.
+    func testAChosenLayoutIsStillMarkedChosenAfterAReload() async throws {
+        try await withTemporaryIndexStore {
+            try RemoteLibraryIndex(
+                providerIdentifier: "gdrive",
+                files: [file("a", "run.mp4", ["Ada", "2026-07-16_Neuss"])],
+                convention: .eventThenAthlete,
+                conventionWasChosen: true
+            ).save(forRoot: "d1")
+
+            let loaded = try XCTUnwrap(RemoteLibraryIndex.load(forRoot: "d1"))
+            XCTAssertEqual(loaded.convention, .eventThenAthlete)
+            XCTAssertTrue(loaded.conventionWasChosen)
+        }
     }
 
     // MARK: - Filtering
@@ -168,7 +292,8 @@ final class RemoteLibraryIndexTests: XCTestCase {
             let index = RemoteLibraryIndex(
                 providerIdentifier: "gdrive",
                 files: [file("a", "run.mp4", ["E", "Ada"])],
-                cursor: "cursor-1"
+                cursor: "cursor-1",
+                convention: .eventThenAthlete
             )
             try index.save(forRoot: "d1")
 
@@ -182,10 +307,12 @@ final class RemoteLibraryIndexTests: XCTestCase {
     func testTwoDrivesKeepSeparateIndexes() async throws {
         try await withTemporaryIndexStore {
             try RemoteLibraryIndex(
-                providerIdentifier: "gdrive", files: [file("a", "a.mp4", ["E", "Ada"])], cursor: nil
+                providerIdentifier: "gdrive", files: [file("a", "a.mp4", ["E", "Ada"])],
+                cursor: nil, convention: .eventThenAthlete
             ).save(forRoot: "d1")
             try RemoteLibraryIndex(
-                providerIdentifier: "gdrive", files: [file("b", "b.mp4", ["E", "Bea"])], cursor: nil
+                providerIdentifier: "gdrive", files: [file("b", "b.mp4", ["E", "Bea"])],
+                cursor: nil, convention: .eventThenAthlete
             ).save(forRoot: "d2")
 
             XCTAssertEqual(RemoteLibraryIndex.load(forRoot: "d1")?.athletes.map(\.name), ["Ada"])

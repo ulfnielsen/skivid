@@ -15,11 +15,12 @@ struct GoogleDriveSheet: View {
     @Binding var isPresented: Bool
     let cache: ClipCache
     /// Which of the two folders nearest a clip is the athlete and which is
-    /// the event, for whichever drive is chosen next. `.eventThenAthlete`
-    /// matches the local convention, so it stays the default until a coach
-    /// says otherwise — this sheet is the one place that convention is
-    /// "settable when a remote library is opened," per the design.
-    @State private var folderConvention: FolderConvention = .eventThenAthlete
+    /// the event, for whichever drive is chosen next — or nil to let the
+    /// folders themselves say, which is the default and answers correctly for
+    /// every library anyone has measured. This sheet is the one place that
+    /// convention is "settable when a remote library is opened," per the
+    /// design; a pick made here is remembered as a pick and never re-guessed.
+    @State private var folderConvention: FolderConvention?
     /// Whether picking a drive should throw its cached index away first. Not
     /// persisted: a rebuild is something a coach asks for once, when something
     /// looks wrong, and a switch that stayed on would turn every later open
@@ -226,13 +227,22 @@ struct GoogleDriveSheet: View {
             // the reverse of the local convention — and a wrong pick here is
             // what used to show athlete names as section headers, reversed
             // clip captions, and reversed ordering throughout the sidebar.
+            //
+            // "Automatic" leads because it is right where anything is: dated
+            // folders are events, and the operator's drive says athlete-first
+            // 335 times out of 335. The two explicit options stay for the
+            // library it cannot read — and because a coach looking at a
+            // reversed sidebar needs something to *do*, not a detector to
+            // trust. Either explicit pick now takes effect on an
+            // already-indexed drive, which it did not before.
             VStack(alignment: .leading, spacing: 4) {
                 Text("Folder layout")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("Folder layout", selection: $folderConvention) {
-                    Text("Event, then athlete").tag(FolderConvention.eventThenAthlete)
-                    Text("Athlete, then event").tag(FolderConvention.athleteThenEvent)
+                    Text("Automatic").tag(FolderConvention?.none)
+                    Text("Event, then athlete").tag(FolderConvention?.some(.eventThenAthlete))
+                    Text("Athlete, then event").tag(FolderConvention?.some(.athleteThenEvent))
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)

@@ -438,7 +438,7 @@ public final class ViewerModel: ObservableObject {
     @discardableResult
     public func chooseRoot(
         _ root: RemoteFolder, cache: ClipCache,
-        convention: FolderConvention = .eventThenAthlete,
+        convention: FolderConvention? = nil,
         rebuilding: Bool = false
     ) async -> Bool {
         signInError = nil
@@ -459,10 +459,21 @@ public final class ViewerModel: ObservableObject {
     /// Opens a cloud library: index it, group it, show it. No bytes are
     /// fetched — a clip downloads when it is selected.
     ///
-    /// `convention` only matters for a *fresh* sweep — a stored index already
-    /// knows the convention it was built with (see `RemoteLibraryIndex.load`)
-    /// and keeps it regardless of what is passed here, so reopening a drive
-    /// never silently relabels an already-indexed library.
+    /// `convention` is the operator's explicit pick, or nil to read the layout
+    /// off the folders. **It used to apply to a fresh sweep only** — a stored
+    /// index kept whatever it was built with, which was documented here as a
+    /// safeguard against silently relabelling a library and was in fact the
+    /// reason the layout picker "never took effect": once a drive had been
+    /// indexed once, nothing the coach chose could reach it again, and the
+    /// operator's drive was stored as `eventThenAthlete` while being
+    /// unambiguously athlete-first. It now applies every time, and costs
+    /// nothing to apply — `RemoteLibraryIndex.settingConvention` re-groups the
+    /// files already in hand and fetches nothing.
+    ///
+    /// A pick is remembered as a pick, so the inference below never overrules
+    /// it on a later open. Nil re-reads the folders on every open rather than
+    /// keeping the last inference, which is what makes a library that was
+    /// unreadable when small land the right way round once it has grown.
     ///
     /// `rebuilding` throws the stored index away first, so the drive is listed
     /// from scratch. The escape hatch for state no refresh can correct — a
@@ -474,7 +485,7 @@ public final class ViewerModel: ObservableObject {
         provider: any RemoteLibraryProvider,
         root: RemoteFolder,
         cache: ClipCache,
-        convention: FolderConvention = .eventThenAthlete,
+        convention: FolderConvention? = nil,
         rebuilding: Bool = false
     ) async throws {
         status = rebuilding ? "Rebuilding \(root.name)…" : "Listing \(root.name)…"
@@ -497,16 +508,32 @@ public final class ViewerModel: ObservableObject {
         } else if index == nil {
             var files: [RemoteFile] = []
             for try await file in provider.enumerate(root) { files.append(file) }
+            // No convention here: the sweep's own files are what the layout is
+            // decided from, a few lines below, and passing one would make this
+            // branch quietly disagree with the stored-index branch.
             var swept = RemoteLibraryIndex(
                 providerIdentifier: type(of: provider).identifier,
-                rootName: root.name, files: files, convention: convention
+                rootName: root.name, files: files
             )
             if let incremental = provider as? IncrementallyEnumerable {
                 swept = swept.withCursor(try await incremental.startCursor(forRoot: root.id))
             }
             index = swept
         }
-        guard let index, !index.athletes.isEmpty else { throw ViewerError.noVideos }
+        guard var index, !index.athletes.isEmpty else { throw ViewerError.noVideos }
+
+        // The layout, decided once the files are in hand and never before. An
+        // explicit pick wins outright and is recorded as explicit; otherwise
+        // the folders are read afresh, every open. `.athleteThenEvent` where
+        // they say nothing either way.
+        if let convention {
+            index = index.settingConvention(convention, chosenByOperator: true)
+        } else if !index.conventionWasChosen {
+            index = index.settingConvention(
+                RemoteLibraryIndex.inferredConvention(from: index.files) ?? .athleteThenEvent,
+                chosenByOperator: false
+            )
+        }
 
         endSlowMotion()
         player.pause()
