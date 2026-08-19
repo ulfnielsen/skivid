@@ -567,6 +567,71 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(transport.requests.count, 2)
     }
 
+    /// The bug a coach met as "Google Drive returned an unexpected reply: no
+    /// `fileId` in the reply, at `changes.Index 38`." — the Open Club Library
+    /// sheet then showed no library at all.
+    ///
+    /// Drive's change log is not only file changes: a change to the shared
+    /// drive itself (`changeType: "drive"` — renamed, sharing settings edited)
+    /// carries `driveId`/`drive` and no `fileId`. Under the old field mask
+    /// such a record arrived carrying none of the requested keys, so a
+    /// non-optional `fileId` threw `keyNotFound` — and because one page decodes
+    /// as a unit, a single drive-level record anywhere in a 1000-item page took
+    /// the whole library open with it. Index 38 was simply where the operator's
+    /// first one landed.
+    ///
+    /// The record is placed mid-page with real files either side, so this also
+    /// proves the neighbours survive rather than the page being abandoned at
+    /// the first oddity.
+    func testADriveLevelChangeRecordIsSkippedRatherThanFailingTheWholePage() async throws {
+        transport.responses = [.init(json: """
+        {"newStartPageToken":"t2","changes":[
+          {"fileId":"f1","removed":false,
+           "file":{"id":"f1","name":"before.mp4","mimeType":"video/mp4","parents":["d1"],"size":"1"}},
+          {},
+          {"fileId":"f3","removed":false,
+           "file":{"id":"f3","name":"after.mp4","mimeType":"video/mp4","parents":["d1"],"size":"1"}}
+        ]}
+        """)]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed.map(\.id), ["f1", "f3"])
+        XCTAssertTrue(changes.removed.isEmpty, "a record naming no file is no clip's removal")
+        XCTAssertEqual(changes.cursor, "t2")
+    }
+
+    /// Without `changeType` in the mask the client can only say a key was
+    /// absent; with it, a skip can say what the record was. It is also the
+    /// only way to recognise a non-file record that *does* carry a `fileId`.
+    func testTheChangeFeedAsksForTheChangeType() async throws {
+        transport.responses = [.init(json: #"{"newStartPageToken":"t2","changes":[]}"#)]
+        _ = try await provider.changes(since: "t1", forRoot: "d1")
+        let fields = try XCTUnwrap(transport.queryItems(of: 0)["fields"])
+        XCTAssertTrue(fields.contains("changeType"), "fields is missing changeType: \(fields)")
+    }
+
+    /// The sibling of the bug above, and the worse one. A non-file record that
+    /// carries a `fileId` — Drive stamps a drive-level change with the drive's
+    /// own id, and the drive id is a folder id — would fall into the
+    /// `file == nil` branch and be reported as a *removal*, silently evicting
+    /// whatever that id names from the index. Skipping on `changeType` as well
+    /// as on a missing `fileId` is what stops that.
+    func testANonFileChangeCarryingAFileIDIsNotReportedAsARemoval() async throws {
+        transport.responses = [.init(json: """
+        {"newStartPageToken":"t2","changes":[
+          {"changeType":"drive","fileId":"d1","driveId":"d1"},
+          {"fileId":"f3","removed":false,
+           "file":{"id":"f3","name":"after.mp4","mimeType":"video/mp4","parents":["d1"],"size":"1"}}
+        ]}
+        """)]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.removed, [], "a drive-level change removes no file")
+        XCTAssertEqual(changes.changed.map(\.id), ["f3"])
+    }
+
     // MARK: - An empty answer is not a failure
 
     /// The bug a coach met as "Google Drive returned an unexpected reply: The

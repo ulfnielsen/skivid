@@ -448,11 +448,41 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
                 URLQueryItem(name: "pageSize", value: "1000"),
                 URLQueryItem(
                     name: "fields",
-                    value: "nextPageToken,newStartPageToken,changes(fileId,removed,file(\(Self.changeFileFields)))"
+                    // `changeType` is asked for so a skipped record can be
+                    // told apart by what it *is*, not merely by a key being
+                    // absent — see the skip below.
+                    value: "nextPageToken,newStartPageToken,changes(changeType,fileId,removed,file(\(Self.changeFileFields)))"
                 ),
             ]
             let page: DriveChangeList = try await get(components)
             for change in page.changes {
+                // Drive's log is not only file changes. A change to the shared
+                // drive itself — renamed, sharing settings edited — arrives as
+                // `changeType: "drive"` with `driveId`/`drive` and no file.
+                // Such a record describes no clip, so it affects no clip.
+                //
+                // Two conditions rather than one, because each covers the
+                // other's blind spot:
+                //
+                //  - `changeType != "file"` alone would silently drop *every*
+                //    change if that field ever stopped arriving (a mask typo, a
+                //    rename in a future API version) — the whole library going
+                //    quiet, with nothing to show for it. So it only applies
+                //    when the field is actually present.
+                //  - a missing `fileId` alone is the structural test, and it is
+                //    what this bug was, but it does not catch the worse
+                //    variant: a non-file record that *does* carry an id. Drive
+                //    stamps a drive-level change with the drive's own id, and a
+                //    drive id is a folder id — that would fall into the
+                //    `file == nil` branch below and be reported as a removal,
+                //    silently evicting a real entry from the index.
+                //
+                // Together they also give the right answer for a change type
+                // Google has not shipped yet, which is what this bug was: an
+                // unfamiliar record is skipped, not guessed at.
+                guard let fileId = change.fileId,
+                      change.changeType == nil || change.changeType == "file"
+                else { continue }
                 // `trashed` counts as removed. Google's docs define `removed`
                 // only as "removed from this list of changes, for example by
                 // deletion or loss of access" and say nothing about trashing,
@@ -462,7 +492,7 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
                 // Getting this wrong the other way would leave a clip a coach
                 // deleted sitting in the sidebar until Drive purged it.
                 if change.removed == true || change.file == nil || change.file?.trashed == true {
-                    removed.append(change.fileId)
+                    removed.append(fileId)
                 } else if let record = change.file {
                     changed.append(record)
                 }
@@ -596,7 +626,17 @@ private struct DriveStartPageToken: Decodable {
 
 private struct DriveChangeList: Decodable {
     struct Change: Decodable {
-        let fileId: String
+        /// Optional because not every change record describes a file: a change
+        /// to the shared drive itself (`changeType: "drive"`) carries
+        /// `driveId`/`drive` and no `fileId` at all. Non-optional this threw
+        /// `keyNotFound` — and because a page decodes as one unit, one such
+        /// record anywhere in a 1000-item page took the whole library open
+        /// with it: "no `fileId` in the reply, at `changes.Index 38`".
+        let fileId: String?
+        /// `"file"` or `"drive"` today. Optional so a reply that ever stops
+        /// carrying it degrades to the `fileId` rule rather than dropping
+        /// every change on the floor.
+        let changeType: String?
         let removed: Bool?
         let file: DriveRecord?
     }
