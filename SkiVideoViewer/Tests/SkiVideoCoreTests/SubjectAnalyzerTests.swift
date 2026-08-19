@@ -8,6 +8,7 @@ final class SubjectAnalyzerTests: XCTestCase {
         "/Users/ulfnielsen/Ski/Neuss2026/organized/2026-07-19_Neuss/Idun Nielsen/C0094.MP4")
 
     private func requireClip() throws -> URL {
+        try requireSlowTestsEnabled()
         try XCTSkipUnless(
             FileManager.default.fileExists(atPath: Self.clip.path),
             "ground-truth footage not present on this machine"

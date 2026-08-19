@@ -8,9 +8,14 @@ macOS + iPadOS SwiftUI app for reviewing ski training footage.
 - `swift test` alone fails with "no such module 'XCTest'" — this machine's
   `xcode-select` points at CommandLineTools. Always prefix:
   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
-- **Targeted while iterating, full suite only before final sign-off.** A full
-  run is ~3.5 min and ~18 call sites open real on-screen windows, which
-  interrupts whoever is at the keyboard.
+- **Targeted while iterating, full suite only before final sign-off.** ~18 call
+  sites open real on-screen windows, which interrupts whoever is at the keyboard.
+- The six slowest tests (real Vision/pose analysis over real footage) are
+  **skipped by default** — measured, they were 115s of a 207s run. A default
+  run is now ~92s. Before sign-off, include them:
+  `SKI_SLOW_TESTS=1 DEVELOPER_DIR=... swift test`
+- Don't mandate a full run per mutation check. A mutation check only needs the
+  tests covering the mutated code; that habit is what made runs feel constant.
 - `--filter SkiVideoCoreTests` covers the core module and opens no windows —
   the right loop for anything not touching views.
 - `CorrectedStartEndToEndTests` fails ~2 in 9 runs even idle. Not a flake:

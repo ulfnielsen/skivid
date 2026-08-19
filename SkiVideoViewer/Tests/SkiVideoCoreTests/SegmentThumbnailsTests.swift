@@ -100,6 +100,7 @@ final class SegmentThumbnailsTests: XCTestCase {
     /// reported success. Contrast, not mere non-nil-ness, is what distinguishes
     /// a picture from a fill.
     func testRendersLegibleStripsFromRealFootage() async throws {
+        try requireSlowTestsEnabled()
         try XCTSkipUnless(
             FileManager.default.fileExists(atPath: Self.clip.path),
             "ground-truth footage not present on this machine"

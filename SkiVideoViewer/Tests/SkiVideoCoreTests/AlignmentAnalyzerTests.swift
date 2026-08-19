@@ -25,6 +25,7 @@ final class AlignmentAnalyzerTests: XCTestCase {
     }
 
     private func requireFootage() throws {
+        try requireSlowTestsEnabled()
         try XCTSkipUnless(
             FileManager.default.fileExists(atPath: Self.left.path)
                 && FileManager.default.fileExists(atPath: Self.right.path),
