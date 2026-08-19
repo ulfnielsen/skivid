@@ -566,4 +566,63 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(changes.cursor, "t2")
         XCTAssertEqual(transport.requests.count, 2)
     }
+
+    // MARK: - An empty answer is not a failure
+
+    /// The bug a coach met as "Google Drive returned an unexpected reply: The
+    /// data couldn't be read because it is missing."
+    ///
+    /// Google omits an empty collection rather than sending `[]`: a `files.list`
+    /// that matches nothing answers `{"kind": "drive#fileList",
+    /// "incompleteSearch": false}` with no `files` key at all. Against a
+    /// non-optional array that is `keyNotFound`, and the sign-in, the folder
+    /// list and the drive were all working — the library was simply empty.
+    func testAFolderWithNoFilesIsEmptyRatherThanAnError() async throws {
+        transport.responses = [
+            .init(json: #"{"kind":"drive#fileList","incompleteSearch":false}"#)
+        ]
+
+        var files: [RemoteFile] = []
+        for try await file in provider.enumerate(RemoteFolder(id: "drive-id", name: "Videos")) {
+            files.append(file)
+        }
+        XCTAssertTrue(files.isEmpty)
+    }
+
+    /// The same omission on the drive list, which is what an account with no
+    /// shared drives answers.
+    func testAnAccountWithNoSharedDrivesIsEmptyRatherThanAnError() async throws {
+        transport.responses = [.init(json: #"{"kind":"drive#driveList"}"#)]
+        let roots = try await provider.roots()
+        XCTAssertTrue(roots.isEmpty)
+    }
+
+    /// And on the change feed, which answers this whenever nothing has changed
+    /// since the cursor — the common case for a library that is up to date.
+    func testAQuietChangeFeedIsEmptyRatherThanAnError() async throws {
+        transport.responses = [
+            .init(json: #"{"kind":"drive#changeList","newStartPageToken":"99"}"#)
+        ]
+        let result = try await provider.changes(since: "98", forRoot: "drive-id")
+        XCTAssertTrue(result.changed.isEmpty, "\(result)")
+    }
+
+    /// When a decode does fail, it has to say what was wrong with the reply.
+    /// `DecodingError.localizedDescription` is "The data couldn't be read
+    /// because it is missing" whatever the fault and wherever it was — the
+    /// message the coach saw, which named neither the field nor the call.
+    func testADecodeFailureNamesTheFieldRatherThanSayingSomethingIsMissing() async {
+        transport.responses = [.init(json: #"{"kind":"drive#driveList","drives":[{"name":"No id"}]}"#)]
+
+        do {
+            _ = try await provider.roots()
+            XCTFail("a drive with no id should not decode")
+        } catch let RemoteLibraryError.api(message) {
+            XCTAssertTrue(message.contains("id"), "the field has to be named: \(message)")
+            XCTAssertFalse(message.contains("couldn\u{2019}t be read"),
+                           "the useless phrasing is what this replaces: \(message)")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
 }

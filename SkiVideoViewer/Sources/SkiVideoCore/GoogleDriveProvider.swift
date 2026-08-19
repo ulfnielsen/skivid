@@ -356,8 +356,34 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
             throw RemoteLibraryError.api(
-                "Google Drive returned an unexpected reply: \(error.localizedDescription)"
+                "Google Drive returned an unexpected reply: \(Self.describe(error))"
             )
+        }
+    }
+
+    /// A decoding failure in words that say which field was wrong.
+    ///
+    /// `DecodingError.localizedDescription` is "The data couldn't be read
+    /// because it is missing" whatever went wrong and wherever — the coach reads
+    /// it as Drive being broken, and it tells whoever has to fix it nothing at
+    /// all. The key and the path are in the error the whole time; they just have
+    /// to be taken out of it.
+    static func describe(_ error: Error) -> String {
+        func path(_ context: DecodingError.Context) -> String {
+            let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+            return path.isEmpty ? "the top level" : "\u{201C}\(path)\u{201D}"
+        }
+        switch error {
+        case let DecodingError.keyNotFound(key, context):
+            return "no \u{201C}\(key.stringValue)\u{201D} in the reply, at \(path(context))."
+        case let DecodingError.valueNotFound(type, context):
+            return "\u{201C}\(path(context))\u{201D} was null where a \(type) was expected."
+        case let DecodingError.typeMismatch(type, context):
+            return "\(path(context)) was not the \(type) expected."
+        case let DecodingError.dataCorrupted(context):
+            return "the reply was not valid JSON (\(context.debugDescription))"
+        default:
+            return error.localizedDescription
         }
     }
 
@@ -514,10 +540,27 @@ struct DriveRecord: Decodable {
     let trashed: Bool?
 }
 
+/// Google omits an empty collection rather than sending `[]`.
+///
+/// A `files.list` that matches nothing answers `{"kind": "drive#fileList",
+/// "incompleteSearch": false}` — no `files` key at all — and a non-optional
+/// array turns that into `keyNotFound`, which surfaces as "The data couldn't be
+/// read because it is missing." So an empty folder was reported to the coach as
+/// Google having failed. The same is true of `drives` and `changes`, so all
+/// three read absence as emptiness, which is what it means.
 private struct DriveFileList: Decodable {
     let nextPageToken: String?
     let incompleteSearch: Bool?
     let files: [DriveRecord]
+
+    enum CodingKeys: String, CodingKey { case nextPageToken, incompleteSearch, files }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nextPageToken = try container.decodeIfPresent(String.self, forKey: .nextPageToken)
+        incompleteSearch = try container.decodeIfPresent(Bool.self, forKey: .incompleteSearch)
+        files = try container.decodeIfPresent([DriveRecord].self, forKey: .files) ?? []
+    }
 }
 
 private struct DriveListOfDrives: Decodable {
@@ -528,6 +571,14 @@ private struct DriveListOfDrives: Decodable {
 
     let nextPageToken: String?
     let drives: [Drive]
+
+    enum CodingKeys: String, CodingKey { case nextPageToken, drives }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nextPageToken = try container.decodeIfPresent(String.self, forKey: .nextPageToken)
+        drives = try container.decodeIfPresent([Drive].self, forKey: .drives) ?? []
+    }
 }
 
 private struct DriveAPIError: Decodable {
@@ -553,4 +604,13 @@ private struct DriveChangeList: Decodable {
     let nextPageToken: String?
     let newStartPageToken: String?
     let changes: [Change]
+
+    enum CodingKeys: String, CodingKey { case nextPageToken, newStartPageToken, changes }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nextPageToken = try container.decodeIfPresent(String.self, forKey: .nextPageToken)
+        newStartPageToken = try container.decodeIfPresent(String.self, forKey: .newStartPageToken)
+        changes = try container.decodeIfPresent([Change].self, forKey: .changes) ?? []
+    }
 }
