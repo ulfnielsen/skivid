@@ -120,6 +120,28 @@ public protocol IncrementallyEnumerable: RemoteLibraryProvider {
     func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges
 }
 
+/// What a provider offers when a client may replace a file's contents.
+///
+/// Its own protocol for the same reason `IncrementallyEnumerable` is: writes
+/// are deliberately absent from `RemoteLibraryProvider`, which describes a
+/// library that only reads, and a core method would make every read-only
+/// implementation carry a stub that throws. It is also the honest shape — the
+/// permission to write is granted separately (see `GoogleOAuth.DriveScope`)
+/// and can be refused independently of the ability to read.
+///
+/// One method, because repairing an oversized clip is the only write this app
+/// performs. `ViewerModel.repairCurrentClip` is the one call site, and reaches
+/// it with `as? ContentReplaceable`.
+public protocol ContentReplaceable: RemoteLibraryProvider {
+    /// Replaces the file's bytes, keeping its id, and answers the new content
+    /// version — the value the app stores as `RemoteFile.contentVersion`, and
+    /// the thing that lets a cache tell the repaired clip from the original.
+    ///
+    /// **The id must be preserved.** Clip identity, analysis sidecars, sync
+    /// points and the on-disk cache are all keyed on it.
+    func replaceContents(ofFileID fileID: String, withFileAt url: URL) async throws -> String?
+}
+
 public struct RemoteLibraryChanges: Sendable {
     public let changed: [RemoteFile]
     /// File ids that left the library. **Not a licence to delete cached

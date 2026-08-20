@@ -471,7 +471,15 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     /// The authorized request and its one silent refresh, with no opinion
     /// about the status code — that judgement differs between callers, so it
     /// belongs to them.
-    private func fetch(_ components: URLComponents) async throws -> (Data, HTTPURLResponse) {
+    /// `uploading` sends the file's bytes as the body and makes this a PATCH —
+    /// the one write this provider performs. It goes through `fetch` rather
+    /// than building its own request so the stale-token retry below covers it
+    /// too: a repair is the longest single operation in the app (download,
+    /// re-encode, upload), which makes it the *most* likely thing to still be
+    /// running when an access token passes the hour mark, not the least.
+    private func fetch(
+        _ components: URLComponents, uploading fileToUpload: URL? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
         guard var token = token() else { throw RemoteLibraryError.notSignedIn }
         guard let url = components.url else {
             throw RemoteLibraryError.api("Could not build a request to Google Drive.")
@@ -482,10 +490,19 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
             // Never a query parameter. Measured 2026-08-13: on the media path a
             // query-string token is refused with an HTML block page.
             request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+            if fileToUpload != nil {
+                request.httpMethod = "PATCH"
+                request.setValue("video/mp4", forHTTPHeaderField: "Content-Type")
+            }
             return request
         }
 
-        var (data, response) = try await transport.data(for: request(bearer: token))
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            guard let fileToUpload else { return try await transport.data(for: request) }
+            return try await transport.upload(request, fromFile: fileToUpload)
+        }
+
+        var (data, response) = try await send(request(bearer: token))
 
         // A cached token can go stale mid-session — Google's access tokens
         // last about an hour, well inside a coach's review session. Refusing
@@ -505,7 +522,7 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                 // coach has no way to act on.
                 throw RemoteLibraryError.notSignedIn
             }
-            (data, response) = try await transport.data(for: request(bearer: token))
+            (data, response) = try await send(request(bearer: token))
         }
         return (data, response)
     }
@@ -546,6 +563,72 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         }
     }
 
+    /// Replaces a Drive file's bytes with the file at `url`, keeping its id,
+    /// and answers the new `headRevisionId`.
+    ///
+    /// **`PATCH .../files/{id}`, never `create`.** The Drive file id is what a
+    /// clip's identity, its analysis sidecars, its stored sync points and its
+    /// cache entry are all keyed on, so uploading a new file and deleting the
+    /// old one would silently orphan every correction the operator has made.
+    /// `reencode_for_ios.py` takes the same care for the same reason, and its
+    /// comment says so in as many words.
+    ///
+    /// Returning the revision is not incidental: the app carries it as
+    /// `RemoteFile.contentVersion`, and it is what makes `ClipCache` discard
+    /// the copy it already has. Without it a repair appears to do nothing,
+    /// because the cache keeps serving the oversized original.
+    ///
+    /// `uploadType=media` sends the bytes alone — no metadata patch — which is
+    /// exactly the intent: the name, the parents and everything else about the
+    /// file stay as they were.
+    public func replaceContents(ofFileID fileID: String, withFileAt url: URL) async throws -> String? {
+        var components = URLComponents(
+            string: "https://www.googleapis.com/upload/drive/v3/files/\(fileID)"
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "uploadType", value: "media"),
+            // Omitting this fails against a Shared Drive, which is the only
+            // kind this app opens.
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "id,headRevisionId"),
+        ]
+
+        let (data, response) = try await fetch(components, uploading: url)
+        guard (200...299).contains(response.statusCode) else {
+            throw Self.describeWriteFailure(data: data, response: response)
+        }
+        // Its own type rather than `DriveRecord`, which requires `name` and
+        // several other fields this reply correctly does not carry — `fields`
+        // above asks for two. Decoding into `DriveRecord` failed with "no
+        // 'name' in the reply", which reads as a Drive fault rather than as
+        // this app asking for the wrong shape.
+        struct ReplacedFile: Decodable {
+            let id: String
+            let headRevisionId: String?
+        }
+        let replaced: ReplacedFile = try Self.decode(data)
+        return replaced.headRevisionId
+    }
+
+    /// A 403 here is overwhelmingly "you may read this Shared Drive but not
+    /// change it", which is every coach who is not a Drive admin — and it is
+    /// not fixed by granting the app write access, so the generic "Google
+    /// Drive returned HTTP 403: Insufficient permission" sends them to re-run
+    /// a consent screen that will change nothing. Every other status keeps the
+    /// existing wording.
+    static func describeWriteFailure(data: Data, response: HTTPURLResponse) -> RemoteLibraryError {
+        guard response.statusCode == 403 else {
+            return describeFailure(data: data, response: response)
+        }
+        return .api(
+            """
+            You do not have permission to change this file in Drive. Ask whoever \
+            manages the club's shared drive to give you edit access, or to \
+            replace the clip for you.
+            """
+        )
+    }
+
     /// Google answers some failures with an HTML anti-abuse page rather than a
     /// JSON error object. A caller that assumes non-200 means JSON would
     /// mis-parse that, so the two are told apart before decoding.
@@ -564,6 +647,8 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         return .api("Google Drive returned HTTP \(response.statusCode): \(message)")
     }
 }
+
+extension GoogleDriveProvider: ContentReplaceable {}
 
 extension GoogleDriveProvider: IncrementallyEnumerable {
     public func startCursor(forRoot rootID: String) async throws -> String {

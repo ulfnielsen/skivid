@@ -156,6 +156,104 @@ final class FetchOnSelectTests: XCTestCase {
         )
     }
 
+    // MARK: - Repairing a flagged clip
+
+    private func repairableModel() async throws
+        -> (ViewerModel, FakeRemoteProvider, FakeMediaPipeline, FakeClipDownloader)
+    {
+        let provider = FakeRemoteProvider(files: fiveClipsWithAnOversizedSecond())
+        let downloader = FakeClipDownloader()
+        let cache = ClipCache(
+            root: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true),
+            downloader: downloader, budget: 1_000_000_000
+        )
+        let pipeline = FakeMediaPipeline()
+        let model = ViewerModel(
+            input: FakeInputSource(), folderPicker: FakeFolderPicker(),
+            oauthPresenter: FakeOAuthPresenter(), mediaPipeline: pipeline
+        )
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        _ = model.changeVideo(by: 1)          // onto the flagged clip
+        try await model.settleFetches()
+        return (model, provider, pipeline, downloader)
+    }
+
+    /// **The file id is what a repair must preserve**, and this is where that
+    /// is checked at the app level: clip identity, analysis sidecars, sync
+    /// points and the cache are all keyed on it, so replacing the clip with a
+    /// *new* Drive file would orphan every correction the coach has made.
+    func testRepairingReplacesTheClipUnderItsOwnFileID() async throws {
+        let (model, provider, pipeline, _) = try await repairableModel()
+        XCTAssertNotNil(model.repairableClip, "the flagged clip is the one being repaired")
+
+        await model.repairCurrentClip()
+
+        XCTAssertEqual(provider.replacedFileIDs, ["f2"])
+        XCTAssertEqual(pipeline.resizeCalls.count, 1, "the clip must actually be re-encoded")
+    }
+
+    /// Repairing needs the original bytes, so the one operation that fixes an
+    /// oversized clip is the one operation allowed to download it. Without
+    /// this the refusal would be permanent and the feature would have no way
+    /// out.
+    func testRepairingIsAllowedToDownloadTheClipItRefusedToPlay() async throws {
+        let (model, _, _, downloader) = try await repairableModel()
+        XCTAssertFalse(downloader.requestedFileIDs.contains("f2"), "not fetched for playback")
+
+        await model.repairCurrentClip()
+
+        XCTAssertTrue(
+            downloader.requestedFileIDs.contains("f2"),
+            "the repair must be able to fetch what playback would not: \(downloader.requestedFileIDs)"
+        )
+    }
+
+    /// A repair that leaves the clip still flagged has visibly done nothing.
+    /// The index carries the *original's* dimensions and duration until Drive
+    /// refills them, so without clearing those `ClipWeight` judges the new file
+    /// by the old one's figures and refuses it again.
+    func testARepairedClipIsNoLongerRefused() async throws {
+        let (model, _, _, _) = try await repairableModel()
+
+        await model.repairCurrentClip()
+
+        XCTAssertNil(model.repairableClip, "the repaired clip must stop being flagged")
+        XCTAssertNil(model.unsupportedFormatMessage)
+    }
+
+    /// The upload is the last step on purpose, mirroring `reencode_for_ios.py`:
+    /// a failed re-encode must leave the coach's footage in Drive exactly as it
+    /// was, rather than half-replacing it.
+    func testAFailedResizeLeavesTheDriveFileAlone() async throws {
+        let (model, provider, pipeline, _) = try await repairableModel()
+        pipeline.resizeError = MediaPipelineError.unreadableSource("run2.mp4")
+
+        await model.repairCurrentClip()
+
+        XCTAssertEqual(provider.replacedFileIDs, [], "nothing may be uploaded after a failed resize")
+        XCTAssertNotNil(model.unsupportedFormatMessage, "the failure has to be reported")
+        XCTAssertNotNil(model.repairableClip, "the clip is untouched, so it is still repairable")
+    }
+
+    /// Scope is necessary but not sufficient: a coach with view-only permission
+    /// on the club's Shared Drive is refused even after granting write access.
+    /// The clip stays listed and still flagged rather than appearing repaired.
+    func testARefusedUploadReportsItAndLeavesTheClipFlagged() async throws {
+        let (model, provider, _, _) = try await repairableModel()
+        provider.replaceError = RemoteLibraryError.api(
+            "You do not have permission to change this file in Drive."
+        )
+
+        await model.repairCurrentClip()
+
+        let message = try XCTUnwrap(model.unsupportedFormatMessage)
+        XCTAssertTrue(message.lowercased().contains("permission"), message)
+        XCTAssertNotNil(model.repairableClip, "a refused repair must not look like a successful one")
+    }
+
     /// Drive fills `videoMediaMetadata` in asynchronously after an upload, so a
     /// clip added minutes ago carries none — and a rule that refused what it
     /// cannot measure would strike hardest exactly when a coach has just

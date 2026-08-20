@@ -1078,4 +1078,86 @@ final class GoogleDriveProviderTests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
     }
+
+    // MARK: - Replacing a clip's content in place
+
+    /// A file on disk to stand in for the re-encoded clip, since the upload
+    /// streams from a URL rather than taking bytes in memory.
+    private func temporaryClip(_ contents: String = "resized bytes") throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).mp4")
+        try Data(contents.utf8).write(to: url)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    /// **The file id is preserved on purpose, and this is the assertion that
+    /// guards it.** Clip identity, the analysis sidecars, stored sync points
+    /// and the on-disk cache are all keyed on the Drive file id, so a
+    /// delete-and-reupload would silently orphan every correction the operator
+    /// has made — the same reason `reencode_for_ios.py` uses `files().update`
+    /// rather than `create`.
+    ///
+    /// Asserted on the request's *path*, not on a returned id: an
+    /// implementation that uploaded a new file and then reported the old id
+    /// would pass any assertion made on the reply.
+    func testReplacingUploadsAgainstTheOriginalFileID() async throws {
+        transport.responses = [.init(json: #"{"id":"clip-1","headRevisionId":"rev-2"}"#)]
+
+        _ = try await provider.replaceContents(ofFileID: "clip-1", withFileAt: temporaryClip())
+
+        let request = try XCTUnwrap(transport.requests.last)
+        let url = try XCTUnwrap(request.url)
+        XCTAssertTrue(
+            url.path.hasSuffix("/files/clip-1"),
+            "the upload must target the original file id, got \(url.path)"
+        )
+        XCTAssertEqual(request.httpMethod, "PATCH", "create would mint a new id")
+        let query = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(query.first { $0.name == "uploadType" }?.value, "media")
+        // Omitting this fails silently against a Shared Drive, which is the
+        // only kind of drive this app opens.
+        XCTAssertEqual(query.first { $0.name == "supportsAllDrives" }?.value, "true")
+    }
+
+    /// Replacing the bytes changes Drive's `headRevisionId`, which this app
+    /// carries as `contentVersion` — that is what makes `ClipCache` discard
+    /// the stale copy instead of playing the oversized original forever.
+    /// Verified rather than assumed, because the whole repair looks like it
+    /// did nothing if the cache keeps serving the old bytes.
+    func testReplacingReportsTheNewRevisionSoTheCacheCanInvalidate() async throws {
+        transport.responses = [.init(json: #"{"id":"clip-1","headRevisionId":"rev-2"}"#)]
+
+        let version = try await provider.replaceContents(
+            ofFileID: "clip-1", withFileAt: temporaryClip()
+        )
+
+        XCTAssertEqual(version, "rev-2")
+    }
+
+    /// Scope is necessary but not sufficient. A coach with view-only
+    /// permission on the club's Shared Drive gets a 403 even after granting
+    /// write access — the everyday case for anyone who is not an admin — and
+    /// "Google Drive returned HTTP 403" tells them nothing they can act on.
+    func testAPermissionFailureSaysSoInsteadOfRaisingARawError() async throws {
+        transport.responses = [
+            .init(status: 403, json: #"{"error":{"code":403,"message":"Insufficient permission"}}"#),
+        ]
+
+        do {
+            _ = try await provider.replaceContents(
+                ofFileID: "clip-1", withFileAt: temporaryClip()
+            )
+            XCTFail("a 403 must not look like success")
+        } catch let RemoteLibraryError.api(message) {
+            XCTAssertTrue(
+                message.lowercased().contains("permission"),
+                "the message has to name the situation: \(message)"
+            )
+            XCTAssertFalse(
+                message.contains("HTTP 403"),
+                "the raw status is what this replaces: \(message)"
+            )
+        }
+    }
 }

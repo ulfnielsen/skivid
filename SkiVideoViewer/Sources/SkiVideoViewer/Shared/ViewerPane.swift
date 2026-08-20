@@ -116,24 +116,45 @@ struct ViewerPane: View {
     /// holds bottom-leading, the status chip top-trailing, the zoom chip
     /// bottom-trailing.
     ///
-    /// `allowsHitTesting(false)`, like the caption and the status chip: it
-    /// floats over the play/pause tap target and a banner that claimed hits
-    /// would eat it. There is nothing to tap here anyway — the remedy is in
-    /// the club's library, not on this screen.
+    /// The message itself keeps `allowsHitTesting(false)`, like the caption and
+    /// the status chip: it floats over the play/pause tap target and text that
+    /// claimed hits would eat it.
+    ///
+    /// **The button is the exception, and deliberately so.** This banner used
+    /// to say there was nothing to tap because "the remedy is in the club's
+    /// library, not on this screen" — true when the only message here was
+    /// "this device cannot decode that clip". It is not true for a clip
+    /// refused for its size: that one the app can fix in place, and making the
+    /// coach leave for the Drive web UI to do it would be the worse design.
+    /// Hit testing is therefore re-enabled on the button alone, which is small
+    /// and centred, rather than on the whole banner.
+    ///
+    /// `repairableClip` rather than the presence of a message: the decode
+    /// warning uses this same surface, and offering "Resize and replace" there
+    /// would promise a fix that does not apply.
     @ViewBuilder
     private var unsupportedFormatBanner: some View {
         if let message = model.unsupportedFormatMessage {
-            Text(message)
-                .font(.callout)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(maxWidth: 460)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .padding(.top, 12)
-                .allowsHitTesting(false)
-                .transition(.opacity)
+            VStack(spacing: 10) {
+                Text(message)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .allowsHitTesting(false)
+
+                if model.repairableClip != nil {
+                    Button("Resize and replace in Drive") {
+                        Task { await model.repairCurrentClip() }
+                    }
+                    .disabled(model.isPreparingClip)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 460)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .padding(.top, 12)
+            .transition(.opacity)
         }
     }
 

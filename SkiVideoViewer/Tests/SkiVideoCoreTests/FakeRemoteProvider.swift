@@ -45,6 +45,15 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     /// changed", answered with the same cursor it was asked to resume from —
     /// the honest default for a test that never sets this.
     var pendingChanges: RemoteLibraryChanges?
+    /// Every file id `replaceContents` was asked to overwrite, in call order.
+    /// The assertion that the repair keeps a clip's identity is made on this:
+    /// a delete-and-reupload would show a different id, or none.
+    private(set) var replacedFileIDs: [String] = []
+    /// Thrown by `replaceContents`, for the view-only-permission case.
+    var replaceError: Error?
+    /// The new content version a replacement reports — Drive's
+    /// `headRevisionId`, which is what makes the cache drop the old bytes.
+    var replacementVersion: String? = "rev-after-repair"
 
     init(files: [RemoteFile] = []) {
         self.files = files
@@ -84,6 +93,17 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     func downloadSource(for file: RemoteFile) async throws -> DownloadSource {
         downloadSourceCallCount += 1
         return DownloadSource(url: downloadURL, headers: headers)
+    }
+}
+
+/// The write half. Separate conformance because `ContentReplaceable` is a
+/// separate protocol — a provider can be readable and not writable, which is
+/// the everyday case for a coach without edit access to the club's drive.
+extension FakeRemoteProvider: ContentReplaceable {
+    func replaceContents(ofFileID fileID: String, withFileAt url: URL) async throws -> String? {
+        if let replaceError { throw replaceError }
+        replacedFileIDs.append(fileID)
+        return replacementVersion
     }
 }
 

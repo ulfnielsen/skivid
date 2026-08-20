@@ -130,6 +130,12 @@ public final class ViewerModel: ObservableObject {
     private let input: PlaybackInputSource
     private let folderPicker: FolderPicker
     private let oauthPresenter: OAuthPresenter
+    /// Re-encodes a clip the app has refused to fetch at full size. The same
+    /// pipeline `SortingModel` uses, so a repaired clip is byte-for-byte the
+    /// kind of file this app would have produced had the coach imported the
+    /// footage through it in the first place — which is exactly what
+    /// `ClipWeight` measures against.
+    private let mediaPipeline: MediaPipeline
     private let now: () -> Date
 
     /// Exposed so tests can assert on seeks without a playable asset.
@@ -154,11 +160,13 @@ public final class ViewerModel: ObservableObject {
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
         oauthPresenter: OAuthPresenter,
+        mediaPipeline: MediaPipeline = AVFoundationMediaPipeline(),
         now: @escaping () -> Date = Date.init
     ) {
         self.input = input
         self.folderPicker = folderPicker
         self.oauthPresenter = oauthPresenter
+        self.mediaPipeline = mediaPipeline
         self.now = now
         self.input.onIntent = { [weak self] intent in
             self?.handle(intent)
@@ -625,8 +633,14 @@ public final class ViewerModel: ObservableObject {
     /// this whole design exists to route around, just on the path that
     /// matters most. Retried once, not in a loop: a second refusal is a real
     /// failure, and retrying it forever would hammer Drive with a bad token.
+    /// `enforcingWeightLimit: false` is for the repair path and nothing else.
+    /// Re-encoding a clip requires its original bytes, so the one operation
+    /// that fixes an oversized clip is also the one operation that must be
+    /// allowed to download it — refusing there would make the refusal
+    /// permanent.
     private func materialise(
-        _ file: RemoteFile, using provider: any RemoteLibraryProvider, cache: ClipCache
+        _ file: RemoteFile, using provider: any RemoteLibraryProvider, cache: ClipCache,
+        enforcingWeightLimit: Bool = true
     ) async throws -> URL {
         // The one place both screens' fetches pass through — the selected
         // clip, its prefetched neighbours, and a comparison pane's choice all
@@ -635,7 +649,7 @@ public final class ViewerModel: ObservableObject {
             width: file.width, height: file.height,
             durationMillis: file.durationMillis, size: file.size
         )
-        if verdict.isTooLarge {
+        if verdict.isTooLarge, enforcingWeightLimit {
             // Refusing to fetch is not refusing to play. Bytes already on
             // disk were paid for once, and taking the clip away at that point
             // would be a regression dressed up as a safeguard. Deliberately
@@ -704,6 +718,96 @@ public final class ViewerModel: ObservableObject {
         materialisedByFileID[file.id] = url
         await clipCache.recordPlayback(of: file.identity(inProvider: remoteIndex.providerIdentifier))
         return .ready(url)
+    }
+
+    /// Whether the selected clip is one this app has refused to fetch, and so
+    /// one the coach can offer to repair. Nil when there is nothing to repair.
+    ///
+    /// Recomputed rather than remembered: `unsupportedFormatMessage` is also
+    /// set for clips this device merely cannot decode, and offering "resize
+    /// and replace" for those would promise a fix that does not apply.
+    public var repairableClip: RemoteFile? {
+        guard let currentVideo, let remoteIndex, remoteProvider is ContentReplaceable,
+              let file = remoteIndex.file(for: currentVideo),
+              ClipWeight.verdict(
+                  width: file.width, height: file.height,
+                  durationMillis: file.durationMillis, size: file.size
+              ).isTooLarge
+        else { return nil }
+        return file
+    }
+
+    /// Downloads the oversized clip once, re-encodes it, and writes the result
+    /// back over the same Drive file.
+    ///
+    /// **The order matters and is the same order `reencode_for_ios.py` uses.**
+    /// The upload happens only after the re-encode has succeeded, so a failed
+    /// or interrupted repair leaves the coach's footage in Drive exactly as it
+    /// was. There is no point at which the original has been replaced by
+    /// something unfinished.
+    ///
+    /// Replacing the bytes gives the file a new `headRevisionId`, which this
+    /// app carries as `contentVersion`. Feeding it back into the index is what
+    /// makes `ClipCache` treat its stored copy as stale — without it the cache
+    /// would keep serving the 400MB original and the repair would look like it
+    /// had done nothing.
+    public func repairCurrentClip() async {
+        // Deliberately does not bind `remoteIndex`: a `guard let` would shadow
+        // the property with a `let` copy, and the version write below has to
+        // reach the property itself. That exact shadowing bug has already cost
+        // this file a dead guard in `prepareCurrentClip` — see its comment.
+        guard let file = repairableClip,
+              let provider = remoteProvider as? ContentReplaceable,
+              let clipCache, remoteIndex != nil
+        else { return }
+
+        preparingCount += 1
+        isPreparingClip = true
+        defer {
+            preparingCount -= 1
+            isPreparingClip = preparingCount > 0
+        }
+
+        let resized = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repair-\(file.id)", isDirectory: true)
+            .appendingPathComponent(file.name)
+        defer { try? FileManager.default.removeItem(at: resized.deletingLastPathComponent()) }
+
+        do {
+            status = "Fetching \(file.name) to resize…"
+            let original = try await materialise(
+                file, using: provider, cache: clipCache, enforcingWeightLimit: false
+            )
+
+            status = "Resizing \(file.name)…"
+            try await mediaPipeline.resize(
+                source: original, destination: resized,
+                athlete: currentAthlete?.name ?? file.path.last ?? ""
+            )
+
+            status = "Replacing \(file.name) in Drive…"
+            let version = try await provider.replaceContents(
+                ofFileID: file.id, withFileAt: resized
+            )
+
+            let resizedSize = (try? FileManager.default.attributesOfItem(atPath: resized.path))
+                .flatMap { $0[.size] as? NSNumber }
+                .map { $0.int64Value }
+            remoteIndex?.recordRepair(
+                ofFileID: file.id, contentVersion: version, size: resizedSize
+            )
+            materialisedByFileID[file.id] = nil
+            unsupportedFormatMessage = nil
+            status = "\(file.name) resized and replaced."
+            fetchCurrentClip()
+        } catch {
+            // The Drive file is untouched on every path that reaches here —
+            // the upload is the last step — so this reports and stops rather
+            // than trying to undo anything.
+            unsupportedFormatMessage = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            status = "Could not resize \(file.name)."
+        }
     }
 
     /// Starts fetching the newly selected clip, and prefetching its

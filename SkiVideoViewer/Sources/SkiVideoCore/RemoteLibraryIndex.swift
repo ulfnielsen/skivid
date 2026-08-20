@@ -276,6 +276,35 @@ public struct RemoteLibraryIndex: Equatable {
         filesByURL.values.first { $0.id == id }
     }
 
+    /// Records that this file's bytes changed, after the app itself replaced
+    /// them — the repair in `ViewerModel.repairCurrentClip`.
+    ///
+    /// Three things change, and leaving any of them stale breaks the repair in
+    /// a different way:
+    ///
+    /// - `contentVersion` is what makes `ClipCache` discard the copy of the
+    ///   *old* bytes it is still holding. Stale, and the repaired clip stays
+    ///   invisible until relaunch.
+    /// - `size` is now whatever the re-encode produced. Nil when it could not
+    ///   be read, which keeps the old figure rather than inventing one.
+    /// - **The video metadata is cleared, and that is the point.** It still
+    ///   describes the original, so `ClipWeight` would judge the repaired clip
+    ///   by the dimensions and duration of the file it just replaced and refuse
+    ///   it all over again — a repair that visibly changes nothing. Nil is also
+    ///   the truthful value: Drive fills `videoMediaMetadata` in asynchronously
+    ///   after an upload, so nobody knows the new figures yet, and "not
+    ///   measurable" is exactly how `ClipWeight` treats absent metadata.
+    mutating func recordRepair(ofFileID id: String, contentVersion: String?, size: Int64?) {
+        guard let url = filesByURL.first(where: { $0.value.id == id })?.key,
+              let old = filesByURL[url]
+        else { return }
+        filesByURL[url] = RemoteFile(
+            id: old.id, name: old.name, path: old.path,
+            size: size ?? old.size, contentVersion: contentVersion, md5: nil,
+            width: nil, height: nil, durationMillis: nil
+        )
+    }
+
     /// Bumped whenever the stored shape changes. A stored index from any
     /// other version — older *or newer* — is refused rather than adapted,
     /// the same rule `AlignmentTrackStore` applies to a stale track:
