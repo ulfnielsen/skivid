@@ -128,4 +128,89 @@ final class GoogleOAuthTests: XCTestCase {
     func testACompletedRedirectURIIsNotRefused() {
         XCTAssertNoThrow(try GoogleOAuth.requireCompleteRedirectURI("http://127.0.0.1:54321"))
     }
+
+    // MARK: - What each sign-in asks Google for
+
+    /// Drives the interactive branch far enough to capture the authorization
+    /// URL and no further: the token store is empty, so `authorize` cannot
+    /// refresh, and the presenter returns a callback carrying no code, so the
+    /// exchange throws. `lastAuthorizationURL` is recorded before any of that,
+    /// which is why the throw is discarded rather than asserted on — the URL
+    /// is the whole subject here.
+    @MainActor
+    private func scopeRequested(byAuthorizing authorize: (FakeOAuthPresenter) async throws -> Void)
+        async throws -> String
+    {
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:49152/callback")!
+        try? await authorize(presenter)
+        let url = try XCTUnwrap(presenter.lastAuthorizationURL)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        return try XCTUnwrap(components.queryItems?.first { $0.name == "scope" }?.value)
+    }
+
+    /// Watching costs nothing extra. A coach who never repairs a clip must
+    /// never see a consent screen asking for write access to their Drive —
+    /// the difference between "see and download your files" and "see, edit,
+    /// create and delete all of your files" on the Google consent screen.
+    @MainActor
+    func testTheOrdinarySignInAsksOnlyForReadAccess() async throws {
+        let scope = try await scopeRequested { presenter in
+            _ = try await GoogleOAuth.authorize(
+                configuration: configuration(secret: "s"),
+                presenter: presenter,
+                transport: FakeHTTPTransport(),
+                tokenStore: InMemoryOAuthTokenStore()
+            )
+        }
+
+        XCTAssertEqual(scope, "https://www.googleapis.com/auth/drive.readonly")
+        XCTAssertFalse(
+            scope.contains("auth/drive "), "the read-only sign-in must not request write access"
+        )
+    }
+
+    /// The upgrade asks for both, not just the new one: Google returns a token
+    /// carrying exactly the scopes requested, so omitting the read scope here
+    /// would trade the app's ability to read the library for its ability to
+    /// write one file.
+    @MainActor
+    func testTheWriteUpgradeAsksForReadAndWriteTogether() async throws {
+        let scope = try await scopeRequested { presenter in
+            _ = try await GoogleOAuth.authorize(
+                configuration: configuration(secret: "s"),
+                presenter: presenter,
+                transport: FakeHTTPTransport(),
+                tokenStore: InMemoryOAuthTokenStore(),
+                scope: .readAndWrite
+            )
+        }
+
+        XCTAssertTrue(scope.contains("https://www.googleapis.com/auth/drive.readonly"), scope)
+        XCTAssertTrue(
+            scope.split(separator: " ").contains("https://www.googleapis.com/auth/drive"), scope
+        )
+    }
+
+    /// What makes the upgrade *incremental*: without it Google mints a token
+    /// carrying only the scopes named in this request, and any scope the coach
+    /// granted in an earlier consent is silently dropped.
+    @MainActor
+    func testTheWriteUpgradeAsksGoogleToKeepAlreadyGrantedScopes() async throws {
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:49152/callback")!
+        _ = try? await GoogleOAuth.authorize(
+            configuration: configuration(secret: "s"),
+            presenter: presenter,
+            transport: FakeHTTPTransport(),
+            tokenStore: InMemoryOAuthTokenStore(),
+            scope: .readAndWrite
+        )
+
+        let url = try XCTUnwrap(presenter.lastAuthorizationURL)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(
+            components.queryItems?.first { $0.name == "include_granted_scopes" }?.value, "true"
+        )
+    }
 }

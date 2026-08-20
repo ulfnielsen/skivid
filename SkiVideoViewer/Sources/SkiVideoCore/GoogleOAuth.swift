@@ -76,7 +76,36 @@ public struct GoogleOAuthConfiguration: Sendable {
 }
 
 enum GoogleOAuth {
-    private static let scope = "https://www.googleapis.com/auth/drive.readonly"
+    /// How much of the coach's Drive a sign-in asks for.
+    ///
+    /// Two values, not a free-form string, because the consent screen reads
+    /// very differently for each — "see and download your files" against
+    /// "see, edit, create and delete all of your files" — and which one a
+    /// coach is shown must be a deliberate choice at the call site rather
+    /// than a constant anyone can widen by editing one line.
+    enum DriveScope {
+        /// Everything the app does by default. A coach who only ever watches
+        /// footage never sees more than this.
+        case readOnly
+        /// Asked for only when a repair is actually attempted — see
+        /// `ClipWeight` for what makes one necessary.
+        ///
+        /// Names the read scope too. Google mints a token carrying exactly
+        /// the scopes in the request, so asking for write alone would trade
+        /// the app's ability to read the library for its ability to rewrite
+        /// one clip in it.
+        case readAndWrite
+
+        var value: String {
+            switch self {
+            case .readOnly:
+                return "https://www.googleapis.com/auth/drive.readonly"
+            case .readAndWrite:
+                return "https://www.googleapis.com/auth/drive.readonly"
+                    + " https://www.googleapis.com/auth/drive"
+            }
+        }
+    }
     // Fixed Google endpoints. The client-secret JSON this flow used to read
     // carried the same two URLs for every installed-app client, so there is
     // nothing left to configure once the file is gone.
@@ -162,9 +191,17 @@ enum GoogleOAuth {
         configuration: GoogleOAuthConfiguration,
         presenter: OAuthPresenter,
         transport: HTTPTransport = URLSessionTransport(),
-        tokenStore: OAuthTokenStore = KeychainTokenStore()
+        tokenStore: OAuthTokenStore = KeychainTokenStore(),
+        scope: DriveScope = .readOnly
     ) async throws -> String {
-        if let refreshToken = tokenStore.load(account: configuration.clientID) {
+        // A stored refresh token carries the scopes it was granted with, so
+        // refreshing it can only ever return what the coach has already
+        // consented to. That is the whole point on the ordinary path and
+        // exactly wrong on the upgrade path: an upgrade that refreshed would
+        // hand back a read-only token and the repair would fail at the write,
+        // after the coach had been told it would work. Widening consent needs
+        // the interactive flow, so the upgrade skips this shortcut.
+        if scope == .readOnly, let refreshToken = tokenStore.load(account: configuration.clientID) {
             do {
                 return try await refreshAccessToken(
                     refreshToken: refreshToken, configuration: configuration, transport: transport
@@ -199,9 +236,16 @@ enum GoogleOAuth {
             URLQueryItem(name: "client_id", value: configuration.clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "scope", value: scope),
+            URLQueryItem(name: "scope", value: scope.value),
             URLQueryItem(name: "access_type", value: "offline"),
             URLQueryItem(name: "prompt", value: "consent"),
+            // What makes the write upgrade *incremental* rather than a
+            // replacement: without it Google issues a token carrying only the
+            // scopes named in this request, so any scope granted in an earlier
+            // consent is silently dropped. Sent on both paths — on the
+            // read-only one it is a no-op for a first sign-in, and for a coach
+            // who has already granted write it correctly preserves that.
+            URLQueryItem(name: "include_granted_scopes", value: "true"),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "code_challenge", value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
