@@ -14,7 +14,7 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     /// used: `headRevisionId` is the cache-validity key, `md5Checksum` the
     /// post-download check, `parents` the tree, `size` the progress bar.
     private static let fileFields =
-        "nextPageToken,incompleteSearch,files(id,name,mimeType,size,md5Checksum,headRevisionId,parents)"
+        "nextPageToken,incompleteSearch,files(id,name,mimeType,size,md5Checksum,headRevisionId,parents,videoMediaMetadata(width,height,durationMillis))"
 
     private let transport: HTTPTransport
     private let token: @Sendable () -> String?
@@ -242,7 +242,11 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                                 path: Self.folderPath(of: record, in: folders, rootID: folder.id),
                                 size: Int64(record.size ?? "") ?? 0,
                                 contentVersion: record.headRevisionId,
-                                md5: record.md5Checksum
+                                md5: record.md5Checksum,
+                                width: record.videoMediaMetadata?.width,
+                                height: record.videoMediaMetadata?.height,
+                                durationMillis: record.videoMediaMetadata?.durationMillis
+                                    .flatMap(Int.init)
                             )
                         )
                     }
@@ -698,7 +702,10 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
                     path: path,
                     size: Int64(record.size ?? "") ?? 0,
                     contentVersion: record.headRevisionId,
-                    md5: record.md5Checksum
+                    md5: record.md5Checksum,
+                    width: record.videoMediaMetadata?.width,
+                    height: record.videoMediaMetadata?.height,
+                    durationMillis: record.videoMediaMetadata?.durationMillis.flatMap(Int.init)
                 )
             },
             removed: removed,
@@ -709,7 +716,7 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
     /// `trashed` is requested because the sweep excludes trashed files with
     /// `q: trashed = false` and the change feed has no equivalent — without
     /// the field there is no way to tell a trashed clip from a live one.
-    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents,trashed"
+    static let changeFileFields = "id,name,mimeType,size,md5Checksum,headRevisionId,parents,trashed,videoMediaMetadata(width,height,durationMillis)"
 }
 
 // MARK: - Wire formats
@@ -725,6 +732,20 @@ struct DriveRecord: Decodable {
     /// Only requested by the change feed. The sweep filters trashed files out
     /// server-side with `q: trashed = false`, so it never needs to read this.
     let trashed: Bool?
+    /// What `ClipWeight` judges a clip's weight from, before anything is
+    /// downloaded. Absent for a clip Drive has not finished processing.
+    ///
+    /// Drive nests these, and reports `durationMillis` as a *string* while
+    /// width and height are numbers. Mirrored exactly rather than flattened:
+    /// a decode that guesses at the shape is how the change feed's missing
+    /// `fileId` took down a whole library open.
+    let videoMediaMetadata: VideoMediaMetadata?
+
+    struct VideoMediaMetadata: Decodable {
+        let width: Int?
+        let height: Int?
+        let durationMillis: String?
+    }
 }
 
 /// Google omits an empty collection rather than sending `[]`.

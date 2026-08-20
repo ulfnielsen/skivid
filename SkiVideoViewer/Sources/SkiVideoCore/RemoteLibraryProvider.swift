@@ -150,10 +150,22 @@ public struct RemoteFile: Hashable, Sendable, Codable {
     /// For checking the bytes after a download. Absent for some files, so a
     /// cache cannot depend on having it.
     public let md5: String?
+    /// Pixel dimensions and duration as Drive reports them, or nil when it has
+    /// not said. Drive fills `videoMediaMetadata` in asynchronously after an
+    /// upload, so a clip added minutes ago legitimately carries none — see
+    /// `ClipWeight`, which treats absent metadata as "do not judge" rather than
+    /// as a zero.
+    public let width: Int?
+    public let height: Int?
+    public let durationMillis: Int?
 
+    /// The three metadata values default to nil so every existing construction
+    /// site — the index, the change feed, the tests written before this
+    /// existed — keeps compiling and keeps meaning what it meant.
     public init(
         id: String, name: String, path: [String],
-        size: Int64, contentVersion: String?, md5: String?
+        size: Int64, contentVersion: String?, md5: String?,
+        width: Int? = nil, height: Int? = nil, durationMillis: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -161,6 +173,9 @@ public struct RemoteFile: Hashable, Sendable, Codable {
         self.size = size
         self.contentVersion = contentVersion
         self.md5 = md5
+        self.width = width
+        self.height = height
+        self.durationMillis = durationMillis
     }
 
     /// What this clip's analysis is keyed on.

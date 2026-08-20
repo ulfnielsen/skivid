@@ -293,7 +293,16 @@ public struct RemoteLibraryIndex: Equatable {
     /// down; only a re-sweep can. Refusing version 1 is what makes every
     /// installation carrying those paths sweep once, on its own, without
     /// anyone having to know to ask.
-    public static let currentVersion = 2
+    ///
+    /// **3 since 2026-08-20.** `RemoteFile` gained the width, height and
+    /// duration `ClipWeight` judges a clip's weight from. A version 2 index
+    /// decodes cleanly — they are optional — but every clip in it comes back
+    /// with none, so nothing is ever flagged and the operator meets a feature
+    /// that silently does nothing rather than one that says why. The cost is
+    /// the same single sweep, and the alternative is worse than it looks:
+    /// the change feed would fill the metadata in only for clips that happen
+    /// to change, so a library would flag an arbitrary subset of itself.
+    public static let currentVersion = 3
 
     /// Where indexes are written. Application Support rather than Caches: an
     /// index is cheap to rebuild but a purge would turn every launch into a

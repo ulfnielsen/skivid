@@ -459,6 +459,68 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(files[0].md5, "abc")
     }
 
+    // MARK: - Video metadata
+
+    /// Drive returns width, height and duration in the sweep the app already
+    /// performs, so `ClipWeight` costs no extra request and no download.
+    ///
+    /// Note `durationMillis` arrives as a *string* while width and height are
+    /// numbers. That asymmetry is Drive's, not ours, and decoding it as
+    /// anything else is how the change feed's `fileId` bug happened.
+    func testASweepCarriesVideoMetadataThrough() async throws {
+        transport.responses = [.init(json: """
+        {"files":[
+          {"id":"f1","name":"run.mp4","mimeType":"video/mp4","parents":["d1"],
+           "size":"400000000",
+           "videoMediaMetadata":{"width":1920,"height":1080,"durationMillis":"30000"}}
+        ]}
+        """)]
+
+        var files: [RemoteFile] = []
+        for try await file in provider.enumerate(RemoteFolder(id: "d1", name: "Club")) {
+            files.append(file)
+        }
+
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(files[0].width, 1920)
+        XCTAssertEqual(files[0].height, 1080)
+        XCTAssertEqual(files[0].durationMillis, 30_000)
+    }
+
+    /// Drive fills the block in asynchronously after an upload, so a freshly
+    /// uploaded clip arrives without it. That must not fail the sweep, and it
+    /// must leave `ClipWeight` with nothing to judge rather than a zero.
+    func testASweepWithoutVideoMetadataStillYieldsTheFile() async throws {
+        transport.responses = [.init(json: """
+        {"files":[
+          {"id":"f1","name":"run.mp4","mimeType":"video/mp4","parents":["d1"],"size":"1000"}
+        ]}
+        """)]
+
+        var files: [RemoteFile] = []
+        for try await file in provider.enumerate(RemoteFolder(id: "d1", name: "Club")) {
+            files.append(file)
+        }
+
+        XCTAssertEqual(files.count, 1)
+        XCTAssertNil(files[0].width)
+        XCTAssertNil(files[0].height)
+        XCTAssertNil(files[0].durationMillis)
+    }
+
+    /// The field mask is the whole reason the data arrives. A sweep that
+    /// stopped asking for it would silently stop flagging anything — no error,
+    /// no failing assertion anywhere else, just a feature that quietly does
+    /// nothing.
+    func testTheSweepAsksDriveForVideoMetadata() async throws {
+        transport.responses = [.init(json: #"{"files":[]}"#)]
+
+        for try await _ in provider.enumerate(RemoteFolder(id: "d1", name: "Club")) {}
+
+        let asked = transport.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(asked.contains("videoMediaMetadata"), asked)
+    }
+
     /// Omitting `supportsAllDrives` excludes shared-drive items *silently* —
     /// the classic "my drive looks empty" bug — and `corpora=allDrives` can
     /// drop files without erroring. Both are pinned here because neither
