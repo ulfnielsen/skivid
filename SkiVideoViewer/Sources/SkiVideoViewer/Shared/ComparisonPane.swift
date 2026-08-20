@@ -19,7 +19,7 @@ struct ComparisonPane: View {
     /// for where it comes from. Defaulted, not required: `ZoomWiringTests`
     /// builds panes directly to drive zoom and never picks a clip through the
     /// menu, so it has nothing to supply here and must not need to.
-    var prepare: (ComparisonVideoChoice) async -> URL? = { _ in nil }
+    var prepare: ClipPreparer = .none
 
     /// Where the current drag had reached at its previous change, so that
     /// `DragGesture`'s translation-from-the-start becomes a per-change delta.

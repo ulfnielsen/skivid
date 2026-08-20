@@ -21,24 +21,13 @@ public protocol SecondaryScreenPresenter: AnyObject {
     var canPresentComparison: Bool { get }
     var canPresentSorting: Bool { get }
 
-    /// `prepare` is how a pane materialises a cloud clip it was just handed:
-    /// called with the choice the operator picked, it returns the local file
-    /// URL once the bytes are on disk, or nil if they could not be fetched —
-    /// in which case the caller falls back to the choice's own `playbackURL`.
-    ///
-    /// A closure rather than a `ViewerModel` reference, deliberately.
-    /// `ComparisonModel` already has an overload that takes a `ViewerModel`
-    /// directly (`load(_:side:fetching:)`), but wiring *that* into the UI
-    /// would mean every step from here down to `ClipSourceMenu` — in
-    /// `Sources/SkiVideoViewer/Shared`, compiled for both platforms — would
-    /// have to learn what a `ViewerModel` is, purely to hand one along.
-    /// `ContentView` is the only thing that captures `ViewerModel.prepareClip`
-    /// into this shape; every step between here and where a pane's clip is
-    /// actually chosen just forwards the closure unopened.
+    /// `prepare` is how a pane materialises a cloud clip it was just handed.
+    /// This protocol only forwards it — see `ClipPreparer`, which carries the
+    /// whole rationale, including why it is a closure and not a `ViewerModel`.
     func presentComparison(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
-        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
+        prepare: ClipPreparer,
         onClose: @escaping () -> Void
     )
 

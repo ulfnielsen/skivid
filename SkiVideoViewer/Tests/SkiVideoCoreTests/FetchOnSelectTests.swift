@@ -146,6 +146,14 @@ final class FetchOnSelectTests: XCTestCase {
             comparison.status.contains("run2.mp4"),
             "the pane must name the clip it did not load, got \(comparison.status)"
         )
+        // The reason itself, on the screen the operator is looking at. Before
+        // `ClipPreparer` carried it, the seam could only say "no URL" and this
+        // read "see the main window" — a pointer to a banner on the *other*
+        // window, which is not an explanation.
+        XCTAssertTrue(
+            comparison.status.contains("400"),
+            "the pane must say why, not point elsewhere, got \(comparison.status)"
+        )
     }
 
     /// Drive fills `videoMediaMetadata` in asynchronously after an upload, so a

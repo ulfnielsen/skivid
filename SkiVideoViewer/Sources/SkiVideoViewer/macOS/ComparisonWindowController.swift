@@ -13,7 +13,7 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
     func show(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
-        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
+        prepare: ClipPreparer,
         onClose: @escaping () -> Void
     ) {
         if let window {

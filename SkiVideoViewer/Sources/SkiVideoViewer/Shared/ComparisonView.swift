@@ -65,7 +65,7 @@ struct ComparisonView: View {
     /// `SecondaryScreenPresenter.presentComparison`, which is where this
     /// closure comes from, for why it exists and why it is a closure and not
     /// a `ViewerModel`.
-    let prepare: (ComparisonVideoChoice) async -> URL?
+    let prepare: ClipPreparer
     let closeWindow: () -> Void
 
     /// Non-nil while the subject sheet is up, and the side it is up for.
@@ -84,7 +84,7 @@ struct ComparisonView: View {
         openLibrary: [ComparisonAthleteChoice],
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
-        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
+        prepare: ClipPreparer,
         closeWindow: @escaping () -> Void
     ) {
         _model = StateObject(
@@ -776,7 +776,7 @@ struct ComparisonVideos: View {
     /// build this view directly to measure or drive panes and chips, never to
     /// exercise a pick, so they have no `prepare` closure to supply and must
     /// not need one to keep compiling.
-    var prepare: (ComparisonVideoChoice) async -> URL? = { _ in nil }
+    var prepare: ClipPreparer = .none
 
     /// Where the overlay's current drag had reached at its previous change, so
     /// that `DragGesture`'s translation-from-the-start becomes a per-change

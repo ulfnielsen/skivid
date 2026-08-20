@@ -681,34 +681,29 @@ public final class ViewerModel: ObservableObject {
     /// `SecondaryScreenPresenter.presentComparison`'s `prepare` parameter
     /// carries — see that seam for why a closure crosses this boundary rather
     /// than the model itself.
-    /// Nil means "deliberately not fetched" — the clip is too heavy to be
-    /// worth downloading, and `ComparisonModel` says so on the pane rather
-    /// than loading a URL it knows will not open. Every *failure* still falls
-    /// back to `choice.playbackURL` as before, so nil carries exactly one
-    /// meaning. Already `URL?` at every call site (`ContentView`'s closure and
-    /// `load(_:side:fetching:)` both take the optional shape), so widening the
-    /// return type costs nothing at the boundary.
-    public func prepareClip(_ choice: ComparisonVideoChoice) async -> URL? {
+    /// A refusal comes back as `.refused` carrying its explanation, so the
+    /// pane that asked can state it where the operator is looking. An ordinary
+    /// *failure* is still `.nothingToDo`: the caller falls back to the choice's
+    /// own `playbackURL` and the pane shows that URL failing to open, exactly
+    /// as before. The two were briefly the same `nil`, which meant a pane could
+    /// not tell "there was nothing to fetch" from "I declined to fetch this",
+    /// and the reason had to travel by side channel instead.
+    public func prepareClip(_ choice: ComparisonVideoChoice) async -> ClipPreparer.Outcome {
         guard let remoteIndex, let remoteProvider, let clipCache,
               case let .remote(_, fileID) = choice.identity,
               let file = remoteIndex.file(forID: fileID)
-        else { return choice.playbackURL }
+        else { return .nothingToDo }
         let url: URL
         do {
             url = try await materialise(file, using: remoteProvider, cache: clipCache)
         } catch let RemoteLibraryError.tooLargeToFetch(explanation) {
-            // The detailed numbers go to the main window's banner, which is
-            // also where the repair lives; the comparison pane gets the
-            // shorter "not loaded" line from `ComparisonModel`. One
-            // explanation, stated once, next to the thing that can act on it.
-            unsupportedFormatMessage = explanation
-            return nil
+            return .refused(explanation)
         } catch {
-            return choice.playbackURL
+            return .nothingToDo
         }
         materialisedByFileID[file.id] = url
         await clipCache.recordPlayback(of: file.identity(inProvider: remoteIndex.providerIdentifier))
-        return url
+        return .ready(url)
     }
 
     /// Starts fetching the newly selected clip, and prefetching its

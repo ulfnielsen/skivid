@@ -64,7 +64,7 @@ final class ComparisonPanePrepareTests: XCTestCase {
         )
 
         let comparison = ComparisonModel()
-        await comparison.load(choice, side: .left, prepare: { await model.prepareClip($0) })
+        await comparison.load(choice, side: .left, prepare: ClipPreparer { await model.prepareClip($0) })
 
         XCTAssertTrue(downloader.requestedFileIDs.contains("f2"), "got \(downloader.requestedFileIDs)")
         XCTAssertEqual(comparison.playbackURL(for: .left)?.isFileURL, true)
@@ -95,6 +95,15 @@ final class ComparisonPanePrepareTests: XCTestCase {
         try await model.openRemoteLibrary(
             provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
         )
+        // Opening a cloud library auto-selects its first clip and fetches it,
+        // which has nothing to do with the local choice below. Settled and
+        // then subtracted, rather than ignored: this assertion used to read
+        // `requestedFileIDs == []` and passed only because that fetch's `Task`
+        // had not been given time to run by the time it ran — adding one
+        // suspension point anywhere upstream made it fail. What the test means
+        // is "the local choice asked for nothing", so it now says that.
+        try await model.settleFetches()
+        let requestedBeforeTheLocalChoice = downloader.requestedFileIDs
         let localFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).mov")
         try Data().write(to: localFile)
@@ -107,10 +116,10 @@ final class ComparisonPanePrepareTests: XCTestCase {
         )
 
         let comparison = ComparisonModel()
-        await comparison.load(choice, side: .left, prepare: { await model.prepareClip($0) })
+        await comparison.load(choice, side: .left, prepare: ClipPreparer { await model.prepareClip($0) })
 
         XCTAssertEqual(
-            downloader.requestedFileIDs, [],
+            downloader.requestedFileIDs, requestedBeforeTheLocalChoice,
             "a local clip must not touch the downloader: got \(downloader.requestedFileIDs)"
         )
         XCTAssertEqual(comparison.playbackURL(for: .left), localFile)

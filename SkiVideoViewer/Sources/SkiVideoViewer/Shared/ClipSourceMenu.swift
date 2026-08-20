@@ -43,7 +43,7 @@ struct ClipSourceMenu: View {
     /// parameter existed. `ClipChooserTests` builds this view directly and
     /// never exercises a pick, so it has nothing to supply here and must not
     /// need to.
-    var prepare: (ComparisonVideoChoice) async -> URL? = { _ in nil }
+    var prepare: ClipPreparer = .none
 
     @ViewBuilder
     var body: some View {

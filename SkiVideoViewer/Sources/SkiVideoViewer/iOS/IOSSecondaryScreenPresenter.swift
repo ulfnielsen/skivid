@@ -26,7 +26,7 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
         let id = UUID()
         let initialLeftVideo: URL?
         let openLibrary: [ComparisonAthleteChoice]
-        let prepare: (ComparisonVideoChoice) async -> URL?
+        let prepare: ClipPreparer
         let onClose: () -> Void
     }
 
@@ -51,7 +51,7 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
     func presentComparison(
         initialLeftVideo: URL?,
         openLibrary: [ComparisonAthleteChoice],
-        prepare: @escaping (ComparisonVideoChoice) async -> URL?,
+        prepare: ClipPreparer,
         onClose: @escaping () -> Void
     ) {
         comparison = ComparisonRequest(

@@ -121,7 +121,7 @@ struct ContentView: View {
                         // full-screen cover, `ComparisonView`, `ComparisonPane`,
                         // `ClipSourceMenu`) only ever sees this closure, never
                         // `model` itself.
-                        prepare: { choice in await model.prepareClip(choice) },
+                        prepare: ClipPreparer { choice in await model.prepareClip(choice) },
                         onClose: {
                             model.setKeyboardControlsEnabled(true)
                         }

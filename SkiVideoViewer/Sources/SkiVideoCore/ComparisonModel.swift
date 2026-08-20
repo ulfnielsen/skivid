@@ -552,7 +552,7 @@ public final class ComparisonModel: ObservableObject {
     public func load(
         _ choice: ComparisonVideoChoice, side: ComparisonSide, fetching: ViewerModel
     ) async {
-        await load(choice, side: side, prepare: { await fetching.prepareClip($0) })
+        await load(choice, side: side, prepare: ClipPreparer { await fetching.prepareClip($0) })
     }
 
     /// The seam `SecondaryScreenPresenter.presentComparison`'s `prepare`
@@ -562,26 +562,31 @@ public final class ComparisonModel: ObservableObject {
     /// ever importing `ViewerModel` at the call site. `fetching:` now
     /// delegates here rather than repeating the fetch-then-load sequence.
     ///
-    /// `nil` from `prepare` means "could not be materialised" and falls back
-    /// to `choice`'s own `playbackURL`, exactly as `ViewerModel.prepareClip`
-    /// does on its own failure path — so a fetch failure reached through
-    /// either overload behaves the same way.
+    /// The one place a `ClipPreparer` is ever *called* — everything between
+    /// here and `ContentView`, which is the one place one is ever built, only
+    /// forwards it. See `ClipPreparer` for what each outcome means.
     public func load(
         _ choice: ComparisonVideoChoice, side: ComparisonSide,
-        prepare: @escaping (ComparisonVideoChoice) async -> URL?
+        prepare: ClipPreparer
     ) async {
-        let prepared = await prepare(choice)
-        load(prepared ?? choice.playbackURL, side: side)
+        let outcome = await prepare(choice)
+        switch outcome {
+        case let .ready(url):
+            load(url, side: side)
+        case .refused, .nothingToDo:
+            // Both fall back to the choice's own URL — for a local clip that
+            // *is* the file, and for a refused cloud clip the pane already
+            // knows how to show a URL that will not open. What separates them
+            // is the status line below.
+            load(choice.playbackURL, side: side)
+        }
         applyMetadata(of: choice, side: side)
         // Said last, because `load` and `applyMetadata` both write `status`.
-        //
-        // Only for a cloud clip: `prepare` defaults to `{ _ in nil }` wherever
-        // no fetcher is wired (previews, a local library), and a local choice
-        // needs no fetch at all — its `playbackURL` is already the file. So
-        // nil there means "nothing to do", where nil for a remote choice means
-        // the bytes are genuinely not coming.
-        if prepared == nil, case .remote = choice.identity {
-            status = "\(choice.name) was not downloaded — see the main window."
+        // Named as well as explained: a pane shows one clip, but the operator
+        // is looking at two, and "400 MB — about 29× the bitrate…" beside the
+        // wrong one is worse than no message.
+        if case let .refused(explanation) = outcome {
+            status = "\(choice.name) — \(explanation)"
         }
     }
 
