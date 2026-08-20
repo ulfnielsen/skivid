@@ -49,6 +49,11 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
     /// The assertion that the repair keeps a clip's identity is made on this:
     /// a delete-and-reupload would show a different id, or none.
     private(set) var replacedFileIDs: [String] = []
+    /// How many times the write upgrade was requested.
+    private(set) var authorizeWritesCallCount = 0
+    /// Thrown by `authorizeWrites`, for a coach who declines the consent
+    /// screen — distinct from being refused by the drive afterwards.
+    var authorizeWritesError: Error?
     /// Thrown by `replaceContents`, for the view-only-permission case.
     var replaceError: Error?
     /// The new content version a replacement reports — Drive's
@@ -100,6 +105,11 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
 /// separate protocol — a provider can be readable and not writable, which is
 /// the everyday case for a coach without edit access to the club's drive.
 extension FakeRemoteProvider: ContentReplaceable {
+    func authorizeWrites(presenter: OAuthPresenter) async throws {
+        if let authorizeWritesError { throw authorizeWritesError }
+        authorizeWritesCallCount += 1
+    }
+
     func replaceContents(ofFileID fileID: String, withFileAt url: URL) async throws -> String? {
         if let replaceError { throw replaceError }
         replacedFileIDs.append(fileID)

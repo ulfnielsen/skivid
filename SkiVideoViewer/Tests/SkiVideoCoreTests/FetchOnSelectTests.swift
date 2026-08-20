@@ -161,7 +161,19 @@ final class FetchOnSelectTests: XCTestCase {
     private func repairableModel() async throws
         -> (ViewerModel, FakeRemoteProvider, FakeMediaPipeline, FakeClipDownloader)
     {
-        let provider = FakeRemoteProvider(files: fiveClipsWithAnOversizedSecond())
+        // Flagged by bitrate, not by bulk: 400KB of 100ms 1080p is about 8.6×
+        // what this app's pipeline produces, so `ClipWeight` refuses it for
+        // exactly the reason it refuses the real 400MB clip. Deliberately not
+        // the 400MB fixture the refusal tests use — those never download, but
+        // these do, and `FakeClipDownloader` synthesises a file of the declared
+        // size, which made this suite write 2GB of zeros and take 30s.
+        var files = fiveClips()
+        files[1] = RemoteFile(
+            id: "f2", name: "run2.mp4", path: ["Neuss 2026", "Ada"],
+            size: 400_000, contentVersion: "v1", md5: nil,
+            width: 1920, height: 1080, durationMillis: 100
+        )
+        let provider = FakeRemoteProvider(files: files)
         let downloader = FakeClipDownloader()
         let cache = ClipCache(
             root: FileManager.default.temporaryDirectory
@@ -222,6 +234,37 @@ final class FetchOnSelectTests: XCTestCase {
 
         XCTAssertNil(model.repairableClip, "the repaired clip must stop being flagged")
         XCTAssertNil(model.unsupportedFormatMessage)
+    }
+
+    /// Consent is asked for **before** the expensive work, not after. An
+    /// access token minted for reading cannot write, so a repair that skipped
+    /// this would download 400MB and re-encode it before discovering Drive
+    /// would not accept the upload — and would then ask the coach to do the
+    /// whole thing again.
+    func testTheWriteUpgradeIsAskedForBeforeAnythingIsDownloaded() async throws {
+        let (model, provider, pipeline, downloader) = try await repairableModel()
+        provider.authorizeWritesError = RemoteLibraryError.notSignedIn
+
+        await model.repairCurrentClip()
+
+        XCTAssertFalse(
+            downloader.requestedFileIDs.contains("f2"),
+            "a declined consent must cost no download: \(downloader.requestedFileIDs)"
+        )
+        XCTAssertEqual(pipeline.resizeCalls.count, 0, "nor a re-encode")
+        XCTAssertEqual(provider.replacedFileIDs, [])
+        XCTAssertNotNil(model.repairableClip, "the clip is untouched, so it is still repairable")
+    }
+
+    /// Asked once per repair, and only when a repair is actually attempted —
+    /// a coach who never repairs a clip never sees the wider consent screen.
+    func testASuccessfulRepairAsksForWriteAccessExactlyOnce() async throws {
+        let (model, provider, _, _) = try await repairableModel()
+        XCTAssertEqual(provider.authorizeWritesCallCount, 0, "not at sign-in, not at selection")
+
+        await model.repairCurrentClip()
+
+        XCTAssertEqual(provider.authorizeWritesCallCount, 1)
     }
 
     /// The upload is the last step on purpose, mirroring `reencode_for_ios.py`:

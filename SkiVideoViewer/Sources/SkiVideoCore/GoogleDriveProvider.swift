@@ -148,6 +148,32 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         signIn.store(accessToken)
     }
 
+    /// Widens this session's consent to include writing, so a repair can
+    /// replace a clip's bytes.
+    ///
+    /// Interactive on purpose, and only reached when a coach actually asks for
+    /// a repair. Everything else this app does is reading, so asking at
+    /// sign-in would show every coach "see, edit, create and delete all of
+    /// your files" in exchange for a feature most of them will never use — see
+    /// `GoogleOAuth.DriveScope`.
+    ///
+    /// The upgraded access token replaces the in-memory one, so subsequent
+    /// requests in this session carry write permission. Consent is not
+    /// permission: a coach with view-only access to the club's Shared Drive
+    /// still gets a 403 from the upload afterwards, which
+    /// `describeWriteFailure` explains rather than restating as a status code.
+    public func authorizeWrites(presenter: OAuthPresenter) async throws {
+        guard let signIn else { throw RemoteLibraryError.notSignedIn }
+        let accessToken = try await GoogleOAuth.authorize(
+            configuration: signIn.configuration,
+            presenter: presenter,
+            transport: signIn.transport,
+            tokenStore: signIn.tokenStore,
+            scope: .readAndWrite
+        )
+        signIn.store(accessToken)
+    }
+
     /// Picks the previous session back up with no browser: the refresh token
     /// the last sign-in put in the Keychain, exchanged for a fresh access
     /// token. This is what stops a coach being sent to Google on every launch

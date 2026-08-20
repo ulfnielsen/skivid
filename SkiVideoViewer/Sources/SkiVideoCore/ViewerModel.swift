@@ -774,6 +774,13 @@ public final class ViewerModel: ObservableObject {
         defer { try? FileManager.default.removeItem(at: resized.deletingLastPathComponent()) }
 
         do {
+            // Before anything else, and every time: an access token minted for
+            // reading cannot write, so without this the repair does all its
+            // work — a 400MB download and a full re-encode — and only then
+            // discovers Drive will not accept the upload.
+            status = "Asking Google for permission to replace \(file.name)…"
+            try await provider.authorizeWrites(presenter: oauthPresenter)
+
             status = "Fetching \(file.name) to resize…"
             let original = try await materialise(
                 file, using: provider, cache: clipCache, enforcingWeightLimit: false

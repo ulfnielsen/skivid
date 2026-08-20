@@ -133,6 +133,15 @@ public protocol IncrementallyEnumerable: RemoteLibraryProvider {
 /// performs. `ViewerModel.repairCurrentClip` is the one call site, and reaches
 /// it with `as? ContentReplaceable`.
 public protocol ContentReplaceable: RemoteLibraryProvider {
+    /// Obtains permission to write, if this provider needs asking.
+    ///
+    /// Separate from `replaceContents` because consent and permission are
+    /// different things and fail differently: this is the coach agreeing to
+    /// let the app write, while the 403 that may still follow is the club's
+    /// drive saying they may not. Called immediately before a repair rather
+    /// than at sign-in, so a coach who never repairs a clip is never asked.
+    func authorizeWrites(presenter: OAuthPresenter) async throws
+
     /// Replaces the file's bytes, keeping its id, and answers the new content
     /// version — the value the app stores as `RemoteFile.contentVersion`, and
     /// the thing that lets a cache tell the repaired clip from the original.
