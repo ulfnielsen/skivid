@@ -570,9 +570,19 @@ public final class ComparisonModel: ObservableObject {
         _ choice: ComparisonVideoChoice, side: ComparisonSide,
         prepare: @escaping (ComparisonVideoChoice) async -> URL?
     ) async {
-        let url = await prepare(choice) ?? choice.playbackURL
-        load(url, side: side)
+        let prepared = await prepare(choice)
+        load(prepared ?? choice.playbackURL, side: side)
         applyMetadata(of: choice, side: side)
+        // Said last, because `load` and `applyMetadata` both write `status`.
+        //
+        // Only for a cloud clip: `prepare` defaults to `{ _ in nil }` wherever
+        // no fetcher is wired (previews, a local library), and a local choice
+        // needs no fetch at all — its `playbackURL` is already the file. So
+        // nil there means "nothing to do", where nil for a remote choice means
+        // the bytes are genuinely not coming.
+        if prepared == nil, case .remote = choice.identity {
+            status = "\(choice.name) was not downloaded — see the main window."
+        }
     }
 
     private func applyMetadata(of choice: ComparisonVideoChoice, side: ComparisonSide) {

@@ -576,7 +576,23 @@ public final class ViewerModel: ObservableObject {
             isPreparingClip = preparingCount > 0
         }
         status = "Fetching \(file.name)…"
-        materialisedByFileID[file.id] = try await materialise(file, using: remoteProvider, cache: clipCache)
+        do {
+            materialisedByFileID[file.id] = try await materialise(
+                file, using: remoteProvider, cache: clipCache
+            )
+        } catch let RemoteLibraryError.tooLargeToFetch(explanation) {
+            // Not a failure to report as one: nothing broke, the app declined.
+            // Guarded on the selection the same way the success path below is
+            // — otherwise a refusal landing after the coach moved on would
+            // pin its banner to whichever clip is now on screen.
+            guard self.currentVideo == videoAtRequest else { return }
+            unsupportedFormatMessage = explanation
+            // Anything but the "Fetching…" `loadCurrentVideo` left behind,
+            // which would otherwise sit there forever promising a download
+            // that is never going to start.
+            status = file.name
+            return
+        }
         await clipCache.recordPlayback(
             of: file.identity(inProvider: remoteIndex.providerIdentifier)
         )
@@ -612,6 +628,33 @@ public final class ViewerModel: ObservableObject {
     private func materialise(
         _ file: RemoteFile, using provider: any RemoteLibraryProvider, cache: ClipCache
     ) async throws -> URL {
+        // The one place both screens' fetches pass through — the selected
+        // clip, its prefetched neighbours, and a comparison pane's choice all
+        // arrive here — so the "too heavy to fetch" rule is enforced once.
+        let verdict = ClipWeight.verdict(
+            width: file.width, height: file.height,
+            durationMillis: file.durationMillis, size: file.size
+        )
+        if verdict.isTooLarge {
+            // Refusing to fetch is not refusing to play. Bytes already on
+            // disk were paid for once, and taking the clip away at that point
+            // would be a regression dressed up as a safeguard. Deliberately
+            // *not* the version check `cache.materialize` performs on the
+            // ordinary path: a newer revision of a still-oversized clip
+            // cannot be downloaded either, so insisting on being current
+            // would leave the coach with nothing rather than with slightly
+            // stale footage. A clip repaired to a sane size stops being
+            // flagged and takes the ordinary path, version check included.
+            if let cached = await cache.cachedURL(
+                for: file.identity(inProvider: type(of: provider).identifier)
+            ) {
+                return cached
+            }
+            throw RemoteLibraryError.tooLargeToFetch(
+                verdict.explanation ?? "This clip is too large to download."
+            )
+        }
+
         let source = try await provider.downloadSource(for: file)
         do {
             return try await cache.materialize(file, source: source)
@@ -638,12 +681,29 @@ public final class ViewerModel: ObservableObject {
     /// `SecondaryScreenPresenter.presentComparison`'s `prepare` parameter
     /// carries — see that seam for why a closure crosses this boundary rather
     /// than the model itself.
-    public func prepareClip(_ choice: ComparisonVideoChoice) async -> URL {
+    /// Nil means "deliberately not fetched" — the clip is too heavy to be
+    /// worth downloading, and `ComparisonModel` says so on the pane rather
+    /// than loading a URL it knows will not open. Every *failure* still falls
+    /// back to `choice.playbackURL` as before, so nil carries exactly one
+    /// meaning. Already `URL?` at every call site (`ContentView`'s closure and
+    /// `load(_:side:fetching:)` both take the optional shape), so widening the
+    /// return type costs nothing at the boundary.
+    public func prepareClip(_ choice: ComparisonVideoChoice) async -> URL? {
         guard let remoteIndex, let remoteProvider, let clipCache,
               case let .remote(_, fileID) = choice.identity,
               let file = remoteIndex.file(forID: fileID)
         else { return choice.playbackURL }
-        guard let url = try? await materialise(file, using: remoteProvider, cache: clipCache) else {
+        let url: URL
+        do {
+            url = try await materialise(file, using: remoteProvider, cache: clipCache)
+        } catch let RemoteLibraryError.tooLargeToFetch(explanation) {
+            // The detailed numbers go to the main window's banner, which is
+            // also where the repair lives; the comparison pane gets the
+            // shorter "not loaded" line from `ComparisonModel`. One
+            // explanation, stated once, next to the thing that can act on it.
+            unsupportedFormatMessage = explanation
+            return nil
+        } catch {
             return choice.playbackURL
         }
         materialisedByFileID[file.id] = url
@@ -1007,6 +1067,12 @@ public final class ViewerModel: ObservableObject {
             // look finished rather than in progress.
             player.replaceCurrentItem(with: nil)
             status = "Fetching…"
+            // The refusal banner belongs to the clip that earned it. Only
+            // `checkPlayability` clears it otherwise, and that runs on the
+            // branch below — so without this, a clip refused for its size
+            // would leave its message on screen over every clip selected
+            // afterwards that is not yet on disk.
+            unsupportedFormatMessage = nil
             return
         }
         let item = AVPlayerItem(url: playbackURL)

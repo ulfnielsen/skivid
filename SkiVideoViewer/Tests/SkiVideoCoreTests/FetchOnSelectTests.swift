@@ -31,6 +31,145 @@ final class FetchOnSelectTests: XCTestCase {
         (1...6).map { remoteFile("f\($0)", "run\($0).mp4", ["Neuss 2026", "Ada"]) }
     }
 
+    /// The reported case, in the second slot: 400MB of 30-second 1080p, about
+    /// 29× the bitrate this app's own pipeline produces. Keeps the name
+    /// `fiveClips` gave it, so the sidebar's ordering — and therefore which
+    /// clip `changeVideo(by: 1)` lands on — is unchanged from every other test
+    /// in this file.
+    private func fiveClipsWithAnOversizedSecond() -> [RemoteFile] {
+        var files = fiveClips()
+        files[1] = RemoteFile(
+            id: "f2", name: "run2.mp4", path: ["Neuss 2026", "Ada"],
+            size: 400 * 1_000_000, contentVersion: "v1", md5: nil,
+            width: 1920, height: 1080, durationMillis: 30_000
+        )
+        return files
+    }
+
+    private func openedLibrary(
+        files: [RemoteFile]
+    ) async throws -> (ViewerModel, FakeRemoteProvider, ClipCache, FakeClipDownloader) {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: files)
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        return (model, provider, cache, downloader)
+    }
+
+    // MARK: - Clips too heavy to be worth fetching
+
+    /// The whole point of the rule: a clip `ClipWeight` flags must not be
+    /// downloaded. Asserted on what actually reached the downloader rather
+    /// than on a status string — a status assertion would pass with the 400MB
+    /// transfer still running, which is the one outcome this exists to prevent.
+    func testSelectingAnOversizedClipDoesNotFetchIt() async throws {
+        let (model, _, _, downloader) = try await openedLibrary(
+            files: fiveClipsWithAnOversizedSecond()
+        )
+
+        _ = model.changeVideo(by: 1)
+        try await model.settleFetches()
+
+        XCTAssertFalse(
+            downloader.requestedFileIDs.contains("f2"),
+            "the flagged clip was downloaded anyway: \(downloader.requestedFileIDs)"
+        )
+        XCTAssertNil(model.currentPlaybackURL, "nothing was fetched, so there is nothing to play")
+        let message = try XCTUnwrap(
+            model.unsupportedFormatMessage,
+            "a refused clip with no explanation reads as a broken app"
+        )
+        XCTAssertTrue(message.contains("400"), message)
+    }
+
+    /// Refusing to *fetch* is not refusing to *play*. A coach who already has
+    /// the bytes — from before this rule existed, or from a deliberate repair
+    /// — paid for them once, and taking the clip away at that point would be a
+    /// regression dressed up as a safeguard.
+    func testAnOversizedClipAlreadyInTheCacheStillPlays() async throws {
+        let files = fiveClipsWithAnOversizedSecond()
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: files)
+        // Primed through a record that declares the size of the bytes actually
+        // handed over, because `ClipCache` rejects a download whose length
+        // disagrees with the file's declared size — priming with the 400MB
+        // record would need 400MB of fake bytes. Same id and same
+        // `contentVersion`, which is all a cache hit consults: `cachedURL`
+        // looks a clip up by id alone, and `materialize`'s hit branch compares
+        // only the version. So this is genuinely "f2's bytes are on disk".
+        downloader.bytesByFileID["f2"] = Data("already paid for".utf8)
+        _ = try await cache.materialize(
+            RemoteFile(
+                id: "f2", name: "run2.mp4", path: ["Neuss 2026", "Ada"],
+                size: Int64("already paid for".utf8.count), contentVersion: "v1", md5: nil
+            ),
+            source: DownloadSource(url: provider.downloadURL, headers: [:])
+        )
+        let fetchesWhilePriming = downloader.requestedFileIDs.filter { $0 == "f2" }.count
+
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        _ = model.changeVideo(by: 1)
+        try await model.settleFetches()
+
+        XCTAssertEqual(model.currentClipIdentity, .remote(provider: "fake", fileID: "f2"),
+                       "got \(String(describing: model.currentPlaybackURL))")
+        XCTAssertNotNil(model.currentPlaybackURL, "the cached clip must still resolve to a file")
+        XCTAssertEqual(
+            downloader.requestedFileIDs.filter { $0 == "f2" }.count, fetchesWhilePriming,
+            "playing a cached clip must not re-download it: \(downloader.requestedFileIDs)"
+        )
+    }
+
+    /// The comparison screen matters more than it looks: a coach filling both
+    /// panes with flagged clips would otherwise start two 400MB transfers at
+    /// once. Both panes go through `ViewerModel.materialise`, so the rule is
+    /// enforced in one place — this pins that it actually reaches them, and
+    /// that the pane says why instead of sitting blank.
+    func testLoadingAnOversizedClipIntoAComparisonPaneDoesNotFetchIt() async throws {
+        let (model, _, _, downloader) = try await openedLibrary(
+            files: fiveClipsWithAnOversizedSecond()
+        )
+        try await model.settleFetches()
+        let choice = try XCTUnwrap(
+            model.comparisonLibrary.first?.videos.first { $0.identity == .remote(provider: "fake", fileID: "f2") }
+        )
+
+        let comparison = ComparisonModel()
+        await comparison.load(choice, side: .left, fetching: model)
+
+        XCTAssertFalse(
+            downloader.requestedFileIDs.contains("f2"),
+            "a comparison pane downloaded the flagged clip: \(downloader.requestedFileIDs)"
+        )
+        XCTAssertTrue(
+            comparison.status.contains("run2.mp4"),
+            "the pane must name the clip it did not load, got \(comparison.status)"
+        )
+    }
+
+    /// Drive fills `videoMediaMetadata` in asynchronously after an upload, so a
+    /// clip added minutes ago carries none — and a rule that refused what it
+    /// cannot measure would strike hardest exactly when a coach has just
+    /// uploaded footage and wants to watch it. 400MB, deliberately: size alone
+    /// must not be enough to refuse.
+    func testAClipWithNoMetadataIsFetchedNormally() async throws {
+        var files = fiveClips()
+        files[1] = RemoteFile(
+            id: "f2", name: "run2.mp4", path: ["Neuss 2026", "Ada"],
+            size: 400 * 1_000_000, contentVersion: "v1", md5: nil
+        )
+        let (model, _, _, downloader) = try await openedLibrary(files: files)
+
+        _ = model.changeVideo(by: 1)
+        try await model.settleFetches()
+
+        XCTAssertTrue(
+            downloader.requestedFileIDs.contains("f2"),
+            "an unmeasurable clip must be fetched as usual: \(downloader.requestedFileIDs)"
+        )
+    }
+
     /// Selecting a clip is what asks for it. Nothing else in the app calls
     /// `prepareCurrentClip`, so without this a coach clicks a clip and watches
     /// an empty pane forever.

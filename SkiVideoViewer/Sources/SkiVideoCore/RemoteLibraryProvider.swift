@@ -221,6 +221,14 @@ public enum RemoteLibraryError: LocalizedError, Equatable {
     /// `.api`, so `ViewerModel.prepareCurrentClip` can tell "the token is
     /// stale, mint a fresh one and retry" apart from an ordinary failure.
     case unauthorised
+    /// Refused before any bytes moved, because `ClipWeight` judged the clip
+    /// too heavy to be worth fetching. Carries the explanation rather than a
+    /// fixed string: the coach is being denied a clip they can see in the
+    /// sidebar, and "too large" alone gives them nothing to act on. Its own
+    /// case, not `.api`, because nothing failed — this is the app's own
+    /// decision, and a caller must be able to tell a refusal it made from a
+    /// refusal Drive made.
+    case tooLargeToFetch(String)
 
     public var errorDescription: String? {
         switch self {
@@ -232,6 +240,8 @@ public enum RemoteLibraryError: LocalizedError, Equatable {
             return "The request was cancelled."
         case .unauthorised:
             return "Your session expired. Try again."
+        case let .tooLargeToFetch(explanation):
+            return explanation
         }
     }
 }
