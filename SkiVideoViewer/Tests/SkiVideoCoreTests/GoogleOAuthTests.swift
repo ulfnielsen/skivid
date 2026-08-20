@@ -213,4 +213,82 @@ final class GoogleOAuthTests: XCTestCase {
             components.queryItems?.first { $0.name == "include_granted_scopes" }?.value, "true"
         )
     }
+
+    // MARK: - Consenting once
+
+    /// The complaint: "it asks for write permission for every video that it
+    /// wants to resize."
+    ///
+    /// The upgrade deliberately skipped the refresh shortcut, because a refresh
+    /// token granted read-only comes back read-only and the repair would then
+    /// fail at the upload after the coach had been promised it would work. True
+    /// before the coach consents — and wrong forever after, since nothing asked
+    /// whether the grant behind the stored token already covered writing. It
+    /// does now, so a second repair costs no browser.
+    @MainActor
+    func testAStoredWriteGrantIsReusedInsteadOfAskingAgain() async throws {
+        let transport = FakeHTTPTransport()
+        transport.responses = [
+            .init(json: #"""
+            {"access_token":"write-token","refresh_token":"r",
+             "scope":"https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive"}
+            """#)
+        ]
+        let store = InMemoryOAuthTokenStore()
+        try store.save("granted-with-write", account: configuration(secret: "s").clientID)
+        let presenter = FakeOAuthPresenter()
+
+        let token = try await GoogleOAuth.authorize(
+            configuration: configuration(secret: "s"),
+            presenter: presenter,
+            transport: transport,
+            tokenStore: store,
+            scope: .readAndWrite
+        )
+
+        XCTAssertEqual(token, "write-token")
+        XCTAssertNil(presenter.lastAuthorizationURL,
+                     "the coach was sent to the browser for permission they had already given")
+    }
+
+    /// The case the skip was written for, which must keep working: a token
+    /// granted read-only cannot be refreshed into a write token, so the browser
+    /// is the only way and the repair must not proceed on a read-only token.
+    @MainActor
+    func testAReadOnlyGrantStillGoesToTheBrowserToUpgrade() async throws {
+        let transport = FakeHTTPTransport()
+        transport.responses = [
+            .init(json: #"""
+            {"access_token":"read-token","refresh_token":"r",
+             "scope":"https://www.googleapis.com/auth/drive.readonly"}
+            """#)
+        ]
+        let store = InMemoryOAuthTokenStore()
+        try store.save("granted-read-only", account: configuration(secret: "s").clientID)
+        let presenter = FakeOAuthPresenter()
+
+        _ = try? await GoogleOAuth.authorize(
+            configuration: configuration(secret: "s"),
+            presenter: presenter,
+            transport: transport,
+            tokenStore: store,
+            scope: .readAndWrite
+        )
+
+        XCTAssertNotNil(presenter.lastAuthorizationURL,
+                        "a read-only grant cannot be refreshed into a write token")
+    }
+
+    /// Google reports what the coach consented to, which can be wider than what
+    /// was asked for. Full Drive access implies the read-only scope and is not
+    /// listed alongside it.
+    func testFullDriveAccessCoversTheReadScope() {
+        XCTAssertTrue(GoogleOAuth.grant("https://www.googleapis.com/auth/drive",
+                                        covers: .readAndWrite))
+        XCTAssertTrue(GoogleOAuth.grant("https://www.googleapis.com/auth/drive",
+                                        covers: .readOnly))
+        XCTAssertFalse(GoogleOAuth.grant("https://www.googleapis.com/auth/drive.readonly",
+                                         covers: .readAndWrite))
+        XCTAssertFalse(GoogleOAuth.grant(nil, covers: .readAndWrite))
+    }
 }

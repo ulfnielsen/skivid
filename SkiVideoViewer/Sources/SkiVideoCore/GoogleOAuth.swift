@@ -201,11 +201,20 @@ enum GoogleOAuth {
         // hand back a read-only token and the repair would fail at the write,
         // after the coach had been told it would work. Widening consent needs
         // the interactive flow, so the upgrade skips this shortcut.
-        if scope == .readOnly, let refreshToken = tokenStore.load(account: configuration.clientID) {
+        if let refreshToken = tokenStore.load(account: configuration.clientID) {
             do {
-                return try await refreshAccessToken(
+                let refreshed = try await refreshedToken(
                     refreshToken: refreshToken, configuration: configuration, transport: transport
                 )
+                // The shortcut is taken when the grant behind this token already
+                // covers what is being asked for. For reading that is always
+                // true, which is why this path existed. For writing it is true
+                // the moment the coach has consented once — and nothing checked,
+                // so every repair sent them to the browser again: one consent
+                // screen per clip, for permission they had already given.
+                if scope == .readOnly || grant(refreshed.scope, covers: scope) {
+                    return refreshed.accessToken
+                }
             } catch {
                 // A refresh token Google has *refused* is dead, and leaving it
                 // in the Keychain costs a round trip on every future attempt
@@ -341,6 +350,17 @@ enum GoogleOAuth {
         configuration: GoogleOAuthConfiguration,
         transport: HTTPTransport
     ) async throws -> String {
+        try await refreshedToken(
+            refreshToken: refreshToken, configuration: configuration, transport: transport
+        ).accessToken
+    }
+
+    /// The refresh, with the granted scope still attached.
+    private static func refreshedToken(
+        refreshToken: String,
+        configuration: GoogleOAuthConfiguration,
+        transport: HTTPTransport
+    ) async throws -> GoogleTokenResponse {
         try await tokenRequest(
             configuration: configuration,
             values: [
@@ -348,7 +368,21 @@ enum GoogleOAuth {
                 "grant_type": "refresh_token",
             ],
             transport: transport
-        ).accessToken
+        )
+    }
+
+    /// Whether a granted scope string covers everything `scope` needs.
+    ///
+    /// Google answers with what the coach consented to, which may be wider than
+    /// what was asked for — an account that granted full Drive access for some
+    /// other reason should not be sent to the browser to grant it again.
+    static func grant(_ granted: String?, covers scope: DriveScope) -> Bool {
+        guard let granted else { return false }
+        let held = Set(granted.split(separator: " ").map(String.init))
+        // Full Drive access implies the read-only scope; Google does not list
+        // both when the wider one was granted.
+        if held.contains("https://www.googleapis.com/auth/drive") { return true }
+        return scope.value.split(separator: " ").allSatisfy { held.contains(String($0)) }
     }
 
     /// The token endpoint's form-urlencoded body. Extracted from the request
@@ -431,10 +465,16 @@ private struct GoogleAPIError: Decodable {
 private struct GoogleTokenResponse: Decodable {
     let accessToken: String
     let refreshToken: String?
+    /// What this token is actually allowed to do, space-separated, as Google
+    /// reports it. Read so a refresh can be *asked* whether it already carries
+    /// write access rather than assumed not to — which is what sent the coach
+    /// to the browser once per clip.
+    let scope: String?
 
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
+        case scope
     }
 }
 
