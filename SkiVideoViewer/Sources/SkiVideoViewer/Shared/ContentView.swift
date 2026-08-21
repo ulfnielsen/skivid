@@ -337,7 +337,12 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle(model.directory?.lastPathComponent ?? (model.isUsingRemoteLibrary ? "Remote Library" : "Ski Video Viewer"))
+        .navigationTitle(model.libraryTitle)
+        #if os(macOS)
+        // Which drive, and how much of it — the title alone says "Videos", and
+        // two clubs can both have a folder called that.
+        .navigationSubtitle(model.librarySummary ?? "")
+        #endif
         // iPadOS renders a toolbar attached to a column, not one attached to
         // the split view, so the items hang off the detail column's navigation
         // bar here. macOS keeps its attachment in `body`; putting the macOS

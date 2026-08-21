@@ -218,7 +218,7 @@ struct LibrariesView: View {
         let kind: String
         switch library.kind {
         case .drive:  kind = "Google Drive"
-        case .folder: kind = "This Mac"
+        case .folder: kind = LocalSource.name
         }
         guard let opened = library.lastOpened else { return kind }
         let formatter = RelativeDateTimeFormatter()

@@ -63,6 +63,19 @@ public struct Library: Identifiable, Equatable, Codable, Sendable {
 /// than a secret, and injectable so tests never touch the real store. The Drive
 /// tokens stay in the Keychain and the cached index stays where it is — keyed by
 /// root id, so a reconnected library finds its own cache already warm.
+/// What to call a library that lives on the machine the app is running on.
+/// Said in two places — the landing list and the window title — and they should
+/// not be able to disagree about which device this is.
+public enum LocalSource {
+    public static var name: String {
+        #if os(macOS)
+        return "This Mac"
+        #else
+        return "This iPad"
+        #endif
+    }
+}
+
 public struct LibraryStore: Sendable {
 
     public static let defaultsKey = "libraries"

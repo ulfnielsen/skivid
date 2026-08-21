@@ -581,6 +581,51 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
+    // MARK: - What is open, said out loud
+
+    /// The library the coach is looking at, when they opened one from the list.
+    /// Nil for a folder handed to the app on the command line, which was never
+    /// recorded as a library.
+    public var openLibrary: Library? {
+        guard let openLibraryID else { return nil }
+        return libraries.first { $0.id == openLibraryID }
+    }
+
+    /// The name for the window. A library has a name now, so the window can use
+    /// it: "Remote Library" answered a question nobody asked, and a coach with
+    /// two clubs' drives connected could not tell from the title which one they
+    /// were looking at.
+    public var libraryTitle: String {
+        if let openLibrary { return openLibrary.name }
+        if let directory { return directory.lastPathComponent }
+        return isUsingRemoteLibrary ? "Remote Library" : "Ski Video Viewer"
+    }
+
+    /// Where the open library came from and how much is in it — the line under
+    /// the title. Nil when nothing is open, so the window does not carry an
+    /// empty subtitle around the landing screen.
+    public var librarySummary: String? {
+        var parts: [String] = []
+        switch openLibrary?.kind {
+        case .drive:  parts.append("Google Drive")
+        case .folder: parts.append(LocalSource.name)
+        case nil:     if isUsingRemoteLibrary { parts.append("Google Drive") }
+        }
+
+        // Athletes are grouped per event, so one skier with three events is
+        // three groups and one athlete. Counting the groups would report a
+        // library as bigger than it is.
+        let athleteCount = Set(athletes.map(\.name)).count
+        let clipCount = athletes.reduce(0) { $0 + $1.videos.count }
+        if athleteCount > 0 {
+            parts.append("\(athleteCount) athlete\(athleteCount == 1 ? "" : "s")")
+        }
+        if clipCount > 0 {
+            parts.append("\(clipCount) clip\(clipCount == 1 ? "" : "s")")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     /// Records a folder the coach added, as a bookmark rather than a path so it
     /// survives a relaunch on iPad.
     @discardableResult
