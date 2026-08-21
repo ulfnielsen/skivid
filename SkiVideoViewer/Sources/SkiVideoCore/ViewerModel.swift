@@ -352,12 +352,15 @@ public final class ViewerModel: ObservableObject {
         guard !hasStarted else { return }
         hasStarted = true
         if let initialDirectory {
+            // A path on the command line is a folder somebody asked for by
+            // name. Everything else lands on the library list.
             openDirectory(initialDirectory)
-        } else if directory == nil {
-            Task { [weak self] in
-                await self?.chooseDirectory()
-            }
         }
+        // Launching used to open the file picker here, which is why the coach
+        // was hunting for the same folder every morning: the panel came up
+        // before any part of the app was on screen, so there was nowhere for
+        // "the libraries you already have" to be shown. Landing with nothing
+        // open is now an answer rather than a gap.
     }
 
     public func chooseDirectory() async {
