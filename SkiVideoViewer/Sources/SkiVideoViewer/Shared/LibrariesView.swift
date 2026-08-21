@@ -33,13 +33,12 @@ struct LibrariesView: View {
     @State private var hovering: UUID?
 
     var body: some View {
-        VStack(spacing: 32) {
+        Group {
             if model.libraries.isEmpty {
-                empty
+                empty.frame(maxWidth: .infinity)
             } else {
                 list
             }
-            actions
         }
         .padding(40)
         // Wide enough for a long club name and a state sentence on one line,
@@ -64,25 +63,42 @@ struct LibrariesView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            actions.padding(.top, 8)
         }
     }
 
+    /// Past this many rows the stack is taller than a laptop screen and starts
+    /// scrolling. Below it, it is exactly as tall as its rows — a `ScrollView`
+    /// held to a fixed height claims that height whether it needs it or not,
+    /// which put a hand's width of nothing between one library and the buttons.
+    private static let rowsBeforeScrolling = 6
+
     private var list: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 24) {
             Text("Libraries")
                 .font(.largeTitle.weight(.semibold))
 
             // A plain stack rather than a `List`: this is a short set of large
             // targets, not a data table, and `List` spent the space on chrome
-            // and small type. It scrolls once there are more than a screenful.
-            ScrollView {
-                VStack(spacing: 12) {
-                    ForEach(model.libraries) { library in
-                        row(library)
-                    }
+            // and small type.
+            if model.libraries.count > Self.rowsBeforeScrolling {
+                ScrollView {
+                    rows
                 }
+                .frame(maxHeight: 460)
+            } else {
+                rows
             }
-            .frame(maxHeight: 460)
+
+            actions
+        }
+    }
+
+    private var rows: some View {
+        VStack(spacing: 12) {
+            ForEach(model.libraries) { library in
+                row(library)
+            }
         }
     }
 
@@ -94,7 +110,7 @@ struct LibrariesView: View {
             HStack(spacing: 18) {
                 Image(systemName: icon(for: library))
                     .font(.system(size: 30))
-                    .foregroundStyle(failed ? Color.orange : Color.accentColor)
+                    .foregroundStyle(failed ? Color.orange : .secondary)
                     .frame(width: 44)
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -131,6 +147,11 @@ struct LibrariesView: View {
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
+        // Without this the window hands the first row its focus ring on
+        // launch, and a blue border around one library reads as "this one is
+        // selected" — or, next to an orange warning icon, as "this one is
+        // wrong". Neither is true; it is just first in the stack.
+        .modifier(NoFocusRing())
         .onHover { hovering = $0 ? library.id : (hovering == library.id ? nil : hovering) }
         .contextMenu {
             Button("Open") { open(library) }
@@ -159,6 +180,18 @@ struct LibrariesView: View {
         }
         .controlSize(.large)
         .font(.title3)
+    }
+
+    /// `focusEffectDisabled` arrived in macOS 14 and this ships lower, so the
+    /// ring is turned off where that is possible and left alone where it is not.
+    private struct NoFocusRing: ViewModifier {
+        func body(content: Content) -> some View {
+            if #available(macOS 14.0, iOS 17.0, *) {
+                content.focusEffectDisabled()
+            } else {
+                content
+            }
+        }
     }
 
     private func open(_ library: Library) {
