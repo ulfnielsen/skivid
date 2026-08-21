@@ -286,6 +286,14 @@ struct GoogleDriveSheet: View {
     /// that type for where it looks. Nil when it finds none, so
     /// `signInSection` can say so instead of offering a button that reaches
     /// Google only to be refused as a misconfigured client.
+    /// The same provider the sheet builds, reachable by the landing list so a
+    /// library can be reopened without the sheet ever appearing. Naming it here
+    /// rather than duplicating it keeps one answer to "which OAuth client is
+    /// this platform's", which genuinely differs — see `configuration()`.
+    static func makeConfiguredProvider() -> (any RemoteLibraryProvider)? {
+        makeProvider()
+    }
+
     private static func makeProvider() -> GoogleDriveProvider? {
         guard let configuration = configuration() else { return nil }
         return GoogleDriveProvider(configuration: configuration)

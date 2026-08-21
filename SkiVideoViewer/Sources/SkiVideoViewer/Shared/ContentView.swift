@@ -153,7 +153,10 @@ struct ContentView: View {
             Button {
                 isShowingGoogleDriveSheet = true
             } label: {
-                Label("Open Club Library…", systemImage: "externaldrive.connected.to.line.below")
+                // "Connect" rather than "Open": this is the rare, heavyweight
+                // trip through Google's consent screen and a drive listing.
+                // Opening one already connected is a row on the landing list.
+                Label("Connect Google Drive…", systemImage: "externaldrive.connected.to.line.below")
             }
         }
         ToolbarItem {
@@ -165,7 +168,7 @@ struct ContentView: View {
             .keyboardShortcut("f", modifiers: .command)
         }
         ToolbarItem(placement: .primaryAction) {
-            Button("Open Folder…") {
+            Button("Add Folder…") {
                 Task { await model.chooseDirectory() }
             }
             .keyboardShortcut("o", modifiers: .command)
@@ -319,11 +322,16 @@ struct ContentView: View {
                 }
                 .background(.bar)
             } else {
-                emptyState(
-                    title: "Choose a Video Folder",
-                    systemImage: "play.rectangle",
-                    description: "Athletes will appear in the sidebar."
+                // What used to be an empty pane telling the coach to go and
+                // find a folder. The libraries they already have are a better
+                // answer to "nothing is open" than an instruction is.
+                LibrariesView(
+                    model: model,
+                    cache: clipCache,
+                    makeProvider: GoogleDriveSheet.makeConfiguredProvider,
+                    onConnectDrive: { isShowingGoogleDriveSheet = true }
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle(model.directory?.lastPathComponent ?? (model.isUsingRemoteLibrary ? "Remote Library" : "Ski Video Viewer"))

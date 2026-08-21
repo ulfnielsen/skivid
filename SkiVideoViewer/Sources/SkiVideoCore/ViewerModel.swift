@@ -369,6 +369,14 @@ public final class ViewerModel: ObservableObject {
             return
         }
         openDirectory(url)
+        // Written down here rather than only on the landing screen, so a folder
+        // opened from the menu is a folder the coach has, not one they will
+        // have to find again. Only on success: `openDirectory` sets
+        // `errorMessage` for a folder with no videos in it, and a library that
+        // could not be read is not one to list.
+        if errorMessage == nil {
+            rememberFolder(at: url)
+        }
     }
 
     public func setKeyboardControlsEnabled(_ enabled: Bool) {
