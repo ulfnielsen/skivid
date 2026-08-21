@@ -295,10 +295,13 @@ struct ContentView: View {
         .navigationTitle("Athletes")
         .overlay {
             if model.athletes.isEmpty {
+                // The sidebar no longer tells the coach to go and open
+                // something: the pane beside it is a list of the libraries
+                // they have, and pointing at it beats repeating the ask.
                 emptyState(
-                    title: "No Folder Open",
-                    systemImage: "folder",
-                    description: "Open an organized video directory."
+                    title: "No Library Open",
+                    systemImage: "film.stack",
+                    description: "Choose one on the right."
                 )
             }
         }
