@@ -76,7 +76,12 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
         return canResumeSession
     }
 
+    /// Counted so a test can say what reopening a connected library must *not*
+    /// do: browsing the drive is part of connecting, not of opening.
+    private(set) var rootsCallCount = 0
+
     func roots() async throws -> [RemoteFolder] {
+        rootsCallCount += 1
         if let rootsError { throw rootsError }
         return rootsToReturn
     }

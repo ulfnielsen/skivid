@@ -146,6 +146,25 @@ public final class ViewerModel: ObservableObject {
     /// the same seam `RemoteLibraryIndex.storeRoot` uses for its own store.
     public static var defaults: UserDefaults = .standard
 
+    /// The libraries this machine has connected, in the order they were last
+    /// opened. Held here rather than in a view so that opening one records
+    /// itself: the recording has to happen where the open *succeeds*, and every
+    /// open goes through this model.
+    public private(set) lazy var libraryStore = LibraryStore(defaults: Self.defaults)
+
+    /// Republished for the landing list. A stored property rather than a
+    /// computed one so SwiftUI is told when it changes; `LibraryStore` reads
+    /// `UserDefaults` and cannot announce itself.
+    @Published public private(set) var libraries: [Library] = []
+
+    /// Which library is open, when one is. Nil for a folder or drive opened
+    /// before any of this existed, and for the empty landing state.
+    @Published public private(set) var openLibraryID: UUID?
+
+    public func refreshLibraries() {
+        libraries = libraryStore.all()
+    }
+
     private static let sidebarGroupingDefaultsKey = "SidebarGrouping"
 
     /// `.event` when nothing is stored yet — today's only behaviour, so a
@@ -457,11 +476,114 @@ public final class ViewerModel: ObservableObject {
                 convention: convention, rebuilding: rebuilding
             )
             availableRoots = []
+            // Recorded here and nowhere else: this is where an open is known to
+            // have worked. A library written at selection time would put a
+            // folder the coach could not open at the top of their list.
+            let recorded = libraryStore.add(
+                Library(name: root.name, kind: .drive(rootID: root.id), convention: convention)
+            )
+            libraryStore.markOpened(recorded.id)
+            openLibraryID = recorded.id
+            refreshLibraries()
             return true
         } catch {
             signInError = error.localizedDescription
             return false
         }
+    }
+
+    /// Security-scoped bookmarks are spelled differently on each platform, and
+    /// the difference is not cosmetic: `.withSecurityScope` exists only on the
+    /// Mac, while on iPad a bookmark taken from the document picker is
+    /// security-scoped already and passing the option fails to compile.
+    #if os(macOS)
+    private static let bookmarkCreationOptions: URL.BookmarkCreationOptions = [.withSecurityScope]
+    private static let bookmarkResolutionOptions: URL.BookmarkResolutionOptions = [.withSecurityScope]
+    #else
+    private static let bookmarkCreationOptions: URL.BookmarkCreationOptions = []
+    private static let bookmarkResolutionOptions: URL.BookmarkResolutionOptions = []
+    #endif
+
+    /// Opens a library the coach has already connected.
+    ///
+    /// The click that replaces the whole flow: no browser, no browsing, no
+    /// layout question. Sign-in comes back from the Keychain, the stored index
+    /// and change cursor make it a delta rather than a re-listing, and the
+    /// layout is the one this library was connected with.
+    ///
+    /// Returns the reason it could not, rather than throwing: every caller has
+    /// the same answer to every failure, which is to say so on the row and
+    /// leave the library in the list. A drive that is unreachable this morning
+    /// is not a drive to forget.
+    @discardableResult
+    /// `provider` is supplied by the caller because building one is the view's
+    /// job — on the Mac it reads a client secret off disk, on iPad it uses a
+    /// compiled-in client — and a model that reached for either would be
+    /// reaching across that line. Nil, with no session already open, is simply
+    /// "not signed in".
+    public func open(_ library: Library, cache: ClipCache,
+                     provider: (any RemoteLibraryProvider)? = nil) async -> String? {
+        switch library.kind {
+        case let .drive(rootID):
+            guard let provider = remoteProvider ?? provider else {
+                return "Sign in to open \(library.name)."
+            }
+            // A session resumed from the Keychain, so the coach is not sent to
+            // Google for a library they connected weeks ago.
+            if remoteProvider == nil, await provider.resumeSession() == false {
+                return "Sign in to open \(library.name)."
+            }
+            do {
+                try await openRemoteLibrary(
+                    provider: provider,
+                    root: RemoteFolder(id: rootID, name: library.name),
+                    cache: cache,
+                    convention: library.convention
+                )
+                remoteProvider = provider
+                libraryStore.markOpened(library.id)
+                openLibraryID = library.id
+                refreshLibraries()
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+
+        case let .folder(bookmark):
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: bookmark,
+                                     options: Self.bookmarkResolutionOptions,
+                                     bookmarkDataIsStale: &stale) else {
+                return "\(library.name) is no longer where it was."
+            }
+            // The scope is held for as long as the library is open. A folder
+            // outside the app's own container is unreadable without it on iPad,
+            // and harmless to ask for on the Mac.
+            let scoped = url.startAccessingSecurityScopedResource()
+            openDirectory(url)
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            guard errorMessage == nil else { return errorMessage }
+            libraryStore.markOpened(library.id)
+            openLibraryID = library.id
+            refreshLibraries()
+            return nil
+        }
+    }
+
+    /// Records a folder the coach added, as a bookmark rather than a path so it
+    /// survives a relaunch on iPad.
+    @discardableResult
+    public func rememberFolder(at url: URL, named name: String? = nil) -> Library? {
+        guard let bookmark = try? url.bookmarkData(options: Self.bookmarkCreationOptions,
+                                                   includingResourceValuesForKeys: nil,
+                                                   relativeTo: nil) else { return nil }
+        let library = libraryStore.add(
+            Library(name: name ?? url.lastPathComponent, kind: .folder(bookmark: bookmark))
+        )
+        libraryStore.markOpened(library.id)
+        openLibraryID = library.id
+        refreshLibraries()
+        return library
     }
 
     /// Opens a cloud library: index it, group it, show it. No bytes are
