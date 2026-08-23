@@ -482,10 +482,23 @@ final class ViewerOnIPadUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        // Launching no longer opens the picker. The app lands on its libraries
+        // list, so the picker is one tap in rather than already on screen —
+        // which is the whole point of that change, and the reason this suite
+        // went red the day it landed.
+        // By identifier, not label: the detail toolbar carries an "Add Folder…"
+        // of its own, and both are on screen while the libraries list is.
+        let addFolder = app.buttons["libraries.addFolder"]
+        XCTAssertTrue(
+            addFolder.waitForExistence(timeout: 60),
+            "expected the libraries list's Add Folder button; did LibrariesView change?"
+        )
+        addFolder.tap()
+
         let locations = app.cells["DOC.sidebar.item.On My iPad"]
         XCTAssertTrue(
             locations.waitForExistence(timeout: 60),
-            "expected the launch folder picker; did ViewerModel.start change?"
+            "Add Folder must open the document picker; did chooseDirectory change?"
         )
         locations.tap()
 

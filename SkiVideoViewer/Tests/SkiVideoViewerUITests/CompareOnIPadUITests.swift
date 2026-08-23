@@ -30,7 +30,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// existence says nothing about layout, and this screen was designed for a
     /// 1000pt macOS window.
     func testTappingCompareOpensTheComparisonScreen() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
 
         let compare = app.buttons["Compare Videos…"]
         XCTAssertTrue(
@@ -112,7 +112,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// 834pt. Every control must still be on screen and hittable there —
     /// `exists` alone would pass on a control pushed off the edge.
     func testTheComparisonScreenIsUsableInPortrait() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
         XCUIDevice.shared.orientation = .portrait
 
         let compare = app.buttons["Compare Videos…"]
@@ -197,7 +197,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// and a UI test cannot load one. See the task report; the headless
     /// `ComparisonControlBarLayoutTests` drives the synced state instead.
     func testTheControlBarOffersOnlyPerSideTargetsBeforeSyncing() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
 
         let compare = app.buttons["Compare Videos…"]
         XCTAssertTrue(compare.waitForExistence(timeout: 30))
@@ -219,7 +219,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// the sync points — an icon whose label still read "Return to sync points"
     /// while aligning would be the icon-only bar's worst failure mode.
     func testTheAnchorButtonAdvertisesSettingSyncPoints() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
 
         let compare = app.buttons["Compare Videos…"]
         XCTAssertTrue(compare.waitForExistence(timeout: 30))
@@ -240,7 +240,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// three separate transports; disabled matters because the redesign's rule
     /// is that a control which cannot work does not sit there waiting to nag.
     func testTheTransportIsPresentAndDisabledWithoutClips() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
 
         let compare = app.buttons["Compare Videos…"]
         XCTAssertTrue(compare.waitForExistence(timeout: 30))
@@ -275,7 +275,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// apart. Before this test, nothing proved the sheet opens at all on
     /// iPad.
     func testTappingSortOpensTheSortingSheet() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
 
         let sort = app.buttons["Sort & Resize…"]
         XCTAssertTrue(
@@ -295,7 +295,7 @@ final class CompareOnIPadUITests: XCTestCase {
     /// Closing must return to the viewer, or the cover is a trap: iPad has no
     /// window chrome to dismiss it with, and phase 4 still owns keyboard input.
     func testClosingTheComparisonScreenReturnsToTheViewer() {
-        let app = launchPastTheFolderPicker()
+        let app = launchToTheLibrariesList()
 
         let compare = app.buttons["Compare Videos…"]
         XCTAssertTrue(compare.waitForExistence(timeout: 30))
@@ -375,59 +375,29 @@ final class CompareOnIPadUITests: XCTestCase {
     /// iPad mini (A17 Pro) the picker presents as a sheet with no
     /// `PopoverDismissRegion` at all — but, unlike the 11-inch's form sheet,
     /// its own contents *do* reach this app's tree, Cancel button included.
-    /// Dumped from `app.debugDescription`, not guessed: Cancel, More, Recents,
-    /// Locations, iCloud Drive. Tapping Cancel is the dismissal there.
+    /// Launch, and confirm nothing is covering the toolbar.
     ///
-    /// Do not "simplify" this to just asserting the toolbar is reachable. That
-    /// was tried, and it passed on the mini *while the picker was still up* —
-    /// the toolbar is in the tree underneath it — and the tap on Compare then
-    /// went nowhere. That is precisely the trap this helper exists for.
-    private func launchPastTheFolderPicker() -> XCUIApplication {
+    /// This used to dismiss the folder picker the app opened on launch — by
+    /// tapping outside it, or on a mini by cancelling it. Launching no longer
+    /// opens a picker: the app lands on its libraries list, whose toolbar is
+    /// the one these tests tap. What is left is the assertion that made the old
+    /// helper worth having, and it is kept for exactly the reason its comment
+    /// gave: this was once "simplified" to asserting the toolbar is reachable,
+    /// and it passed on the mini *while the picker was still up*, because the
+    /// toolbar is in the tree underneath it. So the check is that no picker is
+    /// there — not that something behind one can be found.
+    private func launchToTheLibrariesList() -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
 
         let dismissRegion = app.otherElements["PopoverDismissRegion"]
-        guard dismissRegion.waitForExistence(timeout: 30) else {
-            dismissTheFolderPickerByCancelling(app)
-            return app
-        }
-        // Tap near the bottom edge — outside the centred form sheet, inside the
-        // dismiss region.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97)).tap()
-
-        let gone = expectation(
-            for: NSPredicate(format: "exists == false"),
-            evaluatedWith: dismissRegion
-        )
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [gone], timeout: 30),
-            .completed,
-            "the folder picker must be dismissed before anything else is tappable"
+        XCTAssertFalse(
+            dismissRegion.waitForExistence(timeout: 5),
+            "nothing should be presented over the libraries list on launch"
         )
         return app
     }
 
-    /// The iPad mini's sheet-style presentation of the same picker. Asserted
-    /// gone afterwards for the same reason the region path is: a picker still
-    /// on screen swallows every subsequent tap.
-    private func dismissTheFolderPickerByCancelling(_ app: XCUIApplication) {
-        let cancel = app.buttons["Cancel"]
-        guard cancel.waitForExistence(timeout: 15) else {
-            XCTFail("expected the launch folder picker; did ViewerModel.start change?")
-            return
-        }
-        cancel.tap()
-
-        let gone = expectation(
-            for: NSPredicate(format: "exists == false"),
-            evaluatedWith: cancel
-        )
-        XCTAssertEqual(
-            XCTWaiter().wait(for: [gone], timeout: 30),
-            .completed,
-            "the folder picker must be dismissed before anything else is tappable"
-        )
-    }
 
     /// Whether two controls are on the same row of the bar, which is how the
     /// wrap is observed from outside: `ViewThatFits` picks the stacked layout

@@ -172,11 +172,17 @@ struct LibrariesView: View {
             // The picker the app already has. What is new is on the other side
             // of it: `chooseDirectory` writes the folder down now, so this
             // button and the menu item both leave a row behind.
+            // Identified because the detail toolbar offers the same two
+            // actions, so "the Add Folder button" is ambiguous to an XCUITest
+            // the moment this screen is on show. The identifier says which one
+            // a test means without pinning the label text.
             Button("Add Folder…") {
                 Task { await model.chooseDirectory() }
             }
+            .accessibilityIdentifier("libraries.addFolder")
             Button("Connect Google Drive…", action: onConnectDrive)
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("libraries.connectDrive")
         }
         .controlSize(.large)
         .font(.title3)

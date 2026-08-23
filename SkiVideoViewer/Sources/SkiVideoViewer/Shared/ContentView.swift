@@ -45,19 +45,38 @@ struct ContentView: View {
         self.secondaryScreens = secondaryScreens
     }
 
-    var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
-        } detail: {
-            detail
-        }
-        #if os(macOS)
-        .frame(minWidth: 980, minHeight: 640)
-        // macOS resolves a toolbar on the split view into the window toolbar.
-        // iPadOS drops it — see `detail`, which carries the same content there.
-        .toolbar { toolbarContent }
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// True where there is only ever one column on screen. macOS has no size
+    /// class and never answers yes, which is what keeps every compact branch
+    /// below out of the Mac's way.
+    private var isCompact: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
         #endif
+    }
+
+    /// Where a phone is in its three-screen stack. A split view needs no such
+    /// state — both columns are always on screen — so this is empty and unread
+    /// on a Mac or an iPad.
+    enum PhoneScreen: Hashable {
+        case athletes
+        case viewer
+    }
+    @State private var phonePath: [PhoneScreen] = []
+
+    var body: some View {
+        Group {
+            if isCompact {
+                phoneStack
+            } else {
+                splitView
+            }
+        }
         .onAppear {
             model.start(initialDirectory: initialDirectory)
         }
@@ -81,6 +100,15 @@ struct ContentView: View {
                 athleteSearchIsFocused = false
             }
         }
+        // A library opening is the phone's cue to move on; the split view
+        // needs no equivalent because its second column was already there.
+        // Only from the root, so reopening the same library from Back does not
+        // stack a second copy of the athlete list on top of the first.
+        .onChange(of: model.openLibraryID) { id in
+            if isCompact, id != nil, phonePath.isEmpty {
+                phonePath.append(.athletes)
+            }
+        }
         .sheet(isPresented: $isShowingGoogleDriveSheet) {
             GoogleDriveSheet(model: model, isPresented: $isShowingGoogleDriveSheet, cache: clipCache)
         }
@@ -96,6 +124,47 @@ struct ContentView: View {
             }
         } message: {
             Text(model.errorMessage ?? "Unknown error")
+        }
+    }
+
+    /// Two columns, and the platforms that have room for them.
+    private var splitView: some View {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+        } detail: {
+            detail
+        }
+        #if os(macOS)
+        .frame(minWidth: 980, minHeight: 640)
+        // macOS resolves a toolbar on the split view into the window toolbar.
+        // iPadOS drops it — see `detail`, which carries the same content there.
+        .toolbar { toolbarContent }
+        #endif
+    }
+
+    /// One column, three deep: the libraries you have, the athletes in the one
+    /// you opened, the clip you picked.
+    ///
+    /// A `NavigationSplitView` on a phone collapses to its sidebar, which put
+    /// the libraries list — the only way to open anything — in the detail
+    /// column that nothing could push. The app launched, showed "Athletes",
+    /// and offered no way in. A stack says the same three things in the order a
+    /// phone can actually show them.
+    private var phoneStack: some View {
+        NavigationStack(path: $phonePath) {
+            LibrariesView(
+                model: model,
+                cache: clipCache,
+                makeProvider: GoogleDriveSheet.makeConfiguredProvider,
+                onConnectDrive: { isShowingGoogleDriveSheet = true }
+            )
+            .navigationDestination(for: PhoneScreen.self) { screen in
+                switch screen {
+                case .athletes: sidebar
+                case .viewer:   detail
+                }
+            }
         }
     }
 
@@ -222,23 +291,7 @@ struct ContentView: View {
                     // it did before events existed.
                     Section {
                         ForEach(collapsedSections.contains(event.id) ? [] : event.athletes) { athlete in
-                            HStack {
-                                // The section header already names the leading
-                                // dimension, so each row spells out the other
-                                // one — the athlete's event when the sidebar is
-                                // athlete-led, same as it always has when it is
-                                // event-led.
-                                Text(
-                                    model.sidebarGrouping == .event
-                                        ? athlete.name
-                                        : (athlete.event ?? "No event")
-                                )
-                                Spacer()
-                                Text("\(athlete.videos.count)")
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                            }
-                            .tag(athlete.id)
+                            athleteRow(athlete)
                         }
                     } header: {
                         if let name = event.name {
@@ -304,6 +357,47 @@ struct ContentView: View {
                     description: "Choose one on the right."
                 )
             }
+        }
+    }
+
+    /// One athlete, reached two ways.
+    ///
+    /// In a split view the sidebar's selection *is* the navigation — SwiftUI
+    /// fills the column beside it — so a tagged row is the whole story on a Mac
+    /// or an iPad. A phone has no column to fill, and a tagged row in a plain
+    /// stack is a row that looks interactive and does nothing, so there the row
+    /// is a real button that selects and pushes. Same content either way; only
+    /// the thing that makes it respond differs.
+    @ViewBuilder
+    private func athleteRow(_ athlete: AthleteGroup) -> some View {
+        // The section header already names the leading dimension, so each row
+        // spells out the other one — the athlete's event when the sidebar is
+        // athlete-led, same as it always has when it is event-led.
+        let content = HStack {
+            Text(
+                model.sidebarGrouping == .event
+                    ? athlete.name
+                    : (athlete.event ?? "No event")
+            )
+            Spacer()
+            Text("\(athlete.videos.count)")
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+
+        if isCompact {
+            Button {
+                model.selectedAthleteID = athlete.id
+                phonePath.append(.viewer)
+            } label: {
+                content.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // The spoken label is the name and the clip count together, which
+            // a test would have to reassemble. The identifier is the name.
+            .accessibilityIdentifier("sidebar.athlete.\(athlete.name)")
+        } else {
+            content.tag(athlete.id)
         }
     }
 

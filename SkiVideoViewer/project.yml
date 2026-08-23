@@ -80,7 +80,7 @@ targets:
         # CoreBuildSystem.xcspec, and that one is absent, so setting it here
         # reached the build settings but never the built plist.
         INFOPLIST_FILE: iPad-Info.plist
-        TARGETED_DEVICE_FAMILY: "2"
+        TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
         INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -124,7 +124,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dk.dyregod.video-viewer.ipad.uitests
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: true
-        TARGETED_DEVICE_FAMILY: "2"
+        TARGETED_DEVICE_FAMILY: "1,2"
         TEST_TARGET_NAME: SkiVideoViewer-iPad
         # Matches the app target's signing. A signed app under test cannot be
         # launched by an unsigned runner, and the app must be signed at all

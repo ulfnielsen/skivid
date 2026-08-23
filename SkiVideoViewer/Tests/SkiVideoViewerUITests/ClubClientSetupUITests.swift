@@ -27,14 +27,20 @@ final class ClubClientSetupUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        dismissTheDocumentPicker(in: app)
-
-        let openLibrary = app.buttons["Open Club Library…"]
+        // No document picker to dismiss any more — launching lands on the
+        // libraries list. The button that opens this sheet was renamed with the
+        // same change: "Open Club Library…" became "Connect Google Drive…",
+        // because connecting is what it does and opening one already connected
+        // is a row on that list.
+        //
+        // By identifier rather than label where the list offers the action too,
+        // so this test does not have to know which of the two it found.
+        let connect = app.buttons["libraries.connectDrive"]
         XCTAssertTrue(
-            openLibrary.waitForExistence(timeout: 10),
-            "no Open Club Library button; toolbar was \(app.toolbars.buttons.allElementsBoundByIndex.map(\.label))"
+            connect.waitForExistence(timeout: 10),
+            "no Connect Google Drive button; buttons were \(app.buttons.allElementsBoundByIndex.map(\.label))"
         )
-        openLibrary.tap()
+        connect.tap()
 
         // The DisclosureGroup's label. Collapsed on launch here, because the
         // iPad build has a built-in client and so is not in the
@@ -63,19 +69,6 @@ final class ClubClientSetupUITests: XCTestCase {
             "the sheet never names the bundle id to register; a club cannot complete setup "
                 + "from what it can see"
         )
-    }
-
-    /// With no library loaded the app opens `UIDocumentPickerViewController`
-    /// straight away, and it covers the toolbar. Dismissed by its Cancel
-    /// button, whose label the picker owns rather than this app.
-    private func dismissTheDocumentPicker(in app: XCUIApplication) {
-        for label in ["Cancel", "Done", "Close"] {
-            let button = app.buttons[label]
-            if button.waitForExistence(timeout: label == "Cancel" ? 10 : 1), button.isHittable {
-                button.tap()
-                return
-            }
-        }
     }
 
     private func screenshot(of app: XCUIApplication, named name: String) -> XCTAttachment {
