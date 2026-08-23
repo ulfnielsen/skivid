@@ -63,6 +63,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dk.dyregod.video-viewer.ipad
+        # Named here rather than passed on the command line, so installing on
+        # the iPad is `xcodebuild ... build` and not a line somebody has to
+        # remember. The simulator never needed it; a real device does.
+        DEVELOPMENT_TEAM: "9LTFHV87LB"
+        CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: SkiVideoViewer
         SWIFT_VERSION: "5.0"
