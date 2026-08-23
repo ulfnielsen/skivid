@@ -53,6 +53,8 @@ struct ViewerPane: View {
     /// control bar. An earlier round relayed it to `ViewerControlBar` through
     /// `ContentView` because the control lived in the bar; moving the control
     /// onto the video removed the relay along with the layout cost.
+    @Environment(\.isShortOnHeight) private var isShortOnHeight
+
     var body: some View {
         GeometryReader { proxy in
             SinglePlayerView(player: model.player, zoom: model.zoom)
@@ -213,10 +215,10 @@ struct ViewerPane: View {
             onScale: { model.setZoomScale($0, in: paneSize) },
             onReset: { model.resetZoom() }
         )
-        .frame(maxWidth: 220)
-        .padding(.horizontal, 8)
+        .frame(maxWidth: isShortOnHeight ? 160 : 220)
+        .padding(.horizontal, isShortOnHeight ? 4 : 8)
         .background(.thinMaterial, in: Capsule())
-        .padding(12)
+        .padding(isShortOnHeight ? 6 : 12)
     }
 
     /// A drag pans, and each step is relative to the previous one — SwiftUI

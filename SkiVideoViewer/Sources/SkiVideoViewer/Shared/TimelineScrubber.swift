@@ -18,6 +18,8 @@ struct TimelineScrubber: View {
         isScrubbing ? scrubTime : time
     }
 
+    @Environment(\.isShortOnHeight) private var isShortOnHeight
+
     var body: some View {
         Slider(
             value: Binding(
@@ -55,7 +57,9 @@ struct TimelineScrubber: View {
         // content shape cannot route hits into a child control, and its only
         // measurable effect was swallowing clicks meant for what sits behind.
         // Do not re-add it.
-        .frame(height: 44)
+        // 44 is a comfortable touch row and, sideways on a phone, a twentieth
+        // of the screen spent on a control the thumb is already resting on.
+        .frame(height: isShortOnHeight ? 30 : 44)
         .accessibilityLabel("Timeline")
         .accessibilityValue(Timecode.string(displayedTime))
     }

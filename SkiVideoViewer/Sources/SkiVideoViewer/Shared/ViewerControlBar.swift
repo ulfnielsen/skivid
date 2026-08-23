@@ -10,6 +10,7 @@ import SwiftUI
 /// measurement, and Task 4 measures it.
 struct ViewerControlBar: View {
     @ObservedObject var model: ViewerModel
+    @Environment(\.isShortOnHeight) private var isShortOnHeight
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -31,8 +32,8 @@ struct ViewerControlBar: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, isShortOnHeight ? 8 : 12)
+        .padding(.vertical, isShortOnHeight ? 2 : 8)
     }
 
     private var transport: some View {
@@ -61,7 +62,7 @@ struct ViewerControlBar: View {
             model.changeVideo(by: offset)
         } label: {
             Image(systemName: symbol)
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: isShortOnHeight ? 34 : 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)

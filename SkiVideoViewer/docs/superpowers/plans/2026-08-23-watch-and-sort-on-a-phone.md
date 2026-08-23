@@ -167,7 +167,7 @@ The whole plan in one task: without it nothing else is testable on a phone.
 - **Landscape lock for the viewer?** A coach showing an athlete a run holds the
   phone sideways. Whether the viewer should force landscape or merely support
   it is a judgement call this plan does not make.
-- **Sorting on a phone in the field.** The flow assumes a source folder of raw
-  clips. Whether that is reachable on an iPhone in practice — reader, Files
-  provider, or not at all — should be confirmed on a real device before Task 3
-  is worth finishing.
+- ~~**Sorting on a phone in the field.**~~ **Answered: a USB-C card reader
+  works.** The card mounts in Files, so `UIKitFolderPicker` can reach it like
+  any other location, and `keepsSourceIntact` — built for the iPad plan — is
+  already the rule that keeps the card unwritten. Task 3 is worth finishing.

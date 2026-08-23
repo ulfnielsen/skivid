@@ -14,6 +14,8 @@ struct TransportControls: View {
     let isEnabled: Bool
     let perform: (TransportAction) -> Void
 
+    @Environment(\.isShortOnHeight) private var isShortOnHeight
+
     var body: some View {
         HStack(spacing: 4) {
             ForEach(TransportAction.allCases) { button($0) }
@@ -32,7 +34,7 @@ struct TransportControls: View {
             perform(action)
         } label: {
             Image(systemName: appearance.symbol)
-                .frame(width: 44, height: 44)
+                .frame(width: 44, height: isShortOnHeight ? 34 : 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)

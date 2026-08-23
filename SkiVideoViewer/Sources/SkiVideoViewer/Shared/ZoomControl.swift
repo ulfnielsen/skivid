@@ -22,26 +22,40 @@ struct ZoomControl: View {
     /// frame two clips to the same size.
     private static let step = 0.5
 
+    @Environment(\.isShortOnHeight) private var isShortOnHeight
+
+    /// 44 is Apple's touch minimum and the right default. Sideways on a phone
+    /// this control floats *over* the video, so every point it takes is a point
+    /// of the run the coach is trying to look at — 36 is still a comfortable
+    /// thumb target for a control you press twice.
+    private var buttonSide: CGFloat { isShortOnHeight ? 36 : 44 }
+
     static func label(for scale: Double) -> String {
         String(format: "%.1f×", scale)
     }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: isShortOnHeight ? 0 : 4) {
             stepButton("minus.magnifyingglass", "Zoom out", to: zoom.scale - Self.step)
-            Slider(
-                value: Binding(get: { zoom.scale }, set: onScale),
-                in: VideoZoom.range
-            )
-            .frame(minWidth: 80)
-            .accessibilityLabel("Zoom")
+            // The slider is the first thing to go when room is short: it is the
+            // convenience, not the capability. Minus, plus and the reset
+            // readout still reach every scale in the range, and the chip stops
+            // eating a third of a sideways phone's video.
+            if !isShortOnHeight {
+                Slider(
+                    value: Binding(get: { zoom.scale }, set: onScale),
+                    in: VideoZoom.range
+                )
+                .frame(minWidth: 80)
+                .accessibilityLabel("Zoom")
+            }
             stepButton("plus.magnifyingglass", "Zoom in", to: zoom.scale + Self.step)
             Button {
                 onReset()
             } label: {
                 Text(Self.label(for: zoom.scale))
                     .font(.callout.monospacedDigit())
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: isShortOnHeight ? 38 : 44, minHeight: buttonSide)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
@@ -57,7 +71,7 @@ struct ZoomControl: View {
             onScale(scale)
         } label: {
             Image(systemName: symbol)
-                .frame(width: 44, height: 44)
+                .frame(width: buttonSide, height: buttonSide)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)

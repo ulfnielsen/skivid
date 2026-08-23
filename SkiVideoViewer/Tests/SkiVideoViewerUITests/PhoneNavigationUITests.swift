@@ -38,6 +38,120 @@ final class PhoneNavigationUITests: XCTestCase {
         _ = app
     }
 
+    /// Sorting opens on a phone and every control lands on the screen.
+    ///
+    /// `SortingSheet` declared `.frame(minWidth: 820, minHeight: 640)` against
+    /// a 402pt device, and the toolbar offered it anyway — a screen a coach
+    /// could open and could not use. "Fits" is asserted as frames inside the
+    /// window rather than eyeballed, because a control pushed off the right
+    /// edge is exactly what a screenshot at the wrong moment would miss.
+    func testSortingFitsAPhone() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .phone,
+            "the iPad has the 820pt this was designed for"
+        )
+
+        let app = walkToAClip()
+
+        let sort = app.buttons["Sort & Resize…"]
+        if !sort.exists {
+            let more = app.buttons["More"]
+            XCTAssertTrue(more.waitForExistence(timeout: 10), "no Sort & Resize, and no overflow to look in")
+            more.tap()
+        }
+        XCTAssertTrue(sort.waitForExistence(timeout: 10), "sorting must be reachable on a phone")
+        sort.tap()
+
+        let source = app.textFields["Choose a source folder…"]
+        XCTAssertTrue(source.waitForExistence(timeout: 20), "the sorting setup must open")
+
+        let window = app.windows.firstMatch.frame
+        assertFits(app.buttons["sorting.chooseSource"], in: window, "the source chooser")
+        assertFits(app.buttons["Start Tagging"], in: window, "Start Tagging")
+        assertFits(app.buttons["Cancel"], in: window, "Cancel")
+
+        // Through to tagging, which is the screen under real width pressure:
+        // a text field and two buttons that wanted about 520pt on one row.
+        app.buttons["sorting.chooseSource"].tap()
+        openTheFixtureFolder(in: app)
+
+        let start = app.buttons["Start Tagging"]
+        XCTAssertTrue(start.waitForExistence(timeout: 20), "the source must come back to the setup screen")
+        // A source alone is not enough to sort, and the button says so now
+        // rather than accepting the tap and answering with an alert.
+        XCTAssertFalse(start.isEnabled, "a source without an event title cannot start a sort")
+
+        let title = app.textFields["e.g. Neuss"]
+        XCTAssertTrue(title.exists, "the event title field must be on screen")
+        title.tap()
+        title.typeText("Wittenburg")
+
+        XCTAssertTrue(start.isEnabled, "source and title together must enable Start Tagging")
+        start.tap()
+
+        let athleteField = app.textFields["Type athlete name"]
+        XCTAssertTrue(athleteField.waitForExistence(timeout: 30), "tagging must start")
+
+        assertFits(athleteField, in: window, "the athlete field")
+        assertFits(app.buttons["Skip"], in: window, "Skip")
+        assertFits(app.buttons["Next Clip"], in: window, "Next Clip")
+    }
+
+    /// A control is usable only if it is on the screen. Asserted as frames
+    /// rather than eyeballed: something pushed off the right edge is exactly
+    /// what a screenshot taken at the wrong moment would miss.
+    private func assertFits(_ element: XCUIElement, in window: CGRect, _ what: String) {
+        XCTAssertTrue(element.exists, "\(what) is not on screen at all")
+        XCTAssertTrue(
+            window.contains(element.frame),
+            "\(what) sits outside the screen: \(element.frame) in \(window)"
+        )
+    }
+
+    /// Sideways, the video gets the screen.
+    ///
+    /// A phone is turned sideways to make the clip bigger. Measured rather than
+    /// eyeballed: the video's own pane must take more of the screen in
+    /// landscape than the chrome around it does, and the chrome must shrink
+    /// rather than merely rearrange.
+    func testLandscapeGivesTheVideoTheScreen() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .phone,
+            "an iPad has regular height in both orientations"
+        )
+
+        let app = walkToAClip()
+        // A slider's frame is what it *draws*, not the row it sits in, so the
+        // measurement is the band it starts: everything from the top of the
+        // scrubber down to the bottom edge is chrome, and whatever is left
+        // above it is the video.
+        let scrubber = app.sliders["Viewer timeline"]
+        XCTAssertTrue(scrubber.waitForExistence(timeout: 20), "the scrubber must be on screen")
+        let uprightBand = app.windows.firstMatch.frame.maxY - scrubber.frame.minY
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        let settled = expectation(for: NSPredicate { element, _ in
+            guard let element = element as? XCUIElement, element.exists else { return false }
+            return element.frame.width > element.frame.height * 4
+        }, evaluatedWith: scrubber)
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [settled], timeout: 15), .completed,
+            "the layout must settle into landscape"
+        )
+
+        let landscapeBand = app.windows.firstMatch.frame.maxY - scrubber.frame.minY
+        XCTAssertLessThan(
+            landscapeBand, uprightBand,
+            "sideways, the controls must give height back to the video: \(landscapeBand)pt vs \(uprightBand)pt upright"
+        )
+        XCTAssertFalse(
+            app.navigationBars.firstMatch.exists,
+            "the navigation bar sits on top of the video sideways and should not be there"
+        )
+    }
+
     /// Launch, open the fixture library, and land on a clip — the whole stack,
     /// by tapping, which is what the first test asserts step by step and every
     /// other test here needs as a starting point.

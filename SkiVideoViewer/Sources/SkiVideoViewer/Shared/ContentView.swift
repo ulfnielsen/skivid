@@ -52,6 +52,8 @@ struct ContentView: View {
     /// True where there is only ever one column on screen. macOS has no size
     /// class and never answers yes, which is what keeps every compact branch
     /// below out of the Mac's way.
+    @Environment(\.isShortOnHeight) private var isShortOnHeight
+
     private var isCompact: Bool {
         #if os(iOS)
         horizontalSizeClass == .compact
@@ -454,6 +456,11 @@ struct ContentView: View {
         // and no automated check in this repo would catch that.
         #if os(iOS)
         .toolbar { toolbarContent }
+        // Sideways on a phone the navigation bar is a title and a row of
+        // buttons sitting on top of the thing the phone was turned sideways to
+        // see. Hidden there and nowhere else: turning back upright brings it
+        // straight back, which is also how the coach reaches those buttons.
+        .toolbar(isShortOnHeight ? .hidden : .visible, for: .navigationBar)
         #endif
     }
 

@@ -52,6 +52,17 @@ struct SortingSheet: View {
         }())
     }
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+    private var isCompact: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     var body: some View {
         Group {
             if model.isSorting {
@@ -60,7 +71,10 @@ struct SortingSheet: View {
                 setupView
             }
         }
-        .frame(minWidth: 820, minHeight: 640)
+        // 820 is the width the two-column setup grid and the tagging row need
+        // side by side. A phone has 402 and cannot be talked into more, so at
+        // compact the screen sizes itself and the layouts below stack instead.
+        .frame(minWidth: isCompact ? nil : 820, minHeight: isCompact ? nil : 640)
         .onDisappear {
             model.stopPlayback()
         }
@@ -89,7 +103,39 @@ struct SortingSheet: View {
         return "Choose a flat folder of raw clips. The event date is taken from the first video file. Each tagged clip moves into organized/<event>/<athlete>, gets its athlete metadata written, then is resized into the matching organized_resize folder. Only one resize runs at a time."
     }
 
+    @ViewBuilder
     private var setupView: some View {
+        if isCompact {
+            // Scrolling, with the actions riding above the keyboard.
+            //
+            // Both problems were the same problem: a fixed column as tall as
+            // its content. The title sat under the status bar because nothing
+            // was insetting it, and Cancel and Start Tagging sat under the
+            // keyboard the moment the coach typed an event title — a tap aimed
+            // at Start Tagging landed on the letter O. A `safeAreaInset` bar is
+            // moved up by the keyboard; a `VStack` at the bottom of a fixed
+            // frame is not.
+            ScrollView {
+                setupForm.padding(20)
+            }
+            .safeAreaInset(edge: .bottom) {
+                setupActions
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .background(.bar)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 20) {
+                setupForm
+                Spacer()
+                setupActions
+            }
+            .padding(28)
+        }
+    }
+
+    private var setupForm: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Sort & Resize Videos")
                 .font(.title.bold())
@@ -97,51 +143,115 @@ struct SortingSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
-                GridRow {
-                    Text("Raw clips")
-                    HStack {
-                        TextField("Choose a source folder…", text: $model.sourcePath)
-                        Button("Choose…") {
-                            Task { await model.chooseSourceDirectory() }
-                        }
+            if isCompact {
+                // Label over control. A label column costs about a third of a
+                // phone's width and leaves the path field too narrow to show
+                // the end of a path, which is the part that says which card.
+                VStack(alignment: .leading, spacing: 14) {
+                    stacked("Raw clips") { rawClipsField }
+                    stacked("Event date") { eventDateField }
+                    stacked("Event title") { eventTitleField }
+                    stacked("Athlete list") { athleteListField }
+                }
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
+                    GridRow {
+                        Text("Raw clips")
+                        rawClipsField
                     }
-                }
-                GridRow {
-                    Text("Event date")
-                    DatePicker("", selection: $model.eventDate, displayedComponents: .date)
-                        .labelsHidden()
-                }
-                GridRow {
-                    Text("Event title")
-                    TextField("e.g. Neuss", text: $model.eventTitle)
-                }
-                GridRow {
-                    Text("Athlete list")
-                    HStack {
-                        TextField("Optional athletes.txt", text: $model.namesPath)
-                            .onSubmit { model.reloadNames() }
-                        Button("Choose…") {
-                            Task { await model.chooseNamesFile() }
-                        }
+                    GridRow {
+                        Text("Event date")
+                        eventDateField
+                    }
+                    GridRow {
+                        Text("Event title")
+                        eventTitleField
+                    }
+                    GridRow {
+                        Text("Athlete list")
+                        athleteListField
                     }
                 }
             }
 
             if !model.athleteNames.isEmpty {
-                Text("\(model.athleteNames.count) athlete names loaded for autocomplete.")
+                Text("\(model.athleteNames.count) athlete "
+                     + "\(model.athleteNames.count == 1 ? "name" : "names") loaded for autocomplete.")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var setupActions: some View {
+        HStack {
             Spacer()
-            HStack {
-                Spacer()
-                Button("Cancel") { isPresented = false }
+            Button("Cancel") { isPresented = false }
+                // Disabled until the sort can actually start. `beginSorting`
+                // needs a title as much as a source — `eventFolder(date:title:)`
+                // throws without one — but only the source gated this button,
+                // so the coach got an enabled control that answered with
+                // "Sorting could not continue. Enter an event title". A button
+                // that refuses is worse than one that waits.
                 Button("Start Tagging") { model.beginSorting() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(model.sourcePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
+                    .disabled(!canStartSorting)
         }
-        .padding(28)
+    }
+
+    /// A label above its control, for the width where a label beside it does
+    /// not fit.
+    private func stacked<Content: View>(_ label: String,
+                                        @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    /// What `beginSorting` needs before it will run: somewhere to read, and a
+    /// name for what is being read. Kept beside the button that asks for them.
+    private var canStartSorting: Bool {
+        !model.sourcePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !model.eventTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The tag button, which both layouts need and neither should define.
+    private var tagButton: some View {
+        Button(model.resolvedAthlete.map { "Tag \($0)" } ?? "Tag & Next") {
+            model.tagCurrentVideo()
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(model.resolvedAthlete == nil)
+    }
+
+    private var rawClipsField: some View {
+        HStack {
+            TextField("Choose a source folder…", text: $model.sourcePath)
+            Button("Choose…") {
+                Task { await model.chooseSourceDirectory() }
+            }
+            .accessibilityIdentifier("sorting.chooseSource")
+        }
+    }
+
+    private var eventDateField: some View {
+        DatePicker("", selection: $model.eventDate, displayedComponents: .date)
+            .labelsHidden()
+    }
+
+    private var eventTitleField: some View {
+        TextField("e.g. Neuss", text: $model.eventTitle)
+    }
+
+    private var athleteListField: some View {
+        HStack {
+            TextField("Optional athletes.txt", text: $model.namesPath)
+                .onSubmit { model.reloadNames() }
+            Button("Choose…") {
+                Task { await model.chooseNamesFile() }
+            }
+            .accessibilityIdentifier("sorting.chooseNames")
+        }
     }
 
     private var taggingView: some View {
@@ -198,29 +308,46 @@ struct SortingSheet: View {
                     Button("Close") { isPresented = false }
                 }
                 if model.currentVideo != nil {
-                    HStack {
-                        TextField("Type athlete name, then Return", text: $model.athleteQuery)
+                    // The field and its two buttons want about 520pt together.
+                    // On a phone the field is a row of its own and the buttons
+                    // sit under it, rather than all three sharing 402 and the
+                    // name being typed into a sliver.
+                    if isCompact {
+                        TextField("Type athlete name", text: $model.athleteQuery)
                             .textFieldStyle(.roundedBorder)
                             .focused($athleteFieldIsFocused)
                             .onSubmit { model.tagCurrentVideo() }
-                        Button(model.resolvedAthlete.map { "Tag \($0)" } ?? "Tag & Next") {
-                            model.tagCurrentVideo()
+                        HStack {
+                            tagButton
+                            Button("Skip") { model.skipCurrentVideo() }
                         }
-                            .keyboardShortcut(.defaultAction)
-                            .disabled(model.resolvedAthlete == nil)
-                        Button("Skip") { model.skipCurrentVideo() }
+                    } else {
+                        HStack {
+                            TextField("Type athlete name, then Return", text: $model.athleteQuery)
+                                .textFieldStyle(.roundedBorder)
+                                .focused($athleteFieldIsFocused)
+                                .onSubmit { model.tagCurrentVideo() }
+                            tagButton
+                            Button("Skip") { model.skipCurrentVideo() }
+                        }
                     }
                     if !model.matchingAthletes.isEmpty {
-                        HStack(spacing: 6) {
-                            ForEach(model.matchingAthletes, id: \.self) { athlete in
-                                Button(athlete) {
-                                    model.selectSuggestedAthlete(athlete)
-                                    athleteFieldIsFocused = true
+                        // Scrolls rather than clips. A club of forty runs off
+                        // any width, and `lineLimit(1)` on a row of buttons
+                        // hides the ones past the edge instead of reaching
+                        // them — on a Mac too, so this is not a phone fix.
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(model.matchingAthletes, id: \.self) { athlete in
+                                    Button(athlete) {
+                                        model.selectSuggestedAthlete(athlete)
+                                        athleteFieldIsFocused = true
+                                    }
+                                    .buttonStyle(.bordered)
                                 }
-                                .buttonStyle(.bordered)
                             }
+                            .padding(.vertical, 2)
                         }
-                        .lineLimit(1)
                     }
                     if let candidate = model.newAthleteCandidate {
                         Button("Add “\(candidate)” & Tag") {
@@ -235,7 +362,13 @@ struct SortingSheet: View {
                         Button("Previous Clip") { model.moveCurrentVideo(by: -1) }
                         Button("Next Clip") { model.moveCurrentVideo(by: 1) }
                         Spacer()
-                        Text("←/→ seek 5s · Return tags · Resize queue: one at a time")
+                        // The keyboard half of this names keys a phone has not
+                        // got. What is left is the part that is true whatever
+                        // is plugged in, and the part a coach watching a queue
+                        // of resizes actually needs.
+                        Text(isCompact
+                             ? "Resize queue: one at a time"
+                             : "←/→ seek 5s · Return tags · Resize queue: one at a time")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
