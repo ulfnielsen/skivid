@@ -149,4 +149,50 @@ final class LibraryStoreTests: XCTestCase {
         defaults.set(Data("not json".utf8), forKey: LibraryStore.defaultsKey)
         XCTAssertTrue(store.all().isEmpty)
     }
+    // MARK: - The same folder is one library
+
+    /// Adding the same folder twice must not make two libraries.
+    ///
+    /// This is what a coach saw: two identical "Snow" rows, then three. A
+    /// bookmark is not an identity — both platforms mint different bytes for
+    /// the same directory each time one is created — so `Kind.folder` compared
+    /// by value made every re-add a new place.
+    func testTheSameFolderAddedTwiceIsOneLibrary() {
+        let store = LibraryStore(defaults: defaults)
+        let path = "/Users/coach/Videos/Snow"
+
+        store.add(Library(name: "Snow", kind: .folder(bookmark: Data([1, 2, 3])), folderPath: path))
+        store.add(Library(name: "Snow", kind: .folder(bookmark: Data([9, 9, 9])), folderPath: path))
+
+        XCTAssertEqual(store.all().count, 1, "same folder, different bookmark bytes — one library")
+    }
+
+    /// Two different folders stay two libraries, whatever their bookmarks say.
+    func testTwoFoldersAreTwoLibraries() {
+        let store = LibraryStore(defaults: defaults)
+        store.add(Library(name: "Snow", kind: .folder(bookmark: Data([1])), folderPath: "/a/Snow"))
+        store.add(Library(name: "Camp", kind: .folder(bookmark: Data([1])), folderPath: "/b/Camp"))
+
+        XCTAssertEqual(store.all().count, 2)
+    }
+
+    /// A store written before folders carried a path still reads back, and its
+    /// duplicates are collapsed on the way out rather than left for the coach
+    /// to tidy up.
+    func testDuplicatesAlreadyWrittenAreCollapsedOnRead() throws {
+        let earlier = Date(timeIntervalSince1970: 1_000)
+        let later = Date(timeIntervalSince1970: 2_000)
+        let stored = [
+            Library(name: "Snow", kind: .folder(bookmark: Data([1])), lastOpened: earlier,
+                    folderPath: "/a/Snow"),
+            Library(name: "Snow", kind: .folder(bookmark: Data([2])), lastOpened: later,
+                    folderPath: "/a/Snow"),
+        ]
+        defaults.set(try JSONEncoder().encode(stored), forKey: LibraryStore.defaultsKey)
+
+        let all = LibraryStore(defaults: defaults).all()
+        XCTAssertEqual(all.count, 1)
+        XCTAssertEqual(all.first?.lastOpened, later, "the most recently opened row is the one kept")
+    }
+
 }

@@ -634,7 +634,11 @@ public final class ViewerModel: ObservableObject {
                                                    includingResourceValuesForKeys: nil,
                                                    relativeTo: nil) else { return nil }
         let library = libraryStore.add(
-            Library(name: name ?? url.lastPathComponent, kind: .folder(bookmark: bookmark))
+            Library(name: name ?? url.lastPathComponent,
+                    kind: .folder(bookmark: bookmark),
+                    // The path is what says "same folder" — see `folderPath`.
+                    // Standardised so /private/var and /var are one place.
+                    folderPath: url.standardizedFileURL.path)
         )
         libraryStore.markOpened(library.id)
         openLibraryID = library.id

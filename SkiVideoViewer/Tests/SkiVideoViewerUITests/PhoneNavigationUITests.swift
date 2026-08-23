@@ -34,6 +34,15 @@ final class PhoneNavigationUITests: XCTestCase {
             "the stack only exists at compact width; the iPad has two columns"
         )
 
+        let app = walkToAClip()
+        _ = app
+    }
+
+    /// Launch, open the fixture library, and land on a clip — the whole stack,
+    /// by tapping, which is what the first test asserts step by step and every
+    /// other test here needs as a starting point.
+    @discardableResult
+    private func walkToAClip() -> XCUIApplication {
         let app = XCUIApplication()
         app.launch()
 
@@ -66,6 +75,7 @@ final class PhoneNavigationUITests: XCTestCase {
             caption.waitForExistence(timeout: 30),
             "tapping an athlete must push the viewer; texts were \(app.staticTexts.allElementsBoundByIndex.prefix(12).map(\.label))"
         )
+        return app
     }
 
     /// The document picker, from the tap on "Add Folder…" to the open folder.
@@ -104,6 +114,32 @@ final class PhoneNavigationUITests: XCTestCase {
         let accept = app.buttons["Open"]
         XCTAssertTrue(accept.waitForExistence(timeout: 10), "the picker must offer its accept button")
         accept.tap()
+    }
+
+    /// Comparison is absent on a phone, not merely awkward there.
+    ///
+    /// `ComparisonView` declares `.frame(minWidth: 1000, minHeight: 680)` and
+    /// this device offers 402 × 874. A button that opens a screen two and a
+    /// half times too wide is worse than no button, so the check is that it is
+    /// not on screen — anywhere, including under the More menu a crowded
+    /// toolbar collapses into.
+    func testComparisonIsNotOfferedOnAPhone() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .phone,
+            "the iPad has the width for it and offers it deliberately"
+        )
+
+        // On the viewer, not on the launch screen. The first version of this
+        // asserted straight after launch and passed against the very code it
+        // was meant to catch: a phone lands on the libraries list, which has no
+        // toolbar at all, so "Compare is absent" was true there no matter what
+        // the toolbar said. The toolbar hangs off `detail` — this screen.
+        let app = walkToAClip()
+
+        XCTAssertFalse(
+            app.buttons["Compare Videos…"].exists,
+            "a phone cannot fit the comparison screen; buttons were \(app.buttons.allElementsBoundByIndex.map(\.label))"
+        )
     }
 
 }

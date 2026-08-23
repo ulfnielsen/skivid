@@ -1,8 +1,16 @@
 import SkiVideoCore
 import SwiftUI
+import UIKit
 
 @main
 struct SkiVideoViewerApp_iOS: App {
+    init() {
+        // One binary, two devices. Core cannot ask which — see `LocalSource` —
+        // so the app tells it, once, before anything renders a sentence with
+        // the device's name in it.
+        LocalSource.deviceName = UIDevice.current.userInterfaceIdiom == .phone ? "iPhone" : "iPad"
+    }
+
     @StateObject private var model = ViewerModel(
         input: InertInputSource(),
         folderPicker: UIKitFolderPicker(),

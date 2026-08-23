@@ -32,6 +32,17 @@ struct LibrariesView: View {
     @State private var opening: UUID?
     @State private var hovering: UUID?
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+    private var isCompact: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     var body: some View {
         Group {
             if model.libraries.isEmpty {
@@ -57,13 +68,17 @@ struct LibrariesView: View {
                 .foregroundStyle(.secondary)
             Text("No libraries yet")
                 .font(.largeTitle.weight(.semibold))
-            Text("Connect the club's Google Drive, or add a folder of clips from this Mac. "
-                 + "Whatever you connect stays here, so this is the last time you have to find it.")
+            Text("Connect the club's Google Drive, or add a folder of clips from "
+                 + "\(LocalSource.inlineName). Whatever you connect stays here, so this is "
+                 + "the last time you have to find it.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            actions.padding(.top, 8)
+            actions
+                .controlSize(.large)
+                .font(.title3)
+                .padding(.top, 8)
         }
     }
 
@@ -91,6 +106,8 @@ struct LibrariesView: View {
             }
 
             actions
+                .controlSize(.large)
+                .font(.title3)
         }
     }
 
@@ -167,8 +184,20 @@ struct LibrariesView: View {
         }
     }
 
+    @ViewBuilder
     private var actions: some View {
-        HStack(spacing: 16) {
+        // Side by side needs about 350pt for these two labels; a phone offers
+        // 402 less padding, so they overlapped and the prominent one wrapped to
+        // two lines. Stacked, each is a full-width target.
+        if isCompact {
+            VStack(spacing: 12) { actionButtons }
+        } else {
+            HStack(spacing: 16) { actionButtons }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
             // The picker the app already has. What is new is on the other side
             // of it: `chooseDirectory` writes the folder down now, so this
             // button and the menu item both leave a row behind.
@@ -176,16 +205,13 @@ struct LibrariesView: View {
             // actions, so "the Add Folder button" is ambiguous to an XCUITest
             // the moment this screen is on show. The identifier says which one
             // a test means without pinning the label text.
-            Button("Add Folder…") {
-                Task { await model.chooseDirectory() }
-            }
-            .accessibilityIdentifier("libraries.addFolder")
-            Button("Connect Google Drive…", action: onConnectDrive)
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("libraries.connectDrive")
+        Button("Add Folder…") {
+            Task { await model.chooseDirectory() }
         }
-        .controlSize(.large)
-        .font(.title3)
+        .accessibilityIdentifier("libraries.addFolder")
+        Button("Connect Google Drive…", action: onConnectDrive)
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("libraries.connectDrive")
     }
 
     /// `focusEffectDisabled` arrived in macOS 14 and this ships lower, so the
@@ -228,7 +254,10 @@ struct LibrariesView: View {
         }
         guard let opened = library.lastOpened else { return kind }
         let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
+        // "opened 53 seconds ago" ran off a 402pt row and truncated to
+        // "opened 53 second…", which reads as a rendering fault rather than a
+        // long sentence. Abbreviated where the width is short.
+        formatter.unitsStyle = isCompact ? .abbreviated : .full
         return "\(kind) · opened \(formatter.localizedString(for: opened, relativeTo: Date()))"
     }
 }

@@ -177,7 +177,15 @@ struct ContentView: View {
     /// platforms from drifting apart.
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if secondaryScreens.canPresentComparison {
+        // Absent on a phone rather than present and broken. `ComparisonView`
+        // declares `.frame(minWidth: 1000)` and an iPhone offers 402, so the
+        // button would open a screen two and a half times too wide for it.
+        //
+        // Gated here and not in `IOSSecondaryScreenPresenter`, which answers
+        // "can this platform present a second screen at all" — still true of a
+        // phone. The reason to hide the button is width, and width belongs to
+        // the view.
+        if secondaryScreens.canPresentComparison, !isCompact {
             ToolbarItem {
                 Button {
                     model.setKeyboardControlsEnabled(false)
@@ -354,7 +362,9 @@ struct ContentView: View {
                 emptyState(
                     title: "No Library Open",
                     systemImage: "film.stack",
-                    description: "Choose one on the right."
+                    // There is no "right" on a phone: the libraries are the
+                    // screen behind this one, not the column beside it.
+                    description: isCompact ? "Go back to choose one." : "Choose one on the right."
                 )
             }
         }
