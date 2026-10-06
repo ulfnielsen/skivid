@@ -16,7 +16,9 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     private static let fileFields =
         "nextPageToken,incompleteSearch,files(id,name,mimeType,size,md5Checksum,headRevisionId,parents,videoMediaMetadata(width,height,durationMillis))"
 
-    private let transport: HTTPTransport
+    /// Internal, not private: `GoogleDriveProvider+Creating.swift` sends its
+    /// own request shapes (resumable sessions) through the same transport.
+    let transport: HTTPTransport
     private let token: @Sendable () -> String?
     /// Present only when this provider was built from a `GoogleOAuthConfiguration`
     /// — `connect` uses it to run the flow and cache what it returns; the
@@ -506,12 +508,11 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
     private func fetch(
         _ components: URLComponents, uploading fileToUpload: URL? = nil
     ) async throws -> (Data, HTTPURLResponse) {
-        guard var token = token() else { throw RemoteLibraryError.notSignedIn }
         guard let url = components.url else {
             throw RemoteLibraryError.api("Could not build a request to Google Drive.")
         }
 
-        func request(bearer: String) -> URLRequest {
+        return try await authorized({ bearer in
             var request = URLRequest(url: url)
             // Never a query parameter. Measured 2026-08-13: on the media path a
             // query-string token is refused with an HTML block page.
@@ -521,14 +522,25 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                 request.setValue("video/mp4", forHTTPHeaderField: "Content-Type")
             }
             return request
-        }
-
-        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        }, send: { request in
             guard let fileToUpload else { return try await transport.data(for: request) }
             return try await transport.upload(request, fromFile: fileToUpload)
-        }
+        })
+    }
 
-        var (data, response) = try await send(request(bearer: token))
+    /// Sends a request built for the current bearer token and, on a 401,
+    /// refreshes once and sends it again built for the new one.
+    ///
+    /// Split out of `fetch` so every request shape — `fetch`'s, and the
+    /// resumable-upload requests in `GoogleDriveProvider+Creating.swift` —
+    /// shares the one stale-token rule instead of each copying it.
+    func authorized(
+        _ makeRequest: (String) -> URLRequest,
+        send: (URLRequest) async throws -> (Data, HTTPURLResponse)
+    ) async throws -> (Data, HTTPURLResponse) {
+        guard var token = token() else { throw RemoteLibraryError.notSignedIn }
+
+        var (data, response) = try await send(makeRequest(token))
 
         // A cached token can go stale mid-session — Google's access tokens
         // last about an hour, well inside a coach's review session. Refusing
@@ -548,12 +560,12 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
                 // coach has no way to act on.
                 throw RemoteLibraryError.notSignedIn
             }
-            (data, response) = try await send(request(bearer: token))
+            (data, response) = try await send(makeRequest(token))
         }
         return (data, response)
     }
 
-    private static func decode<T: Decodable>(_ data: Data) throws -> T {
+    static func decode<T: Decodable>(_ data: Data) throws -> T {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {

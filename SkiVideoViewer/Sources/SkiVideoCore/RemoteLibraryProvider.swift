@@ -151,6 +151,57 @@ public protocol ContentReplaceable: RemoteLibraryProvider {
     func replaceContents(ofFileID fileID: String, withFileAt url: URL) async throws -> String?
 }
 
+/// A folder or file this app created, or found already there.
+public struct RemoteItem: Equatable, Sendable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+/// What a provider offers when a client may create folders and upload new
+/// files — the club-Drive upload, as opposed to `ContentReplaceable`'s repair
+/// of a file that already exists.
+///
+/// Its own protocol for the reasons `ContentReplaceable` is: writes are absent
+/// from `RemoteLibraryProvider`, and the upload code (and a test fake) should
+/// depend on this shape rather than on `GoogleDriveProvider`. Reached with
+/// `as? ItemCreatable`. It restates `authorizeWrites(presenter:)` rather than
+/// inheriting `ContentReplaceable`, so a provider that can upload but not
+/// replace does not have to stub `replaceContents`; `GoogleDriveProvider`
+/// satisfies both with the one method, so there is a single consent path.
+///
+/// The `find…` lookups ask the provider itself, never anything the app
+/// remembers: the app can be killed mid-batch, and "nothing uploads twice"
+/// has to hold across that.
+public protocol ItemCreatable: RemoteLibraryProvider {
+    /// Same contract as `ContentReplaceable.authorizeWrites`.
+    func authorizeWrites(presenter: OAuthPresenter) async throws
+
+    /// A non-trashed folder called `name` directly inside `parentID`, or nil.
+    func findFolder(named name: String, parent parentID: String) async throws -> RemoteItem?
+
+    /// A non-trashed file (not a folder) called `name` directly inside
+    /// `parentID`, or nil. What the upload's skip rule asks.
+    func findFile(named name: String, parent parentID: String) async throws -> RemoteItem?
+
+    /// Creates a folder. Does not look first — see `findOrCreateFolder`.
+    func createFolder(named name: String, parent parentID: String) async throws -> RemoteItem
+
+    /// `findFolder`, else `createFolder`, in that order, so two coaches
+    /// filing the same event do not make two folders (barring a true race).
+    func findOrCreateFolder(named name: String, parent parentID: String) async throws -> RemoteItem
+
+    /// Uploads the file at `url` as a new file called `name` in `parentID`.
+    /// Does not check for an existing file of that name; the caller does,
+    /// with `findFile`. Retries within a bound and resumes from the server's
+    /// offset; past that bound it throws, and the caller may retry the clip.
+    func upload(fileAt url: URL, named name: String, parent parentID: String) async throws -> RemoteItem
+}
+
 public struct RemoteLibraryChanges: Sendable {
     public let changed: [RemoteFile]
     /// File ids that left the library. **Not a licence to delete cached
