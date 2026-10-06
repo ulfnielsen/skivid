@@ -591,6 +591,23 @@ public final class ViewerModel: ObservableObject {
         return libraries.first { $0.id == openLibraryID }
     }
 
+    /// Where a sorted clip would go in Drive, or why nowhere. Cheap and
+    /// synchronous: ask it before tagging begins, not after.
+    ///
+    /// The index's layout counts only when it is known — the coach's own pick,
+    /// or one read off the folders. `openRemoteLibrary` falls back to
+    /// athlete-then-event when the folders say nothing; that is a display
+    /// default for grouping and must not decide where footage is filed.
+    public func uploadDestination() throws -> UploadDestination {
+        var known: FolderConvention?
+        if let remoteIndex {
+            known = remoteIndex.conventionWasChosen
+                ? remoteIndex.convention
+                : RemoteLibraryIndex.inferredConvention(from: remoteIndex.files)
+        }
+        return try UploadDestination.resolve(library: openLibrary, indexConvention: known)
+    }
+
     /// The name for the window. A library has a name now, so the window can use
     /// it: "Remote Library" answered a question nobody asked, and a coach with
     /// two clubs' drives connected could not tell from the title which one they
