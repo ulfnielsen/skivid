@@ -60,6 +60,18 @@ public protocol FolderPicker: AnyObject {
     func pickFile(ofType type: UTType, title: String) async -> URL?
 }
 
+/// Brings clips in from the Photos library as a flat folder the sort can read.
+/// iOS-only in practice: `PHPicker` has no macOS counterpart this app uses, so
+/// a model without one simply offers no "From Photos…" button.
+@MainActor
+public protocol PhotosImporting: AnyObject {
+    /// Lets the coach pick videos and returns the folder they were copied
+    /// into, or nil when they cancelled or picked nothing.
+    func importClips() async throws -> URL?
+    /// Removes whatever `importClips` copied. Safe to call when nothing was.
+    func discard()
+}
+
 // MARK: - OAuth
 
 /// Runs the interactive part of the OAuth flow and returns the redirect URL

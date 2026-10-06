@@ -9,6 +9,10 @@ struct SkiVideoViewerApp_iOS: App {
         // so the app tells it, once, before anything renders a sentence with
         // the device's name in it.
         LocalSource.deviceName = UIDevice.current.userInterfaceIdiom == .phone ? "iPhone" : "iPad"
+        // Photos copies from a session that was killed, or closed while resizes
+        // were running, are still in Caches. Nothing from a previous launch can
+        // be reading them, so launch is the one moment this is always safe.
+        PhotosClipExporter().clear()
     }
 
     @StateObject private var model = ViewerModel(
@@ -77,7 +81,10 @@ struct SkiVideoViewerApp_iOS: App {
                     // an iPad's source is a Files location — very often the SD
                     // card itself — so this session must never write into it.
                     keepsSourceIntact: true,
-                    outputRoot: SortingModel.defaultOutputRoot()
+                    outputRoot: SortingModel.defaultOutputRoot(),
+                    // Copies land in Caches, never under `outputRoot`: the
+                    // resized, tagged clips outlive the sort, the copies do not.
+                    photosImporter: PHPickerPhotosImporter()
                 )
             }
         }

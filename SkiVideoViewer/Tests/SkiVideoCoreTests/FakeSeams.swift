@@ -149,3 +149,19 @@ final class FakeMediaPipeline: MediaPipeline, @unchecked Sendable {
         resizeCalls.append((source, destination, athlete))
     }
 }
+
+@MainActor
+final class FakePhotosImporter: PhotosImporting {
+    var folderToReturn: URL?
+    var errorToThrow: Error?
+    private(set) var importCallCount = 0
+    private(set) var discardCallCount = 0
+
+    func importClips() async throws -> URL? {
+        importCallCount += 1
+        if let errorToThrow { throw errorToThrow }
+        return folderToReturn
+    }
+
+    func discard() { discardCallCount += 1 }
+}

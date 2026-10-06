@@ -28,7 +28,8 @@ struct SortingSheet: View {
         defaultNamesURL: URL?,
         libraryAthletes: [AthleteGroup],
         keepsSourceIntact: Bool,
-        outputRoot: URL
+        outputRoot: URL,
+        photosImporter: PhotosImporting? = nil
     ) {
         _isPresented = isPresented
         self.openResizedLibrary = openResizedLibrary
@@ -44,7 +45,8 @@ struct SortingSheet: View {
                 input: input,
                 folderPicker: folderPicker,
                 defaultNamesURL: defaultNamesURL,
-                libraryAthletes: libraryAthletes
+                libraryAthletes: libraryAthletes,
+                photosImporter: photosImporter
             )
             sortingModel.keepsSourceIntact = keepsSourceIntact
             sortingModel.outputRoot = outputRoot
@@ -77,6 +79,7 @@ struct SortingSheet: View {
         .frame(minWidth: isCompact ? nil : 820, minHeight: isCompact ? nil : 640)
         .onDisappear {
             model.stopPlayback()
+            model.discardPhotosScratchIfIdle()
         }
         .alert(
             "Sorting could not continue",
@@ -231,6 +234,12 @@ struct SortingSheet: View {
                 Task { await model.chooseSourceDirectory() }
             }
             .accessibilityIdentifier("sorting.chooseSource")
+            if model.canChooseFromPhotos {
+                Button("From Photos…") {
+                    Task { await model.chooseFromPhotos() }
+                }
+                .accessibilityIdentifier("sorting.chooseFromPhotos")
+            }
         }
     }
 

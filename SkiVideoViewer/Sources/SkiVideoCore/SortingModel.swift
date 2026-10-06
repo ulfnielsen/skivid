@@ -62,6 +62,7 @@ public final class SortingModel: ObservableObject {
     /// a folder picker cannot open the two "Choose…" panels.
     private let input: PlaybackInputSource?
     private let folderPicker: FolderPicker?
+    private let photosImporter: PhotosImporting?
     /// The open library's athlete names, one per (athlete, event) pair —
     /// snapshotted at construction, the same way `defaultNamesURL` is read
     /// once rather than watched. `reloadNames()` merges it with the names
@@ -80,11 +81,13 @@ public final class SortingModel: ObservableObject {
         input: PlaybackInputSource? = nil,
         folderPicker: FolderPicker? = nil,
         defaultNamesURL: URL? = nil,
-        libraryAthletes: [AthleteGroup] = []
+        libraryAthletes: [AthleteGroup] = [],
+        photosImporter: PhotosImporting? = nil
     ) {
         self.mediaPipeline = mediaPipeline
         self.input = input
         self.folderPicker = folderPicker
+        self.photosImporter = photosImporter
         self.libraryAthletes = libraryAthletes
         namesPath = defaultNamesURL.map { url in
             FileManager.default.fileExists(atPath: url.path) ? url.path : ""
@@ -156,6 +159,39 @@ public final class SortingModel: ObservableObject {
                   confirmLabel: "Choose"
               )
         else { return }
+        useSource(url)
+    }
+
+    public var canChooseFromPhotos: Bool { photosImporter != nil }
+
+    /// Makes the Photos picks the source. The folder they land in is scratch
+    /// (see `discardPhotosScratchIfIdle`), which is safe as a source because a
+    /// Photos session is always `keepsSourceIntact`: resizes are written under
+    /// `outputRoot`, never beside it.
+    public func chooseFromPhotos() async {
+        guard let photosImporter else { return }
+        let before = status
+        status = "Copying clips from Photos…"
+        defer { status = before }
+        do {
+            guard let url = try await photosImporter.importClips() else { return }
+            useSource(url)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Deletes the Photos copies once nothing can still read them. Called when
+    /// the sheet goes away and when a sort finishes. A resize still running
+    /// reads its source from this folder, and the queue outlives the sheet, so
+    /// while any are in flight the folder is left for the next import or app
+    /// launch to clear instead.
+    public func discardPhotosScratchIfIdle() {
+        guard completedResizes == queuedResizes else { return }
+        photosImporter?.discard()
+    }
+
+    private func useSource(_ url: URL) {
         sourcePath = url.path
         if let firstVideo = try? SortingLibrary.rawVideos(in: url).first {
             eventDate = SortingLibrary.suggestedEventDate(from: firstVideo)
@@ -427,6 +463,7 @@ public final class SortingModel: ObservableObject {
 
     private func completeIfPossible() {
         guard taggingFinished, completedResizes == queuedResizes else { return }
+        discardPhotosScratchIfIdle()
         if failedResizes.isEmpty, let resizedDirectory {
             completedOutputDirectory = resizedDirectory
             status = "Finished. Your resized library is ready."

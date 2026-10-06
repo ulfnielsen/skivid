@@ -101,7 +101,8 @@ final class UIKitFolderPicker: NSObject, FolderPicker {
         continuation.resume(returning: url)
     }
 
-    private static func topViewController() -> UIViewController? {
+    /// Internal so `PHPickerPhotosImporter` presents from the same place.
+    static func topViewController() -> UIViewController? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         // The first folder pick is kicked off from `ContentView.onAppear`,
         // which can run before the scene reaches `.foregroundActive`. Falling
