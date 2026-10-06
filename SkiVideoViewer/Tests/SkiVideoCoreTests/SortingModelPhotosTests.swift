@@ -75,4 +75,88 @@ final class SortingModelPhotosTests: XCTestCase {
         makeModel(importer).discardPhotosScratchIfIdle()
         XCTAssertEqual(importer.discardCallCount, 1)
     }
+
+    // MARK: - Wiring through a real sort
+
+    /// A model whose source is `root` (one clip, as if Photos had delivered
+    /// it), ready to tag.
+    private func makeSortingModel(
+        importer: FakePhotosImporter,
+        pipeline: MediaPipeline
+    ) throws -> SortingModel {
+        let names = root.appendingPathComponent("athletes.txt")
+        try "Alfa".write(to: names, atomically: true, encoding: .utf8)
+        let model = SortingModel(
+            mediaPipeline: pipeline,
+            defaultNamesURL: names,
+            photosImporter: importer
+        )
+        model.keepsSourceIntact = true
+        model.outputRoot = root.appendingPathComponent("Out", isDirectory: true)
+        model.sourcePath = root.path
+        model.eventTitle = "Test"
+        return model
+    }
+
+    private func finishSort(_ model: SortingModel) async throws {
+        model.beginSorting()
+        model.athleteQuery = "Alfa"
+        model.tagCurrentVideo()
+        let deadline = Date().addingTimeInterval(20)
+        while model.completedResizes < 1, Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(model.completedResizes, 1)
+    }
+
+    func testFinishingASortCleanlyDiscardsTheScratch() async throws {
+        let importer = FakePhotosImporter()
+        let model = try makeSortingModel(importer: importer, pipeline: FakeMediaPipeline())
+
+        try await finishSort(model)
+
+        XCTAssertEqual(importer.discardCallCount, 1)
+    }
+
+    func testAFailedResizeKeepsTheScratch() async throws {
+        let importer = FakePhotosImporter()
+        let pipeline = FakeMediaPipeline()
+        pipeline.resizeError = CocoaError(.fileWriteUnknown)
+        let model = try makeSortingModel(importer: importer, pipeline: pipeline)
+
+        try await finishSort(model)
+
+        XCTAssertEqual(model.failedResizes.count, 1)
+        XCTAssertEqual(importer.discardCallCount, 0, "the failed clip's source must survive")
+    }
+
+    func testImportIsRefusedWhileResizesAreInFlight() async throws {
+        let importer = FakePhotosImporter()
+        importer.folderToReturn = root
+        let model = try makeSortingModel(
+            importer: importer,
+            pipeline: SerializationProbePipeline(jobDurationMilliseconds: 400)
+        )
+        model.beginSorting()
+        model.athleteQuery = "Alfa"
+        model.tagCurrentVideo()
+        XCTAssertEqual(model.queuedResizes, 1)
+        XCTAssertEqual(model.completedResizes, 0)
+
+        await model.chooseFromPhotos()
+
+        XCTAssertEqual(importer.importCallCount, 0, "importing would wipe the folder the resize reads")
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    func testAFailedImportDoesNotLeaveTheSourceDangling() async {
+        let importer = FakePhotosImporter()
+        importer.errorToThrow = CocoaError(.fileReadUnknown)
+        let model = makeModel(importer)
+        model.sourcePath = root.appendingPathComponent("gone").path
+
+        await model.chooseFromPhotos()
+
+        XCTAssertEqual(model.sourcePath, "")
+    }
 }

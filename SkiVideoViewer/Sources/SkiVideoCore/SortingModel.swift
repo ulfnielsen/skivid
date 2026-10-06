@@ -170,6 +170,12 @@ public final class SortingModel: ObservableObject {
     /// `outputRoot`, never beside it.
     public func chooseFromPhotos() async {
         guard let photosImporter else { return }
+        // An import wipes the previous scratch folder, and resizes still
+        // running from it would lose their sources mid-encode.
+        guard completedResizes == queuedResizes else {
+            errorMessage = "Wait for the current resizes to finish before choosing clips from Photos."
+            return
+        }
         let before = status
         status = "Copying clips from Photos…"
         defer { status = before }
@@ -178,6 +184,9 @@ public final class SortingModel: ObservableObject {
             useSource(url)
         } catch {
             errorMessage = error.localizedDescription
+            // A failed import has already removed the scratch folder, which may
+            // be where `sourcePath` pointed. Leave it empty, not dangling.
+            if !FileManager.default.fileExists(atPath: sourcePath) { sourcePath = "" }
         }
     }
 
@@ -463,7 +472,9 @@ public final class SortingModel: ObservableObject {
 
     private func completeIfPossible() {
         guard taggingFinished, completedResizes == queuedResizes else { return }
-        discardPhotosScratchIfIdle()
+        // Only a clean finish. A failed resize's source is the scratch copy,
+        // and the coach may want it; the next import or launch clears it.
+        if failedResizes.isEmpty { discardPhotosScratchIfIdle() }
         if failedResizes.isEmpty, let resizedDirectory {
             completedOutputDirectory = resizedDirectory
             status = "Finished. Your resized library is ready."
