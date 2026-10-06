@@ -162,6 +162,24 @@ public struct RemoteItem: Equatable, Sendable {
     }
 }
 
+/// How a failed upload should be handled by whoever is running a batch.
+/// Not-signed-in still arrives as `RemoteLibraryError.notSignedIn`, which is
+/// also "stop"; anything else untyped is a `RemoteLibraryError.api`.
+public enum RemoteUploadError: LocalizedError, Equatable {
+    /// Worth trying this clip again: the connection kept dropping, or the
+    /// upload session expired (a retry opens a fresh one). The batch goes on.
+    case retryClip(String)
+    /// Every further clip would fail the same way — e.g. no edit access to
+    /// the club's drive. Stop the batch.
+    case stopBatch(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .retryClip(let message), .stopBatch(let message): return message
+        }
+    }
+}
+
 /// What a provider offers when a client may create folders and upload new
 /// files — the club-Drive upload, as opposed to `ContentReplaceable`'s repair
 /// of a file that already exists.
@@ -198,7 +216,8 @@ public protocol ItemCreatable: RemoteLibraryProvider {
     /// Uploads the file at `url` as a new file called `name` in `parentID`.
     /// Does not check for an existing file of that name; the caller does,
     /// with `findFile`. Retries within a bound and resumes from the server's
-    /// offset; past that bound it throws, and the caller may retry the clip.
+    /// offset; past that bound it throws `RemoteUploadError.retryClip`. A 403
+    /// throws `.stopBatch`; an expired session throws `.retryClip`.
     func upload(fileAt url: URL, named name: String, parent parentID: String) async throws -> RemoteItem
 }
 

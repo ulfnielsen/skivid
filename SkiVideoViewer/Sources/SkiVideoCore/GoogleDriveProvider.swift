@@ -468,7 +468,7 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
 
     // MARK: - Requests
 
-    private func get<T: Decodable>(_ components: URLComponents) async throws -> T {
+    func get<T: Decodable>(_ components: URLComponents) async throws -> T {
         let (data, response) = try await fetch(components)
         guard (200...299).contains(response.statusCode) else {
             throw Self.describeFailure(data: data, response: response)

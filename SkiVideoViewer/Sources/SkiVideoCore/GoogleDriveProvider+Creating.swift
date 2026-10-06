@@ -35,13 +35,38 @@ extension GoogleDriveProvider: ItemCreatable {
             // default corpus is the user's own. Not yet exercised against a
             // live Shared Drive.
             URLQueryItem(name: "corpora", value: "allDrives"),
-            URLQueryItem(name: "fields", value: "files(id,name)"),
+            // Oldest first, so when two coaches raced and left duplicates
+            // every client settles on the same one rather than an arbitrary
+            // one — later clips must not scatter across the twins.
+            URLQueryItem(name: "orderBy", value: "createdTime"),
+            URLQueryItem(name: "fields", value: "incompleteSearch,files(id,name)"),
             URLQueryItem(name: "pageSize", value: "10"),
         ]
-        struct Listing: Decodable { let files: [Entry] }
-        struct Entry: Decodable { let id: String; let name: String }
-        let listing: Listing = try await getWrite(components)
+        let listing: Listing = try await get(components)
+        // A partial result would read as "not there" and cause a duplicate
+        // folder or upload; `sweep` treats the flag as fatal for the same reason.
+        if listing.incompleteSearch == true {
+            throw RemoteLibraryError.api(
+                "Google Drive returned an incomplete search. Try again.")
+        }
         return listing.files.first.map { RemoteItem(id: $0.id, name: $0.name) }
+    }
+
+    /// Drive omits `files` entirely when nothing matches — its reply is
+    /// `{"kind":"drive#fileList","incompleteSearch":false}` — so absence
+    /// means empty (see `DriveFileList` for the same rule on the sweep).
+    private struct Listing: Decodable {
+        struct Entry: Decodable { let id: String; let name: String }
+        let incompleteSearch: Bool?
+        let files: [Entry]
+
+        enum CodingKeys: String, CodingKey { case incompleteSearch, files }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            incompleteSearch = try container.decodeIfPresent(Bool.self, forKey: .incompleteSearch)
+            files = try container.decodeIfPresent([Entry].self, forKey: .files) ?? []
+        }
     }
 
     /// Escapes a value for a single-quoted Drive `q` literal: backslash and
@@ -127,9 +152,11 @@ extension GoogleDriveProvider: ItemCreatable {
                 // Only a server-side hiccup is worth resuming; a 4xx is a
                 // verdict, and repeating it would not change it.
                 guard response.statusCode >= 500 else {
-                    throw Self.describeWriteFailure(data: data, response: response)
+                    throw Self.uploadFailure(data: data, response: response)
                 }
             } catch let error as RemoteLibraryError {
+                throw error
+            } catch let error as RemoteUploadError {
                 throw error
             } catch is CancellationError {
                 throw CancellationError()
@@ -141,17 +168,21 @@ extension GoogleDriveProvider: ItemCreatable {
 
             resumes += 1
             guard resumes <= Self.maxUploadResumes else {
-                throw RemoteLibraryError.api(
+                throw RemoteUploadError.retryClip(
                     "The upload of \(name) was interrupted and could not be resumed. Try the clip again.")
             }
             // A failed status query is another attempt, not a reason to stop
             // early: the network may be back by the next one.
-            if let resumed = try? await uploadedOffset(session: session, total: total) {
-                switch resumed {
+            do {
+                switch try await uploadedOffset(session: session, total: total) {
                 case .offset(let confirmed): offset = confirmed
                 case .complete(let item): return item
                 }
-            }
+            } catch let error as RemoteUploadError {
+                // The session is gone or the drive refuses us: asking again
+                // changes nothing.
+                throw error
+            } catch {}
         }
     }
 
@@ -172,7 +203,7 @@ extension GoogleDriveProvider: ItemCreatable {
             return request
         }, send: { try await transport.data(for: $0) })
         guard (200...299).contains(response.statusCode) else {
-            throw Self.describeWriteFailure(data: data, response: response)
+            throw Self.uploadFailure(data: data, response: response)
         }
         guard let location = response.value(forHTTPHeaderField: "Location"),
               let session = URL(string: location)
@@ -203,7 +234,7 @@ extension GoogleDriveProvider: ItemCreatable {
             return .complete(try Self.createdItem(data, response))
         }
         guard response.statusCode == 308 else {
-            throw Self.describeWriteFailure(data: data, response: response)
+            throw Self.uploadFailure(data: data, response: response)
         }
         guard let range = response.value(forHTTPHeaderField: "Range"),
               let last = range.split(separator: "-").last.flatMap({ Int64($0) })
@@ -212,6 +243,25 @@ extension GoogleDriveProvider: ItemCreatable {
     }
 
     // MARK: - Helpers
+
+    /// Sorts an upload's refusal into what the caller should do about it:
+    /// 403 stops the batch (no edit access — every further clip would fail
+    /// the same way); 404/410 means the session expired, so the clip is
+    /// retried and opens a fresh one. Anything else keeps the generic error.
+    private static func uploadFailure(data: Data, response: HTTPURLResponse) -> Error {
+        switch response.statusCode {
+        case 403:
+            guard case .api(let message) = describeWriteFailure(data: data, response: response) else {
+                return describeWriteFailure(data: data, response: response)
+            }
+            return RemoteUploadError.stopBatch(message)
+        case 404, 410:
+            return RemoteUploadError.retryClip(
+                "The upload session expired. Try the clip again to start a fresh one.")
+        default:
+            return describeWriteFailure(data: data, response: response)
+        }
+    }
 
     private static func request(_ components: URLComponents, bearer: String, method: String) -> URLRequest {
         var request = URLRequest(url: components.url!)
@@ -233,16 +283,5 @@ extension GoogleDriveProvider: ItemCreatable {
         struct Created: Decodable { let id: String; let name: String? }
         let created: Created = try decode(data)
         return RemoteItem(id: created.id, name: created.name ?? "")
-    }
-
-    /// `get` for the lookups, but with the write-failure wording on a 403.
-    private func getWrite<T: Decodable>(_ components: URLComponents) async throws -> T {
-        let (data, response) = try await authorized({ bearer in
-            Self.request(components, bearer: bearer, method: "GET")
-        }, send: { try await transport.data(for: $0) })
-        guard (200...299).contains(response.statusCode) else {
-            throw Self.describeFailure(data: data, response: response)
-        }
-        return try Self.decode(data)
     }
 }

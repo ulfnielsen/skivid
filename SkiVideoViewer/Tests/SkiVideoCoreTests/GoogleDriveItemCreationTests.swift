@@ -65,7 +65,7 @@ final class GoogleDriveItemCreationTests: XCTestCase {
     }
 
     func testNamesAreEscapedInTheQuery() async throws {
-        transport.responses = [.init(json: #"{"files":[]}"#)]
+        transport.responses = [.init(json: #"{"kind":"drive#fileList","incompleteSearch":false}"#)]
 
         _ = try await provider.findFolder(named: #"O'Brien \ Co"#, parent: "root1")
 
@@ -85,7 +85,7 @@ final class GoogleDriveItemCreationTests: XCTestCase {
 
     func testFindOrCreateCreatesAfterLookingAndFindingNothing() async throws {
         transport.responses = [
-            .init(json: #"{"files":[]}"#),
+            .init(json: #"{"kind":"drive#fileList","incompleteSearch":false}"#),
             .init(json: #"{"id":"new1","name":"Hill"}"#),
         ]
 
@@ -110,7 +110,7 @@ final class GoogleDriveItemCreationTests: XCTestCase {
     }
 
     func testFindFileAnswersNilWhenThereIsNone() async throws {
-        transport.responses = [.init(json: #"{"files":[]}"#)]
+        transport.responses = [.init(json: #"{"kind":"drive#fileList","incompleteSearch":false}"#)]
         let found = try await provider.findFile(named: "run.mp4", parent: "f9")
         XCTAssertNil(found)
     }
@@ -221,12 +221,15 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         do {
             _ = try await provider.upload(fileAt: try clip(), named: "run.mp4", parent: "f9")
             XCTFail("a dead network must end in an error")
-        } catch let RemoteLibraryError.api(message) {
+        } catch let RemoteUploadError.retryClip(message) {
             XCTAssertTrue(message.contains("run.mp4"), message)
         }
-        // open + (PUT + status query) per attempt, attempts bounded at 1 + maxUploadResumes
-        XCTAssertLessThanOrEqual(
-            transport.requests.count, 1 + 2 * (1 + GoogleDriveProvider.maxUploadResumes))
+        // open + (PUT + status query) per attempt; 1 + maxUploadResumes PUTs,
+        // and a status query after each failed PUT but the last.
+        XCTAssertEqual(
+            transport.requests.count,
+            1 + (1 + GoogleDriveProvider.maxUploadResumes)
+                + GoogleDriveProvider.maxUploadResumes)
     }
 
     func testAForbiddenUploadIsNotRetried() async throws {
@@ -238,9 +241,55 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         do {
             _ = try await provider.upload(fileAt: try clip(), named: "run.mp4", parent: "f9")
             XCTFail("403 must surface")
-        } catch let RemoteLibraryError.api(message) {
+        } catch let RemoteUploadError.stopBatch(message) {
             XCTAssertTrue(message.lowercased().contains("permission"), message)
         }
         XCTAssertEqual(transport.requests.count, 2)
+    }
+
+    func testAnExpiredSessionIsARetryableClipNotAStop() async throws {
+        transport.responses = [
+            .init(status: 200, headers: ["Location": sessionURI]),
+            .init(status: 404, json: #"{"error":{"message":"Not Found"}}"#),
+        ]
+
+        do {
+            _ = try await provider.upload(fileAt: try clip(), named: "run.mp4", parent: "f9")
+            XCTFail("an expired session must surface")
+        } catch RemoteUploadError.retryClip {
+        }
+        XCTAssertEqual(transport.requests.count, 2, "a 404 is not resumed")
+    }
+
+    func testAnExpiredSessionFoundByTheStatusQueryIsRetryable() async throws {
+        transport.responses = [
+            .init(status: 200, headers: ["Location": sessionURI]),
+            .init(failure: URLError(.networkConnectionLost)),
+            .init(status: 404, json: #"{"error":{"message":"Not Found"}}"#),
+        ]
+
+        do {
+            _ = try await provider.upload(fileAt: try clip(), named: "run.mp4", parent: "f9")
+            XCTFail("an expired session must surface")
+        } catch RemoteUploadError.retryClip {
+        }
+        XCTAssertEqual(transport.requests.count, 3)
+    }
+
+    func testAnIncompleteSearchIsAnErrorNotAnAbsence() async throws {
+        transport.responses = [.init(json: #"{"incompleteSearch":true,"files":[]}"#)]
+
+        do {
+            _ = try await provider.findFile(named: "run.mp4", parent: "f9")
+            XCTFail("a partial result must not read as 'not there'")
+        } catch RemoteLibraryError.api {
+        }
+    }
+
+    func testFindsPreferTheOldestMatch() async throws {
+        transport.responses = [.init(json: #"{"files":[]}"#)]
+        _ = try await provider.findFolder(named: "Hill", parent: "root1")
+        XCTAssertEqual(transport.queryItems(of: 0)["orderBy"], "createdTime")
+        XCTAssertEqual(transport.queryItems(of: 0)["fields"], "incompleteSearch,files(id,name)")
     }
 }
