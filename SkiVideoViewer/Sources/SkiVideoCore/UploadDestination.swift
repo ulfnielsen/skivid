@@ -7,6 +7,11 @@ public enum UploadRefusal: Error, Equatable, LocalizedError, Sendable {
     case noLibraryOpen
     case libraryIsAFolder(libraryName: String)
     case layoutUnknown(libraryName: String)
+    /// The library is a drive, but what it was opened with cannot create
+    /// files. Not reachable with `GoogleDriveProvider`, which can; here so a
+    /// read-only provider is refused in words rather than by a cast that
+    /// quietly fails.
+    case cannotWrite(libraryName: String)
 
     public var errorDescription: String? {
         switch self {
@@ -15,7 +20,9 @@ public enum UploadRefusal: Error, Equatable, LocalizedError, Sendable {
         case let .libraryIsAFolder(name):
             return "\(name) is a folder on this device, not a Google Drive. Open your club's Drive library to upload."
         case let .layoutUnknown(name):
-            return "The app cannot tell whether \(name) is filed by event then athlete, or athlete then event. Choose the layout for it in its Drive settings, then try again."
+            return "The app cannot tell whether \(name) is filed by event then athlete, or athlete then event. Use Connect Google Drive… and pick its Folder layout before choosing \(name) again."
+        case let .cannotWrite(name):
+            return "This app cannot add clips to \(name)."
         }
     }
 }

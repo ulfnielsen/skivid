@@ -608,6 +608,21 @@ public final class ViewerModel: ObservableObject {
         return try UploadDestination.resolve(library: openLibrary, indexConvention: known)
     }
 
+    /// What an upload batch needs from the open library — its destination,
+    /// the provider as a writer, and the presenter for Google's consent screen
+    /// — or the reason there is none. Asked when the sorting screen opens, so
+    /// a coach learns before tagging that uploading will not be possible.
+    ///
+    /// The provider is handed out as `any ItemCreatable`; `UploadBatchModel`
+    /// never sees `GoogleDriveProvider`, which is what lets a fake stand in.
+    public func uploadTarget() throws -> UploadTarget {
+        let destination = try uploadDestination()
+        guard let writer = remoteProvider as? ItemCreatable else {
+            throw UploadRefusal.cannotWrite(libraryName: destination.libraryName)
+        }
+        return UploadTarget(destination: destination, provider: writer, presenter: oauthPresenter)
+    }
+
     /// The name for the window. A library has a name now, so the window can use
     /// it: "Remote Library" answered a question nobody asked, and a coach with
     /// two clubs' drives connected could not tell from the title which one they
