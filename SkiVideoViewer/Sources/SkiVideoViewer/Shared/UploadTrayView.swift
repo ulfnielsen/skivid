@@ -27,7 +27,10 @@ struct UploadTrayView: View {
         VStack(spacing: 0) {
             notices
             if model.entries.isEmpty {
-                Text(model.isCheckingDrive ? "Looking for sorted clips…" : "No sorted clips on this device yet.")
+                // Silent when the folder could not be read: the notice above
+                // says why, and "nothing sorted" would contradict it.
+                Text(model.readProblem != nil ? ""
+                     : model.isCheckingDrive ? "Looking for sorted clips…" : "No sorted clips on this device yet.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -56,6 +59,10 @@ struct UploadTrayView: View {
                     .foregroundStyle(.red)
                     .accessibilityIdentifier("upload.stopReason")
             }
+            if let readProblem = model.readProblem {
+                Label(readProblem, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+            }
             if let checkProblem = model.checkProblem {
                 Label(checkProblem, systemImage: "wifi.exclamationmark")
                     .foregroundStyle(.orange)
@@ -72,7 +79,12 @@ struct UploadTrayView: View {
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
-        .padding(.vertical, model.stopReason == nil && model.checkProblem == nil && !model.isCheckingDrive ? 0 : 8)
+        .padding(.vertical, hasNotices ? 8 : 0)
+    }
+
+    private var hasNotices: Bool {
+        model.stopReason != nil || model.readProblem != nil || model.checkProblem != nil
+            || model.isCheckingDrive
     }
 
     private func row(_ entry: UploadBatchModel.Entry) -> some View {

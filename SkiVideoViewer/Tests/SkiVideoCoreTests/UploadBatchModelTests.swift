@@ -62,6 +62,69 @@ final class UploadBatchModelTests: XCTestCase {
         XCTAssertEqual(model.libraryName, "Club Drive")
     }
 
+    // MARK: - One session's event
+
+    private func makeEventModel(_ event: String) throws -> UploadBatchModel {
+        let destination = try UploadDestination.resolve(
+            library: Library(name: "Club Drive", kind: .drive(rootID: "root-1"), convention: .eventThenAthlete),
+            indexConvention: nil)
+        return UploadBatchModel(
+            source: .eventFolder(root.appendingPathComponent(event)),
+            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter()))
+    }
+
+    /// The tray at the end of tagging is about this session. Last season's
+    /// clips under the same output root must not appear, be checked against
+    /// Drive, or be swept into "Upload N" — a historical clip an admin has
+    /// since moved would otherwise be uploaded again.
+    func testATrayOverOneEventFolderNeitherListsNorChecksAnotherEvent() async throws {
+        let old = "2025-12-20_Flumserberg"
+        try sortedClip("OLD_1.mov", athlete: "Ada", event: old)
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        let model = try makeEventModel(event)
+
+        await model.refresh().value
+
+        XCTAssertEqual(model.entries.map(\.clip.file.lastPathComponent), ["IMG_1.mov"])
+        XCTAssertEqual(model.entries.first?.clip.event, event)
+        XCTAssertFalse(drive.findFolderNames.contains(old), "\(drive.findFolderNames)")
+
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov"])
+        XCTAssertEqual(drive.path(ofFile: "IMG_1.mov"), [event, "Ada"])
+        XCTAssertFalse(drive.findFolderNames.contains(old))
+    }
+
+    func testASessionTrayRebuiltAfterAKillAsksDriveWhatIsDone() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        try sortedClip("IMG_2.mov", athlete: "Ada")
+        drive.seedFile("IMG_1.mov", at: [event, "Ada"])
+
+        let reopened = try makeEventModel(event)
+        await reopened.refresh().value
+
+        XCTAssertEqual(states(reopened), ["IMG_1.mov": .alreadyInDrive, "IMG_2.mov": .waiting])
+    }
+
+    /// A sorted output that cannot be read must say so, not read as "nothing
+    /// sorted yet" — the Drive check that follows must not wipe the message.
+    func testAnUnreadableSortedOutputStaysReported() async throws {
+        let notADirectory = root.appendingPathComponent("file-not-folder")
+        try Data([1]).write(to: notADirectory)
+        let destination = try UploadDestination.resolve(
+            library: Library(name: "Club Drive", kind: .drive(rootID: "root-1"), convention: .eventThenAthlete),
+            indexConvention: nil)
+        let model = UploadBatchModel(
+            source: .outputRoot(notADirectory),
+            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter()))
+
+        await model.refresh().value
+
+        XCTAssertEqual(model.entries, [])
+        XCTAssertNotNil(model.readProblem)
+    }
+
     // MARK: - Uploading
 
     func testEachClipUploadsIntoItsEventAndAthleteFoldersCreatingEachOnce() async throws {

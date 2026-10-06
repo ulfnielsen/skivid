@@ -84,26 +84,33 @@ public enum SortedOutput {
     /// skipped too. Anything not at that depth is ignored; a missing root is
     /// simply empty.
     public static func clips(in root: URL) throws -> [SortedClip] {
-        let fm = FileManager.default
-        func children(_ url: URL, directories: Bool) throws -> [URL] {
-            guard fm.fileExists(atPath: url.path) else { return [] }
-            return try fm.contentsOfDirectory(
-                at: url, includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ).filter {
-                ((try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false) == directories
-            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        }
+        try children(root, directories: true).flatMap { try clips(inEventFolder: $0) }
+    }
+
+    /// One event's clips: `<eventFolder>/<athlete>/<clip>`, the event being
+    /// the folder's own name. Same filtering as `clips(in:)`. What the tray
+    /// at the end of a sorting session reads, so that session's screen is
+    /// about that session and not every event this device has ever sorted.
+    public static func clips(inEventFolder eventFolder: URL) throws -> [SortedClip] {
         var result: [SortedClip] = []
-        for event in try children(root, directories: true) {
-            for athlete in try children(event, directories: true) {
-                for file in try children(athlete, directories: false)
-                where VideoLibrary.supportedExtensions.contains(file.pathExtension.lowercased()) {
-                    result.append(SortedClip(event: event.lastPathComponent,
-                                             athlete: athlete.lastPathComponent, file: file))
-                }
+        for athlete in try children(eventFolder, directories: true) {
+            for file in try children(athlete, directories: false)
+            where VideoLibrary.supportedExtensions.contains(file.pathExtension.lowercased()) {
+                result.append(SortedClip(event: eventFolder.lastPathComponent,
+                                         athlete: athlete.lastPathComponent, file: file))
             }
         }
         return result
+    }
+
+    private static func children(_ url: URL, directories: Bool) throws -> [URL] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return [] }
+        return try fm.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ).filter {
+            ((try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false) == directories
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 }

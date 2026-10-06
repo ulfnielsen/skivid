@@ -127,6 +127,15 @@ public final class SortingModel: ObservableObject {
         resizedDirectory ?? (keepsSourceIntact ? outputRoot : nil)
     }
 
+    /// This session's own event folder under `uploadRoot` — where every clip
+    /// tagged since `beginSorting` lands. Nil until sorting has begun. The
+    /// finished-tagging tray reads only this, so a season of older events
+    /// under the same root stays out of it.
+    public var sessionOutputDirectory: URL? {
+        guard let resizedDirectory, !eventFolder.isEmpty else { return nil }
+        return resizedDirectory.appendingPathComponent(eventFolder, isDirectory: true)
+    }
+
     /// Tagging is done and no resize is still queued or running: everything
     /// this session will produce is on disk. The tray waits for this so it
     /// does not show a list that is still growing.

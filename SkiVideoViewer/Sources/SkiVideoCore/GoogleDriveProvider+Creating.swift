@@ -268,14 +268,20 @@ extension GoogleDriveProvider: ItemCreatable {
         }
     }
 
-    /// The MIME type Drive is told the bytes are, from the file's extension.
+    /// The MIME type Drive is told, from the file's extension. `UTType` maps
+    /// `mov` to `video/quicktime` and `mp4` to `video/mp4`; an extension it
+    /// does not know gets `application/octet-stream`.
     ///
-    /// Not a constant `video/mp4`: the resize pipeline writes QuickTime
-    /// (`fileType: .mov`) and iPhone clips arrive as `.mov`, so a fixed type
-    /// would mislabel nearly every upload. `UTType` maps `mov` to
-    /// `video/quicktime` and `mp4` to `video/mp4`; an extension it does not
-    /// know gets `application/octet-stream`, which leaves Drive to sniff the
-    /// bytes rather than trust a guess.
+    /// What this fixes and what it does not. The label follows the *name*,
+    /// and the resize keeps the source's name (`ClipPublisher` files it under
+    /// `source.lastPathComponent`) while always writing a QuickTime container
+    /// (`AVFoundationMediaPipeline.resize`, `fileType: .mov`). So:
+    ///  - A Photos or iPhone clip, named `.mov`, is labelled `video/quicktime`,
+    ///    which matches its bytes. The fixed `video/mp4` this replaced
+    ///    mislabelled these.
+    ///  - A camera clip named `C0001.MP4` is still labelled `video/mp4` with
+    ///    QuickTime bytes inside, exactly as before. Labelling by content, or
+    ///    naming resizes `.mov`, would fix that; this does neither.
     static func contentType(of url: URL) -> String {
         UTType(filenameExtension: url.pathExtension.lowercased())?.preferredMIMEType
             ?? "application/octet-stream"

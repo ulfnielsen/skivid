@@ -9,12 +9,16 @@ struct SortingSheet: View {
     /// screen opened, before any tagging (see `ContentView`).
     let upload: Result<UploadTarget, UploadRefusal>
     @FocusState private var athleteFieldIsFocused: Bool
-    /// The upload tray's model, made the first time it is wanted and remade
-    /// only if the sorted output moves (a Mac session sorting a second
-    /// source). Held here, not in `UploadTrayView`, so the setup screen's
-    /// sheet and the finished-tagging screen show the same batch.
-    @State private var tray: UploadBatchModel?
-    @State private var isShowingTray = false
+    /// Two trays, deliberately not one. The finished-tagging screen's is this
+    /// session's event folder only (`sessionOutputDirectory`): a season of
+    /// older events under the same root would bury it, cost a Drive lookup
+    /// each, and be swept into "Upload N" — re-uploading any old clip an
+    /// admin had since moved. The setup screen's "Clips waiting to upload…"
+    /// is the deliberate whole-history view, for what a killed app or a lost
+    /// signal left behind. Each is remade only if its directory moves.
+    @State private var sessionTray: UploadBatchModel?
+    @State private var historyTray: UploadBatchModel?
+    @State private var isShowingHistoryTray = false
 
     /// `keepsSourceIntact` and `outputRoot` have no default here, deliberately:
     /// `outputRoot` on `SortingModel` is silently ignored whenever
@@ -94,18 +98,19 @@ struct SortingSheet: View {
             // The batch is foreground and watched by design; closing the
             // screen is the coach walking away from it. What was not sent
             // stays on disk and shows as waiting next time.
-            tray?.cancel()
+            sessionTray?.cancel()
+            historyTray?.cancel()
         }
         .onChange(of: model.resizesAreSettled) { settled in
-            if settled { ensureTray() }
+            if settled { ensureSessionTray() }
         }
-        .sheet(isPresented: $isShowingTray, onDismiss: { tray?.cancel() }) {
-            if let tray {
+        .sheet(isPresented: $isShowingHistoryTray, onDismiss: { historyTray?.cancel() }) {
+            if let tray = historyTray {
                 VStack(spacing: 0) {
                     HStack {
                         Text("Waiting to upload").font(.headline)
                         Spacer()
-                        Button("Done") { isShowingTray = false }
+                        Button("Done") { isShowingHistoryTray = false }
                             .accessibilityIdentifier("upload.done")
                     }
                     .padding(16)
@@ -237,8 +242,8 @@ struct SortingSheet: View {
                 // killed app, or a dropped signal, left waiting.
                 if model.uploadRoot != nil {
                     Button("Clips waiting to upload…") {
-                        ensureTray()
-                        isShowingTray = tray != nil
+                        ensureHistoryTray()
+                        isShowingHistoryTray = historyTray != nil
                     }
                     .accessibilityIdentifier("sorting.showUploadTray")
                 }
@@ -252,13 +257,24 @@ struct SortingSheet: View {
         }
     }
 
-    /// Makes the tray's model if uploading is possible and the sorted output
-    /// is known, or remakes it if that output has moved.
-    private func ensureTray() {
+    /// This session's tray: its event folder only. Made when the resizes
+    /// settle; remade if a second sort in the same window moves the folder.
+    private func ensureSessionTray() {
+        guard case let .success(target) = upload, let folder = model.sessionOutputDirectory else { return }
+        let source = UploadBatchModel.Source.eventFolder(folder)
+        if sessionTray?.source != source {
+            sessionTray?.cancel()
+            sessionTray = UploadBatchModel(source: source, target: target)
+        }
+    }
+
+    /// Every event under the output root, for the setup screen's entry point.
+    private func ensureHistoryTray() {
         guard case let .success(target) = upload, let root = model.uploadRoot else { return }
-        if tray?.root != root {
-            tray?.cancel()
-            tray = UploadBatchModel(root: root, target: target)
+        let source = UploadBatchModel.Source.outputRoot(root)
+        if historyTray?.source != source {
+            historyTray?.cancel()
+            historyTray = UploadBatchModel(source: source, target: target)
         }
     }
 
@@ -353,7 +369,7 @@ struct SortingSheet: View {
                 // you are about to tag.
                 SinglePlayerView(player: model.player)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.resizesAreSettled, let tray {
+            } else if model.resizesAreSettled, let tray = sessionTray {
                 // Tagging is done and every resize has landed: what is on
                 // disk is final, so this is the moment to show what waits.
                 VStack(spacing: 0) {

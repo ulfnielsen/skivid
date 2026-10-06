@@ -18,6 +18,7 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
     private var _authorizeCount = 0
     private var _uploadedNames: [String] = []
     private var _createdFolderNames: [String] = []
+    private var _findFolderNames: [String] = []
     private var _hangingUpload: String?
     private var _uploadStarted: Set<String> = []
 
@@ -61,6 +62,8 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
     var authorizeCount: Int { locked { _authorizeCount } }
     var uploadedNames: [String] { locked { _uploadedNames } }
     var createdFolderNames: [String] { locked { _createdFolderNames } }
+    /// Every name `findFolder` was asked about, in order.
+    var findFolderNames: [String] { locked { _findFolderNames } }
     func uploadHasStarted(_ name: String) -> Bool { locked { _uploadStarted.contains(name) } }
 
     /// Folder names from `root` down to where `name` lives, or nil.
@@ -89,6 +92,7 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
 
     func findFolder(named name: String, parent parentID: String) async throws -> RemoteItem? {
         try locked {
+            _findFolderNames.append(name)
             if let error = _findFolderErrors[name] { throw error }
             return folderIDLocked(named: name, parent: parentID).map { RemoteItem(id: $0, name: name) }
         }

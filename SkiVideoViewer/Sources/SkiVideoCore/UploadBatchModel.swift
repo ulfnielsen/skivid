@@ -68,6 +68,10 @@ public final class UploadBatchModel: ObservableObject {
     /// Why the last batch stopped before its end. Nil after a clean run or a
     /// cancel.
     @Published public private(set) var stopReason: String?
+    /// Why the sorted output could not be read. Kept apart from
+    /// `checkProblem` so the Drive check that follows a refresh cannot clear
+    /// it: an unreadable folder must not look like "nothing sorted yet".
+    @Published public private(set) var readProblem: String?
     /// Why the tray could not ask Drive what it already has. Clips then show
     /// as waiting; the per-upload check still skips any already there.
     @Published public private(set) var checkProblem: String?
@@ -76,15 +80,43 @@ public final class UploadBatchModel: ObservableObject {
     @Published public private(set) var runTotal = 0
     @Published public private(set) var runDone = 0
 
-    public let root: URL
+    /// Which sorted clips this tray is about.
+    public enum Source: Equatable {
+        /// Every event under a sorted output root — the whole history on
+        /// this device. The setup screen's "Clips waiting to upload…".
+        case outputRoot(URL)
+        /// One event folder, `<outputRoot>/<event>` — the session just
+        /// tagged. The finished-tagging screen uses this, so it neither lists
+        /// nor asks Drive about last season.
+        case eventFolder(URL)
+
+        public var directory: URL {
+            switch self {
+            case let .outputRoot(url), let .eventFolder(url): return url
+            }
+        }
+
+        func clips() throws -> [SortedClip] {
+            switch self {
+            case let .outputRoot(url): return try SortedOutput.clips(in: url)
+            case let .eventFolder(url): return try SortedOutput.clips(inEventFolder: url)
+            }
+        }
+    }
+
+    public let source: Source
     private let target: UploadTarget
     private var batchTask: Task<Void, Never>?
     private var checkTask: Task<Void, Never>?
 
-    /// `root` is the sorted output directory — `<root>/<event>/<athlete>/<clip>`.
-    public init(root: URL, target: UploadTarget) {
-        self.root = root
+    public init(source: Source, target: UploadTarget) {
+        self.source = source
         self.target = target
+    }
+
+    /// The whole sorted output root — `<root>/<event>/<athlete>/<clip>`.
+    public convenience init(root: URL, target: UploadTarget) {
+        self.init(source: .outputRoot(root), target: target)
     }
 
     public var libraryName: String { target.destination.libraryName }
@@ -112,9 +144,10 @@ public final class UploadBatchModel: ObservableObject {
         let known = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.state) })
         let clips: [SortedClip]
         do {
-            clips = try SortedOutput.clips(in: root)
+            clips = try source.clips()
+            readProblem = nil
         } catch {
-            checkProblem = "Could not read the sorted clips: \(error.localizedDescription)"
+            readProblem = "Could not read the sorted clips: \(error.localizedDescription)"
             clips = []
         }
         entries = clips.map { clip in

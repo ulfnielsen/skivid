@@ -218,6 +218,22 @@ final class SortingModelPublisherTests: XCTestCase {
         XCTAssertEqual(inPlace.uploadRoot, root.appendingPathComponent("organized_resize", isDirectory: true))
     }
 
+    /// The finished-tagging tray reads only this session's event folder.
+    func testTheSessionFolderIsTheEventUnderTheUploadRoot() throws {
+        try makeSource(named: "C0001.MP4")
+        let model = makeModel()
+        model.keepsSourceIntact = true
+        model.outputRoot = root.appendingPathComponent("app-storage")
+        XCTAssertNil(model.sessionOutputDirectory, "no event until sorting begins")
+        model.sourcePath = root.path
+        model.eventTitle = "Brunni"
+        model.beginSorting()
+
+        let event = try SortingLibrary.eventFolder(date: model.eventDate, title: "Brunni")
+        XCTAssertEqual(model.sessionOutputDirectory,
+                       model.outputRoot.appendingPathComponent(event, isDirectory: true))
+    }
+
     func testResizesAreSettledOnlyOnceTaggingIsDoneAndTheQueueIsEmpty() async throws {
         try makeSource(named: "C0001.MP4")
         try write(names: ["Ada Example"])
