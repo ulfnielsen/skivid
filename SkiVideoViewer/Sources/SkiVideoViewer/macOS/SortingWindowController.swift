@@ -18,6 +18,7 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
     @MainActor
     func show(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -57,6 +58,7 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
             defaultNamesURL: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Ski/athletes.txt"),
             libraryAthletes: libraryAthletes,
+            upload: upload,
             // Unchanged Mac behaviour: the source is a folder on this Mac, not
             // a card, so the session still organizes it in place.
             // `outputRoot` is passed for the pairing's sake even though it is

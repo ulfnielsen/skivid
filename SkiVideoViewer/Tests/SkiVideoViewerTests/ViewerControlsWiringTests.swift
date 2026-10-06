@@ -594,6 +594,7 @@ private final class NoSecondaryScreens: SecondaryScreenPresenter {
 
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {

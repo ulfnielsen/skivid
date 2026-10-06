@@ -30,11 +30,13 @@ final class MacSecondaryScreenPresenter: SecondaryScreenPresenter {
 
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
         sortingWindow.show(
             libraryAthletes: libraryAthletes,
+            upload: upload,
             openResizedLibrary: openResizedLibrary,
             onClose: onClose
         )

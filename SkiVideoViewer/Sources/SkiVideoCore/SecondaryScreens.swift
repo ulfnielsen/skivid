@@ -36,8 +36,14 @@ public protocol SecondaryScreenPresenter: AnyObject {
     /// is the only thing that reads `ViewerModel` directly, so this is how its
     /// athletes reach `SortingModel` without `SortingSheet` or either window
     /// controller learning what a `ViewerModel` is.
+    ///
+    /// `upload` is `ViewerModel.uploadTarget()`, asked as the screen opens —
+    /// before any tagging — so the sorting screen can say up front either
+    /// where tagged clips will upload or why they cannot. Sorting itself works
+    /// either way.
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     )

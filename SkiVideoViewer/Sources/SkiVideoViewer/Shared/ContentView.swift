@@ -216,6 +216,12 @@ struct ContentView: View {
                     model.setKeyboardControlsEnabled(false)
                     secondaryScreens.presentSorting(
                         libraryAthletes: model.athletes,
+                        // Asked now, before any tagging: a coach should learn
+                        // that this library cannot take uploads before sorting
+                        // twenty clips for it, not after. `uploadTarget`
+                        // throws only `UploadRefusal`; the cast is for the type.
+                        upload: Result { try model.uploadTarget() }
+                            .mapError { $0 as? UploadRefusal ?? .noLibraryOpen },
                         openResizedLibrary: { outputDirectory in
                             model.openDirectory(outputDirectory)
                         },

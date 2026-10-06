@@ -198,6 +198,43 @@ final class SortingModelPublisherTests: XCTestCase {
         )
     }
 
+    /// The upload tray reads the sorted output back from disk, so it needs to
+    /// know where that is: the output root for a read-only session — known
+    /// before any tagging, which is what lets a tray reopen after the app was
+    /// killed — and the source's `organized_resize` for a Mac session, which
+    /// is only known once a source has been chosen and sorting began.
+    func testTheUploadRootIsWhereTheResizesLand() throws {
+        try makeSource(named: "C0001.MP4")
+        let readOnly = makeModel()
+        readOnly.keepsSourceIntact = true
+        readOnly.outputRoot = root.appendingPathComponent("app-storage")
+        XCTAssertEqual(readOnly.uploadRoot, readOnly.outputRoot)
+
+        let inPlace = makeModel()
+        XCTAssertNil(inPlace.uploadRoot)
+        inPlace.sourcePath = root.path
+        inPlace.eventTitle = "Brunni"
+        inPlace.beginSorting()
+        XCTAssertEqual(inPlace.uploadRoot, root.appendingPathComponent("organized_resize", isDirectory: true))
+    }
+
+    func testResizesAreSettledOnlyOnceTaggingIsDoneAndTheQueueIsEmpty() async throws {
+        try makeSource(named: "C0001.MP4")
+        try write(names: ["Ada Example"])
+        let model = makeModel()
+        XCTAssertFalse(model.resizesAreSettled)
+        model.sourcePath = root.path
+        model.eventTitle = "Brunni"
+        model.beginSorting()
+        XCTAssertFalse(model.resizesAreSettled)
+
+        model.athleteQuery = "Ada Example"
+        model.tagCurrentVideo()
+        try await waitForResizes(model, count: 1)
+
+        XCTAssertTrue(model.resizesAreSettled)
+    }
+
     /// Polls `completedResizes` rather than depending on ordering with the
     /// background `OperationQueue`, exactly as `SortingModelResizeQueueTests
     /// .waitForResizes` does — duplicated here rather than shared because
@@ -213,6 +250,7 @@ final class SortingModelPublisherTests: XCTestCase {
         }
     }
 
+    @discardableResult
     private func makeSource(named name: String) throws -> URL {
         let url = root.appendingPathComponent(name)
         try Data(repeating: 0, count: 16).write(to: url)

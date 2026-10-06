@@ -77,6 +77,7 @@ struct SkiVideoViewerApp_iOS: App {
                     // `ContentView`'s Sort & Resize button, which is what
                     // captures `ViewerModel.athletes` in the first place.
                     libraryAthletes: request.libraryAthletes,
+                    upload: request.upload,
                     // The one pairing this initializer exists to make explicit:
                     // an iPad's source is a Files location — very often the SD
                     // card itself — so this session must never write into it.

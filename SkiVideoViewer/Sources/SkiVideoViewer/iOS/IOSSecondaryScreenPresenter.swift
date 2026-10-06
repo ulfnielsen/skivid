@@ -38,6 +38,7 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
     struct SortingRequest: Identifiable {
         let id = UUID()
         let libraryAthletes: [AthleteGroup]
+        let upload: Result<UploadTarget, UploadRefusal>
         let openResizedLibrary: (URL) -> Void
         let onClose: () -> Void
     }
@@ -64,11 +65,13 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
 
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
         sorting = SortingRequest(
             libraryAthletes: libraryAthletes,
+            upload: upload,
             openResizedLibrary: openResizedLibrary,
             onClose: onClose
         )

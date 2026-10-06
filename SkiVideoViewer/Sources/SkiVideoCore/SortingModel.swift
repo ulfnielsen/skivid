@@ -117,6 +117,23 @@ public final class SortingModel: ObservableObject {
             .appendingPathComponent("Sorted", isDirectory: true)
     }
 
+    /// Where this session's finished resizes are, for the upload tray to read
+    /// back (`SortedOutput.clips(in:)`). A read-only session's output root is
+    /// known before any tagging — which is what lets the tray be reopened
+    /// after the app was killed, with nothing tagged this launch. A Mac
+    /// session writes beside its source, so it is known only once sorting has
+    /// begun; nil until then.
+    public var uploadRoot: URL? {
+        resizedDirectory ?? (keepsSourceIntact ? outputRoot : nil)
+    }
+
+    /// Tagging is done and no resize is still queued or running: everything
+    /// this session will produce is on disk. The tray waits for this so it
+    /// does not show a list that is still growing.
+    public var resizesAreSettled: Bool {
+        taggingFinished && completedResizes == queuedResizes
+    }
+
     public var currentVideo: URL? {
         rawVideos.indices.contains(currentIndex) ? rawVideos[currentIndex] : nil
     }
