@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import SkiVideoCore
 
@@ -136,5 +137,49 @@ final class UploadDestinationTests: XCTestCase {
         XCTAssertThrowsError(try model.uploadDestination()) {
             XCTAssertEqual($0 as? UploadRefusal, .layoutUnknown(libraryName: "Club"))
         }
+    }
+
+    func testHiddenStagingPartialsAndNonVideosAreNotListed() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sorted-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("2026-01-14_Brunni/Ada")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["good.MOV", ".resize-ABC.MOV", "notes.txt", "clip.mov.part"] {
+            try Data([1]).write(to: folder.appendingPathComponent(name))
+        }
+        XCTAssertEqual(try SortedOutput.clips(in: root).map { $0.file.lastPathComponent }, ["good.MOV"])
+    }
+
+    /// Real pipeline: an unreadable source fails after the destination folder
+    /// exists; nothing may be left in it, final or staging.
+    func testAFailedResizeLeavesNothingBehind() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sorted-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bogus = root.appendingPathComponent("bogus.mov")
+        try Data("not a video".utf8).write(to: bogus)
+        let destination = root.appendingPathComponent("out/Event/Ada/bogus.mov")
+        do {
+            try await AVFoundationMediaPipeline().resize(source: bogus, destination: destination, athlete: "Ada")
+            XCTFail("expected failure")
+        } catch {}
+        let left = try FileManager.default.contentsOfDirectory(
+            atPath: destination.deletingLastPathComponent().path)
+        XCTAssertEqual(left, [])
+        XCTAssertEqual(try SortedOutput.clips(in: root.appendingPathComponent("out")), [])
+    }
+
+    func testASuccessfulResizeLeavesOnlyTheFinalFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sorted-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try makeRealVideoFile(in: root, name: "a.mov", seconds: 1, fps: 30, width: 640, height: 360)
+        let destination = root.appendingPathComponent("out/Event/Ada/a.mov")
+        try await AVFoundationMediaPipeline().resize(source: source, destination: destination, athlete: "Ada")
+        let hidden = try FileManager.default.contentsOfDirectory(atPath: destination.deletingLastPathComponent().path)
+        XCTAssertEqual(hidden, ["a.mov"])
+        XCTAssertEqual(try SortedOutput.clips(in: root.appendingPathComponent("out")).count, 1)
     }
 }

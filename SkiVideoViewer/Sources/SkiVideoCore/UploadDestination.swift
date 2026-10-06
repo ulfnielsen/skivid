@@ -68,8 +68,14 @@ public enum SortedOutput {
     /// Reads `<root>/<event>/<athlete>/<clip>` back, which is exactly what
     /// `ReadOnlySourcePublisher` (and `LocalFolderPublisher`'s resized tree)
     /// writes. Sorted by event, athlete, file name so the order is stable.
-    /// Hidden files and anything not at that depth are ignored; a missing
-    /// root is simply empty.
+    ///
+    /// What it lists is finished clips only: the resize writes to a hidden
+    /// `.resize-*` file and moves it into place on success
+    /// (`AVFoundationMediaPipeline.resize`), and this skips hidden files, so an
+    /// in-flight, failed or killed resize never appears. Files whose extension
+    /// is not in `VideoLibrary.supportedExtensions` (case-insensitive) are
+    /// skipped too. Anything not at that depth is ignored; a missing root is
+    /// simply empty.
     public static func clips(in root: URL) throws -> [SortedClip] {
         let fm = FileManager.default
         func children(_ url: URL, directories: Bool) throws -> [URL] {
@@ -84,7 +90,8 @@ public enum SortedOutput {
         var result: [SortedClip] = []
         for event in try children(root, directories: true) {
             for athlete in try children(event, directories: true) {
-                for file in try children(athlete, directories: false) {
+                for file in try children(athlete, directories: false)
+                where VideoLibrary.supportedExtensions.contains(file.pathExtension.lowercased()) {
                     result.append(SortedClip(event: event.lastPathComponent,
                                              athlete: athlete.lastPathComponent, file: file))
                 }
