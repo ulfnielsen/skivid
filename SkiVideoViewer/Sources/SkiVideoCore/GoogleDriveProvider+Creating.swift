@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// The club-Drive upload's write operations, in their own file because
 /// `GoogleDriveProvider.swift` is already the largest in the module and these
@@ -128,7 +129,9 @@ extension GoogleDriveProvider: ItemCreatable {
             throw RemoteLibraryError.api("The clip to upload is empty.")
         }
 
-        let session = try await openUploadSession(name: name, parent: parentID, total: total)
+        let contentType = Self.contentType(of: url)
+        let session = try await openUploadSession(
+            name: name, parent: parentID, total: total, contentType: contentType)
 
         var offset: Int64 = 0
         var resumes = 0
@@ -141,7 +144,7 @@ extension GoogleDriveProvider: ItemCreatable {
                     // bearer is sent as well so a refreshed token (after a
                     // 401) is what the retry carries.
                     request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-                    request.setValue("video/mp4", forHTTPHeaderField: "Content-Type")
+                    request.setValue(contentType, forHTTPHeaderField: "Content-Type")
                     request.setValue(
                         "bytes \(offset)-\(total - 1)/\(total)", forHTTPHeaderField: "Content-Range")
                     return request
@@ -186,7 +189,9 @@ extension GoogleDriveProvider: ItemCreatable {
         }
     }
 
-    private func openUploadSession(name: String, parent parentID: String, total: Int64) async throws -> URL {
+    private func openUploadSession(
+        name: String, parent parentID: String, total: Int64, contentType: String
+    ) async throws -> URL {
         var components = URLComponents(string: "https://www.googleapis.com/upload/drive/v3/files")!
         components.queryItems = [
             URLQueryItem(name: "uploadType", value: "resumable"),
@@ -197,7 +202,7 @@ extension GoogleDriveProvider: ItemCreatable {
         let (data, response) = try await authorized({ bearer in
             var request = Self.request(components, bearer: bearer, method: "POST")
             request.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
-            request.setValue("video/mp4", forHTTPHeaderField: "X-Upload-Content-Type")
+            request.setValue(contentType, forHTTPHeaderField: "X-Upload-Content-Type")
             request.setValue(String(total), forHTTPHeaderField: "X-Upload-Content-Length")
             request.httpBody = body
             return request
@@ -261,6 +266,19 @@ extension GoogleDriveProvider: ItemCreatable {
         default:
             return describeWriteFailure(data: data, response: response)
         }
+    }
+
+    /// The MIME type Drive is told the bytes are, from the file's extension.
+    ///
+    /// Not a constant `video/mp4`: the resize pipeline writes QuickTime
+    /// (`fileType: .mov`) and iPhone clips arrive as `.mov`, so a fixed type
+    /// would mislabel nearly every upload. `UTType` maps `mov` to
+    /// `video/quicktime` and `mp4` to `video/mp4`; an extension it does not
+    /// know gets `application/octet-stream`, which leaves Drive to sniff the
+    /// bytes rather than trust a guess.
+    static func contentType(of url: URL) -> String {
+        UTType(filenameExtension: url.pathExtension.lowercased())?.preferredMIMEType
+            ?? "application/octet-stream"
     }
 
     private static func request(_ components: URLComponents, bearer: String, method: String) -> URLRequest {

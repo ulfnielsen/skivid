@@ -16,9 +16,9 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         provider = GoogleDriveProvider(transport: transport, token: { "test-token" })
     }
 
-    private func clip(_ contents: String = "0123456789") throws -> URL {
+    private func clip(_ contents: String = "0123456789", extension ext: String = "mp4") throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).mp4")
+            .appendingPathComponent("\(UUID().uuidString).\(ext)")
         try Data(contents.utf8).write(to: url)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
@@ -144,6 +144,30 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         XCTAssertEqual(put.url?.absoluteString, sessionURI)
         XCTAssertEqual(put.value(forHTTPHeaderField: "Content-Range"), "bytes 0-9/10")
         XCTAssertEqual(put.httpBody, Data("0123456789".utf8))
+    }
+
+    /// Resized and iPhone clips are QuickTime — the pipeline writes
+    /// `fileType: .mov` — so labelling every upload `video/mp4` would have
+    /// Drive file a `.mov` under the wrong type. Both the session's declared
+    /// type and the bytes' own header must follow the file.
+    func testTheContentTypeFollowsTheFilesExtension() async throws {
+        for (ext, expected) in [("mov", "video/quicktime"), ("MOV", "video/quicktime"),
+                                ("mp4", "video/mp4"), ("zzz", "application/octet-stream")] {
+            transport = FakeHTTPTransport()
+            provider = GoogleDriveProvider(transport: transport, token: { "test-token" })
+            let file = try clip("0123456789", extension: ext)
+            transport.responses = [
+                .init(status: 200, headers: ["Location": sessionURI]),
+                .init(json: #"{"id":"c1","name":"run"}"#),
+            ]
+
+            _ = try await provider.upload(fileAt: file, named: "run.\(ext)", parent: "f9")
+
+            XCTAssertEqual(transport.requests[0].value(forHTTPHeaderField: "X-Upload-Content-Type"),
+                           expected, ext)
+            XCTAssertEqual(transport.requests[1].value(forHTTPHeaderField: "Content-Type"),
+                           expected, ext)
+        }
     }
 
     /// A token that expires between opening the session and finishing the
