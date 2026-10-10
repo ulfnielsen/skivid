@@ -63,11 +63,14 @@ public final class SortingModel: ObservableObject {
     private let input: PlaybackInputSource?
     private let folderPicker: FolderPicker?
     private let photosImporter: PhotosImporting?
-    /// The open library's athlete names, one per (athlete, event) pair —
-    /// snapshotted at construction, the same way `defaultNamesURL` is read
-    /// once rather than watched. `reloadNames()` merges it with the names
-    /// file and `AthleteRoster`'s local additions every time either changes.
-    private let libraryAthletes: [AthleteGroup]
+    /// The open library's athlete names, one per (athlete, event) pair.
+    /// `reloadNames()` merges it with the names file and `AthleteRoster`'s
+    /// local additions every time either changes. Settable because the
+    /// sorting screen's "Upload to" picker can open a different library
+    /// before tagging starts, and its athletes should be the ones suggested.
+    public var libraryAthletes: [AthleteGroup] {
+        didSet { reloadNames() }
+    }
 
     /// `defaultNamesURL` is injected rather than derived: `~/Ski/athletes.txt`
     /// is a macOS convention, and the core must not assume a home-directory

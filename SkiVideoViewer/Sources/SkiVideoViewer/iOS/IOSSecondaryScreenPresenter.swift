@@ -37,8 +37,7 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
     /// initializer so both are set before anything is presented.
     struct SortingRequest: Identifiable {
         let id = UUID()
-        let libraryAthletes: [AthleteGroup]
-        let upload: Result<UploadTarget, UploadRefusal>
+        let destination: UploadLibraryChoice
         let openResizedLibrary: (URL) -> Void
         let onClose: () -> Void
     }
@@ -68,14 +67,12 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
     }
 
     func presentSorting(
-        libraryAthletes: [AthleteGroup],
-        upload: Result<UploadTarget, UploadRefusal>,
+        destination: UploadLibraryChoice,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
         sorting = SortingRequest(
-            libraryAthletes: libraryAthletes,
-            upload: upload,
+            destination: destination,
             openResizedLibrary: openResizedLibrary,
             onClose: onClose
         )

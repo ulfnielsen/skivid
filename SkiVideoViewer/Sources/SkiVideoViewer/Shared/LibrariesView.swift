@@ -23,6 +23,10 @@ struct LibrariesView: View {
     /// for one rather than reaching for it.
     let makeProvider: () -> (any RemoteLibraryProvider)?
     let onConnectDrive: () -> Void
+    /// Sort & Resize, offered here so tagging can start before anything is
+    /// open; the sorting screen asks which Drive to upload to. Nil where the
+    /// platform cannot present it.
+    let onSort: (() -> Void)?
     /// Runs after every row that opens, including the one already open. The
     /// phone moves on to the athletes from here: a change of `openLibraryID`
     /// cannot say "opened again", because reopening writes the same id.
@@ -216,6 +220,10 @@ struct LibrariesView: View {
         Button("Connect Google Drive…", action: onConnectDrive)
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("libraries.connectDrive")
+        if let onSort {
+            Button("Sort & Resize…", action: onSort)
+                .accessibilityIdentifier("libraries.sort")
+        }
     }
 
     /// `focusEffectDisabled` arrived in macOS 14 and this ships lower, so the

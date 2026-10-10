@@ -1,3 +1,4 @@
+import Combine
 import SkiVideoCore
 import SwiftUI
 
@@ -5,9 +6,9 @@ struct SortingSheet: View {
     @StateObject private var model: SortingModel
     @Binding var isPresented: Bool
     let openResizedLibrary: (URL) -> Void
-    /// Where tagged clips can upload, or why they cannot — asked as this
-    /// screen opened, before any tagging (see `ContentView`).
-    let upload: Result<UploadTarget, UploadRefusal>
+    /// The "Upload to" choice, and through it where tagged clips can upload
+    /// or why they cannot — said on the setup screen, before any tagging.
+    @ObservedObject var destination: UploadLibraryChoice
     @FocusState private var athleteFieldIsFocused: Bool
     /// Two trays, deliberately not one. The finished-tagging screen's is this
     /// session's event folder only (`sessionOutputDirectory`): a season of
@@ -27,11 +28,9 @@ struct SortingSheet: View {
     /// wrong. Requiring both forces every call site — the Mac window
     /// controller included — to state the pairing outright, even when the
     /// answer is `(false, SortingModel.defaultOutputRoot())`, same as before.
-    /// `libraryAthletes` has no default, unlike `SortingModel`'s own
-    /// parameter of the same name: both call sites — `SortingWindowController`
-    /// on macOS and `SkiVideoViewerApp_iOS`'s full-screen cover — have an open
-    /// `ViewerModel` in scope and must state its `athletes` outright rather
-    /// than silently falling back to an empty roster.
+    /// The roster comes from `destination`, which follows whatever library
+    /// the picker opens: both call sites pass one, so neither can silently
+    /// fall back to an empty roster.
     init(
         isPresented: Binding<Bool>,
         openResizedLibrary: @escaping (URL) -> Void,
@@ -39,15 +38,14 @@ struct SortingSheet: View {
         input: PlaybackInputSource,
         folderPicker: FolderPicker,
         defaultNamesURL: URL?,
-        libraryAthletes: [AthleteGroup],
-        upload: Result<UploadTarget, UploadRefusal>,
+        destination: UploadLibraryChoice,
         keepsSourceIntact: Bool,
         outputRoot: URL,
         photosImporter: PhotosImporting? = nil
     ) {
         _isPresented = isPresented
         self.openResizedLibrary = openResizedLibrary
-        self.upload = upload
+        self.destination = destination
         // Built inside `StateObject`'s autoclosure so it only runs once, the
         // first time this view is materialised. `SortingSheet` is created
         // fresh from `.fullScreenCover(item:)`'s content closure on iPad,
@@ -60,7 +58,7 @@ struct SortingSheet: View {
                 input: input,
                 folderPicker: folderPicker,
                 defaultNamesURL: defaultNamesURL,
-                libraryAthletes: libraryAthletes,
+                libraryAthletes: destination.athletes,
                 photosImporter: photosImporter
             )
             sortingModel.keepsSourceIntact = keepsSourceIntact
@@ -103,6 +101,17 @@ struct SortingSheet: View {
         }
         .onChange(of: model.resizesAreSettled) { settled in
             if settled { ensureSessionTray() }
+        }
+        // With nothing open, the starting choice still has to be opened.
+        .task { await destination.start() }
+        .onReceive(destination.$athletes.dropFirst()) { model.libraryAthletes = $0 }
+        // A tray belongs to the target it was made for. The picker is only on
+        // the setup screen, so this fires between sorts, never during a batch.
+        .onChange(of: destination.selection) { _ in
+            sessionTray?.cancel()
+            sessionTray = nil
+            historyTray?.cancel()
+            historyTray = nil
         }
         .sheet(isPresented: $isShowingHistoryTray, onDismiss: { historyTray?.cancel() }) {
             if let tray = historyTray {
@@ -193,6 +202,7 @@ struct SortingSheet: View {
                     stacked("Event date") { eventDateField }
                     stacked("Event title") { eventTitleField }
                     stacked("Athlete list") { athleteListField }
+                    stacked("Upload to") { uploadPicker }
                 }
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
@@ -212,6 +222,10 @@ struct SortingSheet: View {
                         Text("Athlete list")
                         athleteListField
                     }
+                    GridRow {
+                        Text("Upload to")
+                        uploadPicker
+                    }
                 }
             }
 
@@ -228,10 +242,43 @@ struct SortingSheet: View {
     /// Said before tagging, not after: a coach about to tag twenty clips for a
     /// library that cannot take them should know now. Sorting still works
     /// either way — the SD-card flow never needed Drive.
+    /// Every Drive library the coach has, and "don't upload". Choosing one
+    /// opens it — see `UploadLibraryChoice` for why.
+    private var uploadPicker: some View {
+        HStack(spacing: 8) {
+            Picker("Upload to", selection: Binding(
+                get: { destination.selection },
+                set: { id in Task { await destination.choose(id) } }
+            )) {
+                ForEach(destination.options) { option in
+                    Text(option.name).tag(Optional(option.id))
+                }
+                Text("Don't upload — keep the clips on this device").tag(UUID?.none)
+            }
+            .labelsHidden()
+            .disabled(destination.isOpening)
+            .accessibilityIdentifier("sorting.uploadTo")
+            if destination.isOpening {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+
     @ViewBuilder
     private var uploadNotice: some View {
-        switch upload {
-        case let .success(target):
+        if let failure = destination.failure {
+            Label(failure, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("sorting.uploadFailure")
+        }
+        switch destination.upload {
+        case nil:
+            if destination.selection == nil {
+                Label("The sorted clips stay on this device.", systemImage: "internaldrive")
+                    .foregroundStyle(.secondary)
+            }
+        case let .success(target)?:
             VStack(alignment: .leading, spacing: 8) {
                 Label("When tagging is done, the clips can be uploaded to \(target.destination.libraryName).",
                       systemImage: "icloud.and.arrow.up")
@@ -248,7 +295,7 @@ struct SortingSheet: View {
                     .accessibilityIdentifier("sorting.showUploadTray")
                 }
             }
-        case let .failure(refusal):
+        case let .failure(refusal)?:
             Label("Uploading will not be available. \(refusal.localizedDescription) Sorting still works.",
                   systemImage: "icloud.slash")
                 .foregroundStyle(.orange)
@@ -260,7 +307,7 @@ struct SortingSheet: View {
     /// This session's tray: its event folder only. Made when the resizes
     /// settle; remade if a second sort in the same window moves the folder.
     private func ensureSessionTray() {
-        guard case let .success(target) = upload, let folder = model.sessionOutputDirectory else { return }
+        guard case let .success(target)? = destination.upload, let folder = model.sessionOutputDirectory else { return }
         let source = UploadBatchModel.Source.eventFolder(folder)
         if sessionTray?.source != source {
             sessionTray?.cancel()
@@ -270,7 +317,7 @@ struct SortingSheet: View {
 
     /// Every event under the output root, for the setup screen's entry point.
     private func ensureHistoryTray() {
-        guard case let .success(target) = upload, let root = model.uploadRoot else { return }
+        guard case let .success(target)? = destination.upload, let root = model.uploadRoot else { return }
         let source = UploadBatchModel.Source.outputRoot(root)
         if historyTray?.source != source {
             historyTray?.cancel()

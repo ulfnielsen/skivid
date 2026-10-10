@@ -22,8 +22,7 @@ final class SecondaryScreensTests: XCTestCase {
         }
 
         func presentSorting(
-            libraryAthletes: [AthleteGroup],
-            upload: Result<UploadTarget, UploadRefusal>,
+            destination: UploadLibraryChoice,
             openResizedLibrary: @escaping (URL) -> Void,
             onClose: @escaping () -> Void
         ) {
@@ -47,8 +46,7 @@ final class SecondaryScreensTests: XCTestCase {
         ) {}
 
         func presentSorting(
-            libraryAthletes: [AthleteGroup],
-            upload: Result<UploadTarget, UploadRefusal>,
+            destination: UploadLibraryChoice,
             openResizedLibrary: @escaping (URL) -> Void,
             onClose: @escaping () -> Void
         ) {}
@@ -75,12 +73,16 @@ final class SecondaryScreensTests: XCTestCase {
         XCTAssertFalse(presenter.canPresentSorting)
     }
 
+    private static func nowhere() -> UploadLibraryChoice {
+        UploadLibraryChoice(libraries: [], openLibraryID: nil,
+                            open: { _ in nil }, current: { (.failure(.noLibraryOpen), []) })
+    }
+
     func testAPresenterThatCannotPresentIsStillSafeToCall() {
         // The view hides the buttons, but a stray call must not trap.
         let presenter = UnavailablePresenter()
         presenter.presentComparison(initialLeftVideo: nil, openLibrary: [], prepare: .none) {}
-        presenter.presentSorting(libraryAthletes: [], upload: .failure(.noLibraryOpen),
-                                 openResizedLibrary: { _ in }) {}
+        presenter.presentSorting(destination: Self.nowhere(), openResizedLibrary: { _ in }) {}
         XCTAssertEqual(presenter.comparisonCalls, 1)
         XCTAssertEqual(presenter.sortingCalls, 1)
     }

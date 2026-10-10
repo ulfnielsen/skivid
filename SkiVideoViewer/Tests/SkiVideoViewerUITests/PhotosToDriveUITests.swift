@@ -153,6 +153,77 @@ final class PhotosToDriveUITests: XCTestCase {
                        "nothing may upload twice")
     }
 
+    /// The same flow started from the libraries list, through the setup
+    /// screen's "Upload to" picker rather than an open library's toolbar.
+    func testSortingFromTheLibrariesListUploadsWhereThePickerSays() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .phone,
+            "this is the phone flow; the iPad's sorting screen is a different layout"
+        )
+        let fixture = try XCTUnwrap(
+            Bundle(for: Self.self).url(forResource: "supported-420-8bit", withExtension: "mp4")
+        )
+        let app = XCUIApplication()
+        app.launchArguments = ["-SkiUITestPhotosToDrive"]
+        app.launchEnvironment = [
+            "SKI_UITEST_FIXTURE_MOVIE": fixture.path,
+            "SKI_UITEST_PICKS": "IMG_0201",
+        ]
+        app.launch()
+
+        // The seam opens the fake Drive, which pushes its athletes; Back is
+        // the libraries list, where sorting is now offered.
+        XCTAssertTrue(app.buttons["sidebar.athlete.Seed Athlete"].waitForExistence(timeout: 60))
+        app.navigationBars.buttons.firstMatch.tap()
+        let sort = app.buttons["libraries.sort"]
+        XCTAssertTrue(sort.waitForExistence(timeout: 20),
+                      "the libraries list must offer Sort & Resize; buttons were \(labels(app.buttons))")
+        sort.tap()
+
+        let picker = app.buttons["sorting.uploadTo"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 20), "the setup screen must offer Upload to")
+        XCTAssertTrue(waitUntil(timeout: 10) { picker.label.contains("UI Test Club Drive") },
+                      "the open Drive must be the starting choice; the picker reads \(picker.label)")
+        let canUpload = app.staticTexts["When tagging is done, the clips can be uploaded to UI Test Club Drive."]
+        XCTAssertTrue(canUpload.waitForExistence(timeout: 20))
+        add(screenshot(of: app, named: "04-upload-to-picker"))
+
+        // Don't upload, and back: the notice follows the choice.
+        picker.tap()
+        let dontUpload = app.buttons["Don't upload — keep the clips on this device"]
+        XCTAssertTrue(dontUpload.waitForExistence(timeout: 10),
+                      "the picker must offer Don't upload; buttons were \(labels(app.buttons))")
+        dontUpload.tap()
+        XCTAssertTrue(app.staticTexts["The sorted clips stay on this device."].waitForExistence(timeout: 10))
+        XCTAssertFalse(canUpload.exists)
+        picker.tap()
+        let club = app.buttons["UI Test Club Drive"]
+        XCTAssertTrue(club.waitForExistence(timeout: 10))
+        club.tap()
+        XCTAssertTrue(canUpload.waitForExistence(timeout: 20), "choosing the Drive again must offer uploading again")
+
+        app.buttons["sorting.chooseFromPhotos"].tap()
+        let source = app.textFields["Choose a source folder…"]
+        XCTAssertTrue(waitUntil(timeout: 30) { (source.value as? String)?.contains("PhotosPicks") == true })
+        let title = app.textFields["e.g. Neuss"]
+        title.tap()
+        title.typeText("Hoch-Ybrig")
+        let start = app.buttons["Start Tagging"]
+        XCTAssertTrue(waitUntil(timeout: 10) { start.isEnabled })
+        start.tap()
+        tag(as: "Cleo Probe", in: app)
+
+        let upload = app.buttons["upload.start"]
+        XCTAssertTrue(upload.waitForExistence(timeout: 120), "the tray must appear once the resize lands")
+        XCTAssertTrue(waitUntil(timeout: 30) { upload.label == "Upload 1 clip to UI Test Club Drive" },
+                      "the tray must upload where the picker said; it says \(upload.label)")
+        upload.tap()
+        let state = app.staticTexts["upload.state.IMG_0201.mp4"]
+        XCTAssertTrue(waitUntil(timeout: 60) { state.exists && state.label == "Uploaded" })
+        XCTAssertEqual(app.staticTexts["uitest.fakeDrive.uploads"].value as? String,
+                       "\(event)/Cleo Probe/IMG_0201.mp4")
+    }
+
     /// Types a new athlete's name for the clip on screen and tags it.
     private func tag(as athlete: String, in app: XCUIApplication) {
         let field = app.textFields["Type athlete name"]

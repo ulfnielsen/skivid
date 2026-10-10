@@ -56,8 +56,10 @@ final class SecondaryScreenPresenterTests: XCTestCase {
 
     func testSortingWindowScopesItsInputSourceToItsOwnWindow() throws {
         let controller = SortingWindowController()
-        controller.show(libraryAthletes: [], upload: .failure(.noLibraryOpen),
-                        openResizedLibrary: { _ in }, onClose: {})
+        controller.show(
+            destination: UploadLibraryChoice(libraries: [], openLibraryID: nil,
+                                             open: { _ in nil }, current: { (.failure(.noLibraryOpen), []) }),
+            openResizedLibrary: { _ in }, onClose: {})
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
         let source = try XCTUnwrap(controller.inputSource)

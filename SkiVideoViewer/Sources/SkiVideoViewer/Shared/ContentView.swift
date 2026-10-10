@@ -173,6 +173,7 @@ struct ContentView: View {
                 cache: clipCache,
                 makeProvider: GoogleDriveSheet.makeConfiguredProvider,
                 onConnectDrive: { isShowingGoogleDriveSheet = true },
+                onSort: secondaryScreens.canPresentSorting ? presentSortingScreen : nil,
                 onOpened: showAthletesOnPhone
             )
             .navigationDestination(for: PhoneScreen.self) { screen in
@@ -206,6 +207,36 @@ struct ContentView: View {
         if secondaryScreens.screensCoverTheViewer {
             model.setKeyboardControlsEnabled(true)
         }
+    }
+
+    /// From the toolbar and from the libraries list alike. The "Upload to"
+    /// choice starts on the open Drive library, or with nothing open on the
+    /// most recent one — see `UploadLibraryChoice`.
+    private func presentSortingScreen() {
+        pauseViewerKeysIfCovered()
+        secondaryScreens.presentSorting(
+            destination: UploadLibraryChoice(
+                libraries: model.libraries,
+                openLibraryID: model.openLibraryID,
+                open: { library in
+                    await model.open(library, cache: clipCache,
+                                     provider: GoogleDriveSheet.makeConfiguredProvider())
+                },
+                // Asked before any tagging: a coach should learn that this
+                // library cannot take uploads before sorting twenty clips for
+                // it, not after. `uploadTarget` throws only `UploadRefusal`;
+                // the cast is for the type.
+                current: {
+                    (Result { try model.uploadTarget() }
+                        .mapError { $0 as? UploadRefusal ?? .noLibraryOpen },
+                     model.athletes)
+                }
+            ),
+            openResizedLibrary: { outputDirectory in
+                model.openDirectory(outputDirectory)
+            },
+            onClose: resumeViewerKeysIfCovered
+        )
     }
 
     /// Refused while a comparison or sorting window is open: each holds clip
@@ -253,22 +284,7 @@ struct ContentView: View {
         }
         if secondaryScreens.canPresentSorting {
             ToolbarItem {
-                Button {
-                    pauseViewerKeysIfCovered()
-                    secondaryScreens.presentSorting(
-                        libraryAthletes: model.athletes,
-                        // Asked now, before any tagging: a coach should learn
-                        // that this library cannot take uploads before sorting
-                        // twenty clips for it, not after. `uploadTarget`
-                        // throws only `UploadRefusal`; the cast is for the type.
-                        upload: Result { try model.uploadTarget() }
-                            .mapError { $0 as? UploadRefusal ?? .noLibraryOpen },
-                        openResizedLibrary: { outputDirectory in
-                            model.openDirectory(outputDirectory)
-                        },
-                        onClose: resumeViewerKeysIfCovered
-                    )
-                } label: {
+                Button(action: presentSortingScreen) {
                     Label("Sort & Resize…", systemImage: "tag")
                 }
             }
@@ -564,7 +580,8 @@ struct ContentView: View {
                     model: model,
                     cache: clipCache,
                     makeProvider: GoogleDriveSheet.makeConfiguredProvider,
-                    onConnectDrive: { isShowingGoogleDriveSheet = true }
+                    onConnectDrive: { isShowingGoogleDriveSheet = true },
+                    onSort: secondaryScreens.canPresentSorting ? presentSortingScreen : nil
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

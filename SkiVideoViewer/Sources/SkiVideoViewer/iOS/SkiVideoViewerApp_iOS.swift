@@ -80,14 +80,12 @@ struct SkiVideoViewerApp_iOS: App {
                     // `~/Ski/athletes.txt` is a macOS convention; iPadOS has no
                     // equivalent default location, so autocomplete starts
                     // empty until the coach picks a names file explicitly —
-                    // `libraryAthletes` below is what fills it instead.
+                    // `destination`'s roster below is what fills it instead.
                     defaultNamesURL: nil,
-                    // The open library's roster, forwarded from
+                    // The "Upload to" choice, forwarded from
                     // `IOSSecondaryScreenPresenter.SortingRequest` — see
-                    // `ContentView`'s Sort & Resize button, which is what
-                    // captures `ViewerModel.athletes` in the first place.
-                    libraryAthletes: request.libraryAthletes,
-                    upload: request.upload,
+                    // `ContentView.presentSortingScreen`, which builds it.
+                    destination: request.destination,
                     // The one pairing this initializer exists to make explicit:
                     // an iPad's source is a Files location — very often the SD
                     // card itself — so this session must never write into it.
