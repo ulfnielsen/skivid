@@ -90,6 +90,27 @@ final class EventFoldersTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Cy/.IMG_2.mov.icloud").path))
     }
 
+    /// A `._x` *directory* is not AppleDouble clutter — it may hold anything —
+    /// and deleting it would be recursive, so it keeps its folder.
+    func testLocalKeepsAFolderHoldingADotUnderscoreDirectory() async throws {
+        try file("2026-02-14_A/Bo/._dir/IMG_1.mov")
+        let folders = LocalEventFolders(root: root)
+        let removed = try await folders.removeIfEmpty(["2026-02-14_A", "Bo"])
+        XCTAssertFalse(removed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Bo/._dir/IMG_1.mov").path))
+    }
+
+    /// A clip that lands after the emptiness check (an upload, a sync) must
+    /// survive: the final removal is `rmdir`, which refuses a non-empty folder.
+    func testLocalKeepsAClipThatArrivesAfterTheEmptinessCheck() async throws {
+        try file("2026-02-14_A/Bo/.DS_Store")
+        let late = root.appendingPathComponent("2026-02-14_A/Bo/IMG_1.mov")
+        let folders = LocalEventFolders(root: root, afterCheckingEmpty: { _ in try? Data([1]).write(to: late) })
+        let removed = try await folders.removeIfEmpty(["2026-02-14_A", "Bo"])
+        XCTAssertFalse(removed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: late.path))
+    }
+
     // MARK: Drive
     // `FakeOAuthPresenter` is main-actor isolated, so these run there.
 

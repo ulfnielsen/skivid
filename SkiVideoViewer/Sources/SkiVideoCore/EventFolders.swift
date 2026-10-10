@@ -33,8 +33,16 @@ public protocol EventFolderWriting: Sendable {
 
 public struct LocalEventFolders: EventFolderWriting {
     private let root: URL
+    /// Test seam: runs between `removeIfEmpty`'s emptiness check and its
+    /// final removal, to put a file there the way a sync or upload could.
+    private let afterCheckingEmpty: (@Sendable (URL) -> Void)?
 
-    public init(root: URL) { self.root = root }
+    public init(root: URL) { self.init(root: root, afterCheckingEmpty: nil) }
+
+    init(root: URL, afterCheckingEmpty: (@Sendable (URL) -> Void)?) {
+        self.root = root
+        self.afterCheckingEmpty = afterCheckingEmpty
+    }
 
     private func url(_ path: [String]) -> URL {
         path.reduce(root) { $0.appendingPathComponent($1, isDirectory: true) }
@@ -92,20 +100,41 @@ public struct LocalEventFolders: EventFolderWriting {
         try FileManager.default.moveItem(at: from, to: to)
     }
 
-    /// Hidden entries are listed here (unlike `children`): `removeItem` is
-    /// recursive and permanent, so anything hidden that is not known clutter
-    /// (a user's dot-file, an iCloud `.name.icloud` placeholder for a clip
-    /// not yet downloaded) keeps the folder.
+    /// Hidden entries are listed here (unlike `children`), so anything hidden
+    /// that is not known clutter (a user's dot-file, an iCloud `.name.icloud`
+    /// placeholder for a clip not yet downloaded) keeps the folder.
+    ///
+    /// Nothing here deletes recursively. Clutter is only a *regular file*
+    /// named `.DS_Store` or `._*`; a `._x` directory may hold anything, so it
+    /// keeps the folder. The folder itself goes with `rmdir`, which refuses a
+    /// non-empty folder: a clip that lands between the listing and the removal
+    /// (an upload, a sync) survives. The final review measured the difference
+    /// on this state — listed empty, then `IMG_1.MOV` written — `removeItem`
+    /// deleted the clip, `rmdir` returned -1 ENOTEMPTY and it survived.
     public func removeIfEmpty(_ path: [String]) async throws -> Bool {
         let folder = url(path)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return false }
-        let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
-        let isClutter: (URL) -> Bool = { $0.lastPathComponent == ".DS_Store" || $0.lastPathComponent.hasPrefix("._") }
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey])
+        let isClutter: (URL) -> Bool = { entry in
+            let name = entry.lastPathComponent
+            guard name == ".DS_Store" || name.hasPrefix("._") else { return false }
+            return (try? entry.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+        }
         guard entries.allSatisfy(isClutter) else { return false }
-        for entry in entries { try FileManager.default.removeItem(at: entry) }
-        try FileManager.default.removeItem(at: folder)
+        for entry in entries where unlink(entry.path) != 0 && errno != ENOENT {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        afterCheckingEmpty?(folder)
+        guard rmdir(folder.path) == 0 else {
+            let code = errno
+            // Something arrived (POSIX allows EEXIST for this too), or someone
+            // else already removed it: either way, nothing of ours to delete.
+            if code == ENOTEMPTY || code == EEXIST || code == ENOENT { return false }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
         return true
     }
 }
