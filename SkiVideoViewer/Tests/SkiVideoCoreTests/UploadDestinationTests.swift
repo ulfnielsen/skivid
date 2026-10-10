@@ -70,10 +70,11 @@ final class UploadDestinationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let publisher = ReadOnlySourcePublisher(resizedRoot: root)
         // Written by the real publisher, then the resize's output stood in for.
-        var written: [(String, String, String)] = [
+        // Listed in the order `clips(in:)` returns: newest event first.
+        let written: [(String, String, String)] = [
+            ("2026-02-02_Zürs", "Ada", "IMG_3.MOV"),
             ("2026-01-14_Brunni", "Ada", "IMG_1.MOV"),
             ("2026-01-14_Brunni", "Bo-Per", "IMG_2.MOV"),
-            ("2026-02-02_Zürs", "Ada", "IMG_3.MOV"),
         ]
         for (event, athlete, name) in written {
             let targets = try publisher.prepare(
@@ -84,7 +85,6 @@ final class UploadDestinationTests: XCTestCase {
 
         let clips = try SortedOutput.clips(in: root)
 
-        written.sort { ($0.0, $0.1, $0.2) < ($1.0, $1.1, $1.2) }
         XCTAssertEqual(clips.map { [$0.event, $0.athlete, $0.file.lastPathComponent] },
                        written.map { [$0.0, $0.1, $0.2] })
         XCTAssertTrue(clips.allSatisfy { FileManager.default.fileExists(atPath: $0.file.path) })
@@ -149,6 +149,28 @@ final class UploadDestinationTests: XCTestCase {
             try Data([1]).write(to: folder.appendingPathComponent(name))
         }
         XCTAssertEqual(try SortedOutput.clips(in: root).map { $0.file.lastPathComponent }, ["good.MOV"])
+    }
+
+    /// The same order as the library sidebar: events newest first (their
+    /// names lead with an ISO date, so Z–A is newest first), athletes A–Z
+    /// ignoring case, clips A–Z within an athlete.
+    func testClipsListNewestEventFirstAndAthletesAToZ() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sorted-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for path in ["2026-01-14_Brunni/bo/IMG_2.mov", "2026-01-14_Brunni/Cleo/IMG_1.mov",
+                     "2026-02-25_Hoch-Ybrig/Cleo/IMG_4.mov", "2026-02-25_Hoch-Ybrig/Ada/IMG_3.mov",
+                     "2026-02-25_Hoch-Ybrig/Ada/IMG_0.mov"] {
+            let file = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try Data([1]).write(to: file)
+        }
+        XCTAssertEqual(
+            try SortedOutput.clips(in: root).map { "\($0.event)/\($0.athlete)/\($0.file.lastPathComponent)" },
+            ["2026-02-25_Hoch-Ybrig/Ada/IMG_0.mov", "2026-02-25_Hoch-Ybrig/Ada/IMG_3.mov",
+             "2026-02-25_Hoch-Ybrig/Cleo/IMG_4.mov",
+             "2026-01-14_Brunni/bo/IMG_2.mov", "2026-01-14_Brunni/Cleo/IMG_1.mov"])
     }
 
     /// Real pipeline: an unreadable source fails after the destination folder

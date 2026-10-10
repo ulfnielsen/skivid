@@ -83,8 +83,15 @@ public enum SortedOutput {
     /// is not in `VideoLibrary.supportedExtensions` (case-insensitive) are
     /// skipped too. Anything not at that depth is ignored; a missing root is
     /// simply empty.
+    ///
+    /// Ordered as the library sidebar orders its sections
+    /// (`LibraryGrouping`): events newest first — their names lead with an
+    /// ISO date, so descending by name is descending by date — and, within
+    /// one, athletes A–Z ignoring case.
     public static func clips(in root: URL) throws -> [SortedClip] {
-        try children(root, directories: true).flatMap { try clips(inEventFolder: $0) }
+        try children(root, directories: true)
+            .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedDescending }
+            .flatMap { try clips(inEventFolder: $0) }
     }
 
     /// One event's clips: `<eventFolder>/<athlete>/<clip>`, the event being
@@ -93,7 +100,10 @@ public enum SortedOutput {
     /// about that session and not every event this device has ever sorted.
     public static func clips(inEventFolder eventFolder: URL) throws -> [SortedClip] {
         var result: [SortedClip] = []
-        for athlete in try children(eventFolder, directories: true) {
+        let athletes = try children(eventFolder, directories: true).sorted {
+            $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+        }
+        for athlete in athletes {
             for file in try children(athlete, directories: false)
             where VideoLibrary.supportedExtensions.contains(file.pathExtension.lowercased()) {
                 result.append(SortedClip(event: eventFolder.lastPathComponent,
