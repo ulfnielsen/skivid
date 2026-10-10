@@ -161,8 +161,11 @@ private struct RenameEventForm: View {
     private func summary(_ name: String) -> String {
         guard !rename.leftInPlace.isEmpty else { return "Renamed to \(name)." }
         let names = rename.leftInPlace.compactMap(\.last).joined(separator: ", ")
-        return "Done. \(rename.leftInPlace.count) file(s) stayed in \u{201C}\(eventName)\u{201D} because the same "
-            + "name is already in the target: \(names)."
+        // Files stay for more than a same-name clash: the target may hold
+        // another file of the same clip (the per-stem rule), or the clip may
+        // be an iCloud placeholder not downloaded yet.
+        return "Done. \(rename.leftInPlace.count) file(s) stayed in \u{201C}\(eventName)\u{201D} because the target "
+            + "already has the same clip or files belonging to it, or the clip is not downloaded yet: \(names)."
     }
 
     /// Rename: asks "Merge?" first when the name is taken; otherwise runs
