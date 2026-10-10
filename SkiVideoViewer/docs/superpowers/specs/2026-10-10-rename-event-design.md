@@ -1,7 +1,8 @@
 # Rename an Event Across Athletes — Design
 
 **Date:** 2026-10-10
-**Status:** awaiting review
+**Status:** implemented on branch `rename-event` (final review fixes applied).
+Names below are the built ones: `EventFolderWriting`, `EventRenameModel`.
 
 ## Goal
 
@@ -69,29 +70,68 @@ analysis done on those clips is still there; a rename interrupted halfway
    Built from the library's *current* state, so re-planning after a partial
    run naturally yields only the remaining work.
 
-2. **`FolderWriting` protocol** (SkiVideoCore, beside `ItemCreatable`,
-   reached with `as?`): rename a folder, move a file into a folder, list a
-   folder's children, and move an emptied folder to the bin.
+   **Collisions are decided per stem, not per file.** Local sidecars are
+   named from the clip's stem (`<stem>.skianalysis.json`,
+   `<stem>--<other>.skialignment.json`), so a clip and its sidecars stay
+   together — the whole stem stays in the old event when any of its files
+   clashes by name with the target, *or* the target already holds any file of
+   that stem (e.g. `IMG_1.mp4` there and `IMG_1.mov` here). Otherwise a moved
+   sidecar would load as the analysis of a different clip. Matching ignores
+   case, as a case-insensitive volume does.
+
+   **Videos move before sidecars.** Name order puts
+   `<stem>--<other>.skialignment.json` before `<stem>.mov`; a run stopped
+   between them would leave a file of the stem in the target, and the
+   per-stem rule would then keep the clip behind on every re-plan. With videos
+   first, a stopped run leaves only sidecars whose clip already moved, and the
+   next plan moves them.
+
+   **iCloud placeholders stay.** A local clip iCloud has not downloaded sits
+   as the hidden `.<name>.icloud`. The local writer lists it under `<name>`,
+   flagged as a placeholder; the planner never moves it and keeps its whole
+   stem in place (listed in the summary), since its sidecars moved alone could
+   land beside a different clip of the same name. A plain rename moves the
+   folder, so a placeholder travels with it.
+
+2. **`EventFolderWriting` protocol** (SkiVideoCore, `EventFolders.swift`):
+   rename a folder, move a file into a folder, list a folder's children, and
+   remove a folder if it is empty now. `DriveEventFolders` implements it over
+   `ItemUpdatable` (beside `ItemCreatable`, reached with `as?`);
+   `LocalEventFolders` over the file system.
    - **Drive:** `files.update` (`name`, or `addParents`/`removeParents`;
      `trashed: true` for the bin), always `supportsAllDrives=true`; ids are
      preserved. Write consent reuses `authorizeWrites(presenter:)` — **no new
      OAuth scope**. Errors map onto the upload's `RemoteUploadError`
      (`retryClip` → here "retry", `stopBatch` → "stop").
    - **Local:** `FileManager` moves that **never overwrite** — an existing
-     destination fails the step instead.
+     destination fails the step instead. An emptied folder is removed with
+     `rmdir`, never recursively: only regular `.DS_Store` / `._*` files count
+     as clutter, so a clip that lands between the check and the removal
+     survives (`rmdir` fails with ENOTEMPTY).
 
-3. **`EventRenameRunner`** (SkiVideoCore, `@MainActor`, observable). Runs the
+3. **`EventRenameModel`** (SkiVideoCore, `@MainActor`, observable). Runs the
    plan step by step. Each step checks current state first and skips what is
    already done. Publishes progress ("3 of 9") and a final summary (renamed /
    merged / clips left in place, with names). Takes its writer injected, so a
    fake stands in for tests.
 
+   **Merging needs the coach's say-so.** `run(newName:allowMerge:)` merges
+   only when `allowMerge` is true, which the sheet passes only after the coach
+   chose **Merge**. The question and the run read the folders separately, and
+   Drive's consent sheet can sit between them; if the target appeared in that
+   window, a run without `allowMerge` stops before anything moves.
+
 4. **Refresh.**
-   - **Drive:** when a change page contains any folder record (renamed or
-     moved folder), `openRemoteLibrary` re-lists the library instead of
-     applying the delta. Folder changes are rare, so the full listing is rare.
-     This fixes renames made anywhere — Drive's web UI, another coach, or this
+   - **Drive:** when a change page contains any folder record,
+     `openRemoteLibrary` re-lists the whole library instead of applying the
+     delta. That is not only renames and moves: every upload that creates a new
+     event or athlete folder, and any folder edit in Drive's web UI, puts a
+     folder record in the page, so the next open sweeps the whole drive. This
+     fixes renames made anywhere — Drive's web UI, another coach, or this
      feature — and the runner simply re-opens the library when it finishes.
+     **Open question for the live check:** does Drive also log a *parent*
+     folder as changed when a child is added to it? If so, every upload
+     re-lists, not just the ones that create folders.
    - A visible **Refresh** on the open library, so a coach can pick up Drive
      changes without re-opening it.
    - **Local:** the existing rescan.
@@ -137,6 +177,10 @@ re-selected under its new name after the refresh.
   an old-named folder again.
 - **Concurrent renames** by two coaches: the per-step state checks prevent
   corruption, and the second coach sees the changed state; there is no lock.
+  One window remains on Drive: `removeIfEmpty` lists the folder, finds it
+  empty, then trashes it. Another coach's upload landing in between goes to
+  the bin with the folder — recoverable from there for 30 days, but gone from
+  the library until restored. (Locally `rmdir` closes this window.)
 - Renaming athletes (a natural sibling feature, not this one).
 
 ## Testing
@@ -145,7 +189,7 @@ re-selected under its new name after the refresh.
 - `EventRenamePlan`: both layouts; rename vs merge; collisions; sidecars
   travelling with a moved local clip; re-planning after a partial run yields
   only the remainder; dialog counts.
-- `EventRenameRunner` with a fake writer that records operations: skips
+- `EventRenameModel` with a fake writer that records operations: skips
   completed steps; a retryable failure stops with correct progress; a stop
   failure stops; a second run finishes the job; a non-empty old folder is
   never binned; the emptiness check runs just before binning.
