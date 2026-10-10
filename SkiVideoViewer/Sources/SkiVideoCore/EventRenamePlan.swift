@@ -31,10 +31,17 @@ public enum EventRenamePlanner {
                   try await folders.children(of: path) != nil else { continue }
             let parent = Array(path.dropLast())
             let siblings = try await folders.children(of: parent) ?? []
-            let target = parent + [newName]
-            if siblings.contains(where: { $0.isFolder && $0.name == newName }) {
+            // Folder names match ignoring case: a local volume treats `B` and
+            // `b` as one folder, so a "new" name differing only in case
+            // already exists. The source itself is excluded, which keeps a
+            // case-only rename (`a` to `A`) a plain rename. Merging goes into
+            // the existing folder's actual name, since moving into a
+            // differently-cased spelling is refused and would never converge.
+            if let existing = siblings.first(where: {
+                $0.isFolder && $0.name != oldName && $0.name.caseInsensitiveCompare(newName) == .orderedSame
+            }) {
                 plan.mergesIntoExisting = true
-                try await merge(path, into: target, folders: folders, plan: &plan)
+                try await merge(path, into: parent + [existing.name], folders: folders, plan: &plan)
                 plan.steps.append(.removeIfEmpty(path))
             } else {
                 plan.steps.append(.rename(path, to: newName))
@@ -48,24 +55,37 @@ public enum EventRenamePlanner {
         folders: any EventFolderWriting, plan: inout EventRenamePlan
     ) async throws {
         let incoming = try await folders.children(of: source) ?? []
-        let existing = Dictionary((try await folders.children(of: target) ?? []).map { ($0.name, $0) },
+        let inTarget = try await folders.children(of: target) ?? []
+        let existing = Dictionary(inTarget.map { ($0.name.lowercased(), $0) },
                                   uniquingKeysWith: { first, _ in first })
-        // A clip that stays keeps its sidecars (`<stem>.skianalysis.json`,
-        // `<stem>--<other>.skialignment.json`) with it: moving them alone
-        // would file one clip's analysis beside another.
-        let stayingStems = incoming
-            .filter { !$0.isFolder && existing[$0.name] != nil && isVideo($0.name) }
+        // Sidecars are keyed by stem (`<stem>.skianalysis.json`,
+        // `<stem>--<other>.skialignment.json`), not by the clip's full name.
+        // So a whole stem stays together, or none of it moves, when either
+        //  (a) some incoming file of the stem clashes by name with the target, or
+        //  (b) the target already holds any file of the stem.
+        // Otherwise a moved clip would load a sidecar that is not its own
+        // (leaving its own stranded), or a moved sidecar would become the
+        // analysis of a clip already there. Decided before any entry is planned.
+        let stayingStems = Set(incoming
+            .filter { !$0.isFolder && isVideo($0.name) }
             .map { ($0.name as NSString).deletingPathExtension }
+            .filter { stem in
+                incoming.contains { !$0.isFolder && belongs($0.name, to: stem) && existing[$0.name.lowercased()] != nil }
+                    || inTarget.contains { !$0.isFolder && belongs($0.name, to: stem) }
+            })
         for entry in incoming {
-            if let clash = existing[entry.name] {
-                if entry.isFolder && clash.isFolder {
-                    try await merge(source + [entry.name], into: target + [entry.name],
+            let clash = existing[entry.name.lowercased()]
+            if entry.isFolder {
+                if let clash, clash.isFolder {
+                    try await merge(source + [entry.name], into: target + [clash.name],
                                     folders: folders, plan: &plan)
                     plan.steps.append(.removeIfEmpty(source + [entry.name]))
-                } else {
+                } else if clash != nil {
                     plan.leftInPlace.append(source + [entry.name])
+                } else {
+                    plan.steps.append(.move(entry.name, from: source, to: target))
                 }
-            } else if !entry.isFolder, stayingStems.contains(where: { belongs(entry.name, to: $0) }) {
+            } else if clash != nil || stayingStems.contains(where: { belongs(entry.name, to: $0) }) {
                 plan.leftInPlace.append(source + [entry.name])
             } else {
                 plan.steps.append(.move(entry.name, from: source, to: target))
