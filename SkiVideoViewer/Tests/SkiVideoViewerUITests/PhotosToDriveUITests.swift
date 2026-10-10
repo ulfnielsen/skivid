@@ -16,7 +16,12 @@ import XCTest
 /// paths.
 ///
 /// Every wait has a timeout. Task 4's version of this walk sat 2h50m in one
-/// wait; see the Task 5 report for what that was.
+/// wait. Its cause is unproven. The most likely one is the container
+/// accessibility-identifier override — an identifier set on a container
+/// standing in for the identifiers inside it, so the element being waited for
+/// never appeared — together with a wait that had no bound. The containers
+/// now use `.accessibilityElement(children: .contain)` and every wait here is
+/// bounded, so whatever it was, a recurrence fails instead of hanging.
 ///
 ///     export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ///     xcodebuild -scheme SkiVideoViewer-iPad \

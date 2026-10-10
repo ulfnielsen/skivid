@@ -449,7 +449,7 @@ final class UploadBatchModelTests: XCTestCase {
         let batch = first.uploadWaiting()
         try await waitUntil { self.drive.uploadHasStarted("IMG_3.mov") }
         batch.cancel()          // the kill: nothing after this runs to completion
-        await batch.value
+        try await finish(batch)
 
         let reopened = try makeModel()
         await reopened.refresh().value
@@ -607,7 +607,7 @@ final class UploadBatchModelTests: XCTestCase {
         try await waitUntil { self.drive.uploadHasStarted("IMG_2.mov") }
         XCTAssertEqual(states(model)["IMG_2.mov"], .uploading)
         model.cancel()
-        await batch.value
+        try await finish(batch)
 
         XCTAssertEqual(states(model)["IMG_1.mov"], .uploaded)
         XCTAssertEqual(states(model)["IMG_2.mov"], .waiting)
