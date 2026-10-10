@@ -209,6 +209,41 @@ final class UploadBatchModelTests: XCTestCase {
         XCTAssertEqual(drive.fileCount(named: "IMG_1.mov"), 1)
     }
 
+    /// A coach in a lift queue presses Upload again: once while the batch is
+    /// still running, and once after it was cancelled mid-clip. Neither press
+    /// may send a clip that is already up, or start a second batch beside the
+    /// first.
+    func testPressingUploadAgainDuringOrAfterABatchUploadsNothingTwice() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        try sortedClip("IMG_2.mov", athlete: "Ada")
+        try sortedClip("IMG_3.mov", athlete: "Ada")
+        drive.hangUpload(of: "IMG_2.mov")
+        let model = try makeModel()
+        await model.refresh().value
+
+        let batch = model.uploadWaiting()
+        try await waitUntil { self.drive.uploadHasStarted("IMG_2.mov") }
+        // Bounded: without the guard, the second press starts a batch of its
+        // own that waits on the same hung clip, and an unbounded await would
+        // hang the suite instead of failing it.
+        let second = model.uploadWaiting()
+        var secondFinished = false
+        Task { await second.value; secondFinished = true }
+        try await waitUntil { secondFinished }
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov"], "a press during a batch must not start another")
+        XCTAssertTrue(model.isUploading)
+
+        model.cancel()
+        await batch.value
+        drive.stopHanging()
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov", "IMG_2.mov", "IMG_3.mov"])
+        for name in ["IMG_1.mov", "IMG_2.mov", "IMG_3.mov"] {
+            XCTAssertEqual(drive.fileCount(named: name), 1, "\(name) must be in Drive exactly once")
+        }
+    }
+
     func testTheSameNameUnderAnotherAthleteIsNotASkip() async throws {
         try sortedClip("IMG_1.mov", athlete: "Ada")
         drive.seedFile("IMG_1.mov", at: [event, "Bo"])

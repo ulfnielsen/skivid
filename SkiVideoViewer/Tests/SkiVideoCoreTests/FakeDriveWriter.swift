@@ -45,6 +45,9 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
     /// `upload` of this name waits until its task is cancelled.
     func hangUpload(of name: String) { locked { _hangingUpload = name } }
 
+    /// Later uploads go through again, as when the signal comes back.
+    func stopHanging() { locked { _hangingUpload = nil } }
+
     /// Puts a file at `path` (folder names under `root`), creating folders.
     func seedFile(_ name: String, at path: [String], root: String = "root-1") {
         locked {
