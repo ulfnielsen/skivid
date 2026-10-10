@@ -24,7 +24,7 @@ public struct UploadTarget {
 /// **What is waiting is never remembered.** The list is read from the sorted
 /// output on disk (`SortedOutput.clips(in:)`), and whether a clip is already
 /// in Drive is asked of Drive (`findFile` in the clip's own destination
-/// folder). Being killed mid-batch is normal on a hill — a phone pocketed, a
+/// folder, by name *and size* — see `placement(of:in:)`). Being killed mid-batch is normal on a hill — a phone pocketed, a
 /// battery gone cold — so a tray rebuilt from nothing has to arrive at the
 /// same answer, and it can only do that if it never relied on memory.
 ///
@@ -49,7 +49,8 @@ public final class UploadBatchModel: ObservableObject {
         case waiting
         case uploading
         case uploaded
-        /// Drive already had a file of this name in the clip's folder.
+        /// Drive already had this clip in its folder: a file of its name — or
+        /// of one of its numbered names, see `Entry.driveName` — and its size.
         case alreadyInDrive
         case failed(String)
     }
@@ -59,6 +60,11 @@ public final class UploadBatchModel: ObservableObject {
         /// Bytes on disk.
         public let size: Int64
         public internal(set) var state: ClipState
+        /// The name the clip has in Drive, when that is not its own name: it
+        /// shared a name with a different clip there, so it went up as
+        /// "<stem> 2.<ext>" (or 3, …). Nil when it is its own name, or not
+        /// yet known.
+        public internal(set) var driveName: String?
         public var id: URL { clip.file }
     }
 
@@ -141,7 +147,7 @@ public final class UploadBatchModel: ObservableObject {
     }
 
     private func reloadFromDisk() {
-        let known = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.state) })
+        let known = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, ($0.state, $0.driveName)) })
         let clips: [SortedClip]
         do {
             clips = try source.clips()
@@ -152,9 +158,9 @@ public final class UploadBatchModel: ObservableObject {
         }
         entries = clips.map { clip in
             let size = (try? clip.file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            var state = known[clip.file] ?? .waiting
+            var (state, driveName) = known[clip.file] ?? (.waiting, nil)
             if state == .uploading { state = .waiting }
-            return Entry(clip: clip, size: Int64(size), state: state)
+            return Entry(clip: clip, size: Int64(size), state: state, driveName: driveName)
         }
     }
 
@@ -170,9 +176,10 @@ public final class UploadBatchModel: ObservableObject {
             guard !Task.isCancelled, let clip = entry(id)?.clip else { return }
             do {
                 guard let parent = try await existingFolder(for: clip, memo: &folders) else { continue }
-                let found = try await target.provider.findFile(named: clip.file.lastPathComponent, parent: parent)
-                if found != nil, let index = index(of: id), entries[index].state == .waiting {
+                if case let .alreadyThere(name) = try await placement(of: clip, in: parent),
+                   let index = index(of: id), entries[index].state == .waiting {
                     entries[index].state = .alreadyInDrive
+                    entries[index].driveName = Self.driveName(name, for: clip)
                 }
             } catch {
                 if Self.isCancellation(error) { return }
@@ -264,14 +271,17 @@ public final class UploadBatchModel: ObservableObject {
             let clip = entries[index].clip
             entries[index].state = .uploading
             let outcome: ClipState
+            var driveName: String?
             do {
                 let parent = try await folderCreatingAsNeeded(for: clip, memo: &folders)
-                let name = clip.file.lastPathComponent
-                if try await target.provider.findFile(named: name, parent: parent) != nil {
+                switch try await placement(of: clip, in: parent) {
+                case let .alreadyThere(name):
                     outcome = .alreadyInDrive
-                } else {
+                    driveName = Self.driveName(name, for: clip)
+                case let .free(name):
                     _ = try await target.provider.upload(fileAt: clip.file, named: name, parent: parent)
                     outcome = .uploaded
+                    driveName = Self.driveName(name, for: clip)
                 }
             } catch {
                 if Self.isCancellation(error) {
@@ -286,6 +296,7 @@ public final class UploadBatchModel: ObservableObject {
                 outcome = .failed(error.localizedDescription)
             }
             setState(outcome, for: id)
+            if let current = self.index(of: id) { entries[current].driveName = driveName }
             runDone += 1
         }
     }
@@ -303,6 +314,80 @@ public final class UploadBatchModel: ObservableObject {
             memo[path] = parent
         }
         return parent
+    }
+
+    // MARK: - Same name, different clip
+
+    /// Where a clip stands in its Drive folder.
+    enum Placement: Equatable {
+        /// This name holds this clip already: skip it.
+        case alreadyThere(String)
+        /// Nothing has this name: upload the clip under it.
+        case free(String)
+    }
+
+    /// How many names `placement` tries — the clip's own, then " 2" up to this
+    /// — before giving up on the clip. Far beyond any real collision (it takes
+    /// that many *different* same-named clips for one athlete on one day); it
+    /// exists so a Drive that answered every lookup with a mismatch could not
+    /// keep the batch asking forever.
+    static let maxNumberedName = 50
+
+    /// Finds the name a clip has, or should have, in its folder.
+    ///
+    /// A name match alone is not proof the clip is there: two iPhones both
+    /// number their clips IMG_0001…, so the second coach's IMG_0413 would
+    /// read as "In Drive" and silently never upload. So a match must also
+    /// agree on size (Drive's `size` against the bytes on disk). Same name and
+    /// size: this clip, skip. Same name, other size: a different clip, try
+    /// "<stem> 2.<ext>", then 3, … and stop at the first name that is either
+    /// free (upload there) or holds this clip (a previous run already put it
+    /// there — skip).
+    ///
+    /// Idempotent across kills because it is recomputed from Drive every
+    /// time: the renamed upload is found again by the same walk, with the same
+    /// size, and nothing remembered is needed. Size is a heuristic, not a
+    /// checksum — two different clips of identical byte count would read as
+    /// one; for re-encoded camera footage that is not expected, but it is not
+    /// proven impossible.
+    ///
+    /// A match whose size Drive does not report is treated as this clip. Per
+    /// Drive's documentation `size` is populated for every uploaded binary
+    /// file and missing only for folders, shortcuts and Google-native
+    /// documents (not verified against the live API), so this should not
+    /// arise for a clip; if it did, skipping is the failure that fills the
+    /// club Drive with nothing, where uploading would add a copy on every run.
+    func placement(of clip: SortedClip, in parent: String) async throws -> Placement {
+        let size = Self.localSize(of: clip.file)
+        let own = clip.file.lastPathComponent
+        for number in 1...Self.maxNumberedName {
+            let name = Self.numberedName(own, number)
+            guard let found = try await target.provider.findFile(named: name, parent: parent) else {
+                return .free(name)
+            }
+            if found.size == nil || found.size == size { return .alreadyThere(name) }
+        }
+        throw RemoteUploadError.retryClip(
+            "\(Self.numberedName(own, 2)) to \(Self.numberedName(own, Self.maxNumberedName)) are all other clips in Drive.")
+    }
+
+    /// "IMG_0413.mov" for 1, "IMG_0413 2.mov" for 2 — the form the user chose
+    /// for the final-review fix.
+    static func numberedName(_ name: String, _ number: Int) -> String {
+        guard number > 1 else { return name }
+        let stem = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        return ext.isEmpty ? "\(stem) \(number)" : "\(stem) \(number).\(ext)"
+    }
+
+    /// The size `GoogleDriveProvider.upload` sends, read the same way, so the
+    /// number compared is the number that went up.
+    private static func localSize(of url: URL) -> Int64 {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+    }
+
+    private static func driveName(_ name: String, for clip: SortedClip) -> String? {
+        name == clip.file.lastPathComponent ? nil : name
     }
 
     // MARK: - Helpers

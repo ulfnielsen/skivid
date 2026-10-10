@@ -107,6 +107,18 @@ struct UploadTrayView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            // A different clip had this name in Drive, so this one went up —
+            // or was found from an earlier run — under a numbered name. Said
+            // so, or a coach looking for IMG_0413 in Drive finds someone
+            // else's clip there. See `UploadBatchModel.placement(of:in:)`.
+            if let driveName = entry.driveName {
+                Text(entry.state == .uploaded ? "Uploaded as \(driveName)" : "In Drive as \(driveName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .accessibilityIdentifier("upload.driveName.\(name)")
+            }
             if case let .failed(reason) = entry.state {
                 HStack(alignment: .firstTextBaseline) {
                     Text(reason)

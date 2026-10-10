@@ -109,6 +109,18 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         XCTAssertEqual(transport.queryItems(of: 0)["supportsAllDrives"], "true")
     }
 
+    /// The size is what tells a re-run of the same clip from a different clip
+    /// that happens to share its name. Drive sends `size` as a JSON string
+    /// (an int64), and only when asked for it in `fields`.
+    func testFindFileAsksForAndReturnsTheSize() async throws {
+        transport.responses = [.init(json: #"{"files":[{"id":"c1","name":"run.mp4","size":"1234567890123"}]}"#)]
+
+        let found = try await provider.findFile(named: "run.mp4", parent: "f9")
+
+        XCTAssertEqual(found?.size, 1_234_567_890_123)
+        XCTAssertEqual(transport.queryItems(of: 0)["fields"], "incompleteSearch,files(id,name,size)")
+    }
+
     func testFindFileAnswersNilWhenThereIsNone() async throws {
         transport.responses = [.init(json: #"{"kind":"drive#fileList","incompleteSearch":false}"#)]
         let found = try await provider.findFile(named: "run.mp4", parent: "f9")
@@ -314,6 +326,6 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         transport.responses = [.init(json: #"{"files":[]}"#)]
         _ = try await provider.findFolder(named: "Hill", parent: "root1")
         XCTAssertEqual(transport.queryItems(of: 0)["orderBy"], "createdTime")
-        XCTAssertEqual(transport.queryItems(of: 0)["fields"], "incompleteSearch,files(id,name)")
+        XCTAssertEqual(transport.queryItems(of: 0)["fields"], "incompleteSearch,files(id,name,size)")
     }
 }

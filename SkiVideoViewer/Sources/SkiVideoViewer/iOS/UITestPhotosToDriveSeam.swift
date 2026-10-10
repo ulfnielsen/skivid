@@ -122,7 +122,9 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
     private let fixture: URL?
     private let lock = NSLock()
     private var folders: [String: (name: String, parent: String)] = [:]
-    private var files: [(id: String, name: String, parent: String)] = []
+    /// `size` stands in for Drive's `size` field, which the upload batch
+    /// compares with the clip on disk — see `UploadBatchModel.placement`.
+    private var files: [(id: String, name: String, parent: String, size: Int64?)] = []
     private var nextID = 0
 
     /// The one clip the library lists, so a phone has an athlete to tap.
@@ -134,7 +136,8 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
         self.fixture = fixture
         var parent = rootID
         for name in Self.seedPath { parent = createFolderLocked(named: name, parent: parent) }
-        files.append((id: mintLocked("file"), name: Self.seedName, parent: parent))
+        files.append((id: mintLocked("file"), name: Self.seedName, parent: parent,
+                      size: fixture.flatMap(Self.size(of:))))
     }
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
@@ -175,7 +178,8 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
 
     func findFile(named name: String, parent parentID: String) async throws -> RemoteItem? {
         locked {
-            files.first { $0.name == name && $0.parent == parentID }.map { RemoteItem(id: $0.id, name: $0.name) }
+            files.first { $0.name == name && $0.parent == parentID }
+                .map { RemoteItem(id: $0.id, name: $0.name, size: $0.size) }
         }
     }
 
@@ -197,11 +201,16 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
         try await Task.sleep(nanoseconds: 300_000_000)
         let (item, path): (RemoteItem, String) = locked {
             let id = mintLocked("file")
-            files.append((id: id, name: name, parent: parentID))
-            return (RemoteItem(id: id, name: name), (pathLocked(of: parentID) + [name]).joined(separator: "/"))
+            let size = Self.size(of: url)
+            files.append((id: id, name: name, parent: parentID, size: size))
+            return (RemoteItem(id: id, name: name, size: size), (pathLocked(of: parentID) + [name]).joined(separator: "/"))
         }
         await MainActor.run { log.record(path) }
         return item
+    }
+
+    private static func size(of url: URL) -> Int64? {
+        try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64
     }
 
     // MARK: Locked helpers

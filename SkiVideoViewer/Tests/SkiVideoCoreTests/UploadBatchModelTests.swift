@@ -243,6 +243,107 @@ final class UploadBatchModelTests: XCTestCase {
         }
     }
 
+    // MARK: - Same name, different clip
+
+    private func driveNames(_ model: UploadBatchModel) -> [String: String?] {
+        Dictionary(uniqueKeysWithValues: model.entries.map { ($0.clip.file.lastPathComponent, $0.driveName) })
+    }
+
+    /// Same name and same size is the clip itself, already up.
+    func testSameNameAndSameSizeIsSkipped() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada", bytes: 10)
+        drive.seedFile("IMG_1.mov", at: [event, "Ada"], size: 10)
+        let model = try makeModel()
+
+        await model.refresh().value
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(states(model)["IMG_1.mov"], .alreadyInDrive)
+        XCTAssertEqual(drive.uploadedNames, [])
+        XCTAssertEqual(driveNames(model)["IMG_1.mov"], .some(nil), "no other name to report")
+    }
+
+    /// Two iPhones both number their clips IMG_0001…, so a name match alone
+    /// is not proof. A different size is a different clip, and it goes up
+    /// beside the other rather than silently never.
+    func testSameNameButDifferentSizeUploadsUnderTheNextFreeName() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada", bytes: 10)
+        drive.seedFile("IMG_1.mov", at: [event, "Ada"], size: 999)
+        let model = try makeModel()
+
+        await model.refresh().value
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(states(model)["IMG_1.mov"], .uploaded)
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1 2.mov"])
+        XCTAssertEqual(drive.path(ofFile: "IMG_1 2.mov"), [event, "Ada"])
+        XCTAssertEqual(drive.fileCount(named: "IMG_1.mov"), 1, "the other clip is left alone")
+        XCTAssertEqual(driveNames(model)["IMG_1.mov"], "IMG_1 2.mov")
+    }
+
+    /// The kill-and-reopen rule applies to renamed clips too: the next run has
+    /// no memory of the rename, so it must find " 2" with the same size and
+    /// stop there, not upload " 3".
+    func testARerunAfterARenamedUploadFindsItAndSkips() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada", bytes: 10)
+        drive.seedFile("IMG_1.mov", at: [event, "Ada"], size: 999)
+        // A tray that looked before the rename happened, so only the batch's
+        // own check before the upload can see " 2".
+        let stale = try makeModel()
+        await stale.refresh().value
+        XCTAssertEqual(states(stale)["IMG_1.mov"], .waiting, "premise")
+
+        let first = try makeModel()
+        await first.refresh().value
+        await first.uploadWaiting().value
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1 2.mov"], "premise")
+
+        let reopened = try makeModel()
+        await reopened.refresh().value
+        XCTAssertEqual(states(reopened)["IMG_1.mov"], .alreadyInDrive, "the tray's own check must see it")
+        XCTAssertEqual(driveNames(reopened)["IMG_1.mov"], "IMG_1 2.mov")
+
+        await stale.uploadWaiting().value
+        XCTAssertEqual(states(stale)["IMG_1.mov"], .alreadyInDrive, "the batch's check must see it")
+        XCTAssertEqual(driveNames(stale)["IMG_1.mov"], "IMG_1 2.mov")
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1 2.mov"], "nothing more may be uploaded")
+    }
+
+    func testWhenTheSecondNameIsAThirdClipItGoesToTheThird() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada", bytes: 10)
+        drive.seedFile("IMG_1.mov", at: [event, "Ada"], size: 999)
+        drive.seedFile("IMG_1 2.mov", at: [event, "Ada"], size: 555)
+        let model = try makeModel()
+
+        await model.refresh().value
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1 3.mov"])
+        XCTAssertEqual(driveNames(model)["IMG_1.mov"], "IMG_1 3.mov")
+    }
+
+    /// Drive leaves `size` out only for folders, shortcuts and Google-native
+    /// documents. Should a same-named match ever come back without one, the
+    /// clip is skipped: uploading would add another copy on every run.
+    func testAMatchWithNoReportedSizeIsTreatedAsThisClip() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada", bytes: 10)
+        drive.seedFile("IMG_1.mov", at: [event, "Ada"], size: nil)
+        let model = try makeModel()
+        await model.refresh().value
+
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(states(model)["IMG_1.mov"], .alreadyInDrive)
+        XCTAssertEqual(drive.uploadedNames, [])
+    }
+
+    func testNumberedNamesKeepTheExtension() {
+        XCTAssertEqual(UploadBatchModel.numberedName("IMG_0413.mov", 1), "IMG_0413.mov")
+        XCTAssertEqual(UploadBatchModel.numberedName("IMG_0413.mov", 2), "IMG_0413 2.mov")
+        XCTAssertEqual(UploadBatchModel.numberedName("C0001.MP4", 3), "C0001 3.MP4")
+        XCTAssertEqual(UploadBatchModel.numberedName("noext", 2), "noext 2")
+    }
+
     func testTheSameNameUnderAnotherAthleteIsNotASkip() async throws {
         try sortedClip("IMG_1.mov", athlete: "Ada")
         drive.seedFile("IMG_1.mov", at: [event, "Bo"])

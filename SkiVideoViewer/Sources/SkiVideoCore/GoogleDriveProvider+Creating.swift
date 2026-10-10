@@ -40,7 +40,11 @@ extension GoogleDriveProvider: ItemCreatable {
             // every client settles on the same one rather than an arbitrary
             // one — later clips must not scatter across the twins.
             URLQueryItem(name: "orderBy", value: "createdTime"),
-            URLQueryItem(name: "fields", value: "incompleteSearch,files(id,name)"),
+            // `size` lets the upload batch tell this clip, uploaded on an
+            // earlier run, from a different clip with the same name — see
+            // `UploadBatchModel.placement(of:in:)`. Drive leaves it out for
+            // folders, which is harmless here.
+            URLQueryItem(name: "fields", value: "incompleteSearch,files(id,name,size)"),
             URLQueryItem(name: "pageSize", value: "10"),
         ]
         let listing: Listing = try await get(components)
@@ -50,14 +54,15 @@ extension GoogleDriveProvider: ItemCreatable {
             throw RemoteLibraryError.api(
                 "Google Drive returned an incomplete search. Try again.")
         }
-        return listing.files.first.map { RemoteItem(id: $0.id, name: $0.name) }
+        return listing.files.first.map { RemoteItem(id: $0.id, name: $0.name, size: $0.size.flatMap { Int64($0) }) }
     }
 
     /// Drive omits `files` entirely when nothing matches — its reply is
     /// `{"kind":"drive#fileList","incompleteSearch":false}` — so absence
     /// means empty (see `DriveFileList` for the same rule on the sweep).
     private struct Listing: Decodable {
-        struct Entry: Decodable { let id: String; let name: String }
+        /// `size` is an int64 that Drive's JSON carries as a string.
+        struct Entry: Decodable { let id: String; let name: String; let size: String? }
         let incompleteSearch: Bool?
         let files: [Entry]
 

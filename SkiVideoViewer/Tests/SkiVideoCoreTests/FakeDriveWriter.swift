@@ -11,7 +11,9 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
 
     private let lock = NSLock()
     private var folders: [String: (name: String, parent: String)] = [:]
-    private var files: [(id: String, name: String, parent: String)] = []
+    /// `size` is what Drive's `files.list` reports in its `size` field — nil
+    /// for an item it gives none for.
+    private var files: [(id: String, name: String, parent: String, size: Int64?)] = []
     private var nextID = 0
     private var _uploadErrors: [String: [Error]] = [:]
     private var _findFolderErrors: [String: Error] = [:]
@@ -49,14 +51,16 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
     func stopHanging() { locked { _hangingUpload = nil } }
 
     /// Puts a file at `path` (folder names under `root`), creating folders.
-    func seedFile(_ name: String, at path: [String], root: String = "root-1") {
+    /// `size` defaults to 10, the size `UploadBatchModelTests.sortedClip`
+    /// writes by default, so a seeded twin of a default clip is the same clip.
+    func seedFile(_ name: String, at path: [String], root: String = "root-1", size: Int64? = 10) {
         locked {
             var parent = root
             for component in path {
                 parent = folderIDLocked(named: component, parent: parent)
                     ?? createFolderLocked(named: component, parent: parent)
             }
-            files.append((id: mintLocked("file"), name: name, parent: parent))
+            files.append((id: mintLocked("file"), name: name, parent: parent, size: size))
         }
     }
 
@@ -103,7 +107,8 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
 
     func findFile(named name: String, parent parentID: String) async throws -> RemoteItem? {
         locked {
-            files.first { $0.name == name && $0.parent == parentID }.map { RemoteItem(id: $0.id, name: $0.name) }
+            files.first { $0.name == name && $0.parent == parentID }
+                .map { RemoteItem(id: $0.id, name: $0.name, size: $0.size) }
         }
     }
 
@@ -134,8 +139,9 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
         return locked {
             _uploadedNames.append(name)
             let id = mintLocked("file")
-            files.append((id: id, name: name, parent: parentID))
-            return RemoteItem(id: id, name: name)
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+            files.append((id: id, name: name, parent: parentID, size: size))
+            return RemoteItem(id: id, name: name, size: size)
         }
     }
 

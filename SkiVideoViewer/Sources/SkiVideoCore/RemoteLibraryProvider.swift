@@ -155,10 +155,16 @@ public protocol ContentReplaceable: RemoteLibraryProvider {
 public struct RemoteItem: Equatable, Sendable {
     public let id: String
     public let name: String
+    /// Bytes, as Drive reports them. Only `findFile` asks for it — the upload
+    /// batch compares it with the local clip to tell a re-run of the same clip
+    /// from a different clip that shares its name. Nil where Drive gives none
+    /// (folders, Google Docs) or where the caller did not ask.
+    public let size: Int64?
 
-    public init(id: String, name: String) {
+    public init(id: String, name: String, size: Int64? = nil) {
         self.id = id
         self.name = name
+        self.size = size
     }
 }
 
