@@ -37,6 +37,15 @@ public protocol SecondaryScreenPresenter: AnyObject {
     /// A constant, like the two flags above, for the same reason.
     var screensCoverTheViewer: Bool { get }
 
+    /// Read when an action needs it, never while building `body` — the
+    /// presenter is not observed. True while a comparison or sorting
+    /// window holds clip paths that a library change would invalidate.
+    ///
+    /// Unlike the flags above this is live state, which is exactly why it
+    /// may only be read at the moment of an action: `ContentView` asks it
+    /// when "Rename Event…" is chosen, and refuses while it is true.
+    var hasOpenWindow: Bool { get }
+
     /// `prepare` is how a pane materialises a cloud clip it was just handed.
     /// This protocol only forwards it — see `ClipPreparer`, which carries the
     /// whole rationale, including why it is a closure and not a `ViewerModel`.

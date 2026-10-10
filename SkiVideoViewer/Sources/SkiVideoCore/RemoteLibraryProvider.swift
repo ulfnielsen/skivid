@@ -235,6 +235,35 @@ public protocol ItemCreatable: RemoteLibraryProvider {
     func upload(fileAt url: URL, named name: String, parent parentID: String) async throws -> RemoteItem
 }
 
+/// One entry in a Drive folder, as a rename needs to see it.
+public struct RemoteChild: Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let isFolder: Bool
+
+    public init(id: String, name: String, isFolder: Bool) {
+        self.id = id
+        self.name = name
+        self.isFolder = isFolder
+    }
+}
+
+/// What a provider offers when a client may rename, move and bin what is
+/// already there — the event rename's writes. Its own protocol for the same
+/// reason `ItemCreatable` is: a read-only provider must not carry stubs.
+///
+/// Ids are preserved by every operation, so clip identity, analysis and the
+/// cache survive (`RemoteFile.identity(inProvider:)` is the file id).
+public protocol ItemUpdatable: ItemCreatable {
+    /// Everything directly in the folder, not trashed. An incomplete listing
+    /// throws rather than reading as fewer children.
+    func listChildren(of folderID: String) async throws -> [RemoteChild]
+    func rename(itemID: String, to newName: String) async throws
+    func move(itemID: String, from oldParentID: String, to newParentID: String) async throws
+    /// To the bin, recoverable for 30 days — never a permanent delete.
+    func trash(itemID: String) async throws
+}
+
 public struct RemoteLibraryChanges: Sendable {
     public let changed: [RemoteFile]
     /// File ids that left the library. **Not a licence to delete cached
@@ -243,11 +272,18 @@ public struct RemoteLibraryChanges: Sendable {
     /// should not pay to download the clip again.
     public let removed: [String]
     public let cursor: String
+    /// A folder in the library was renamed, moved or otherwise changed. Its
+    /// clips are assumed not to be in `changed` — by our reading of Drive's
+    /// API it logs the folder, not what is under it; not verified live, see
+    /// the rename-event spec — so their stored paths are stale and only a
+    /// re-list corrects them.
+    public let foldersChanged: Bool
 
-    public init(changed: [RemoteFile], removed: [String], cursor: String) {
+    public init(changed: [RemoteFile], removed: [String], cursor: String, foldersChanged: Bool = false) {
         self.changed = changed
         self.removed = removed
         self.cursor = cursor
+        self.foldersChanged = foldersChanged
     }
 }
 

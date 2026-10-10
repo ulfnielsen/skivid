@@ -866,6 +866,25 @@ final class GoogleDriveProviderTests: XCTestCase {
         XCTAssertEqual(changes.changed.map(\.id), ["f1"])
         XCTAssertEqual(changes.removed, ["f2"])
         XCTAssertEqual(changes.cursor, "t2")
+        XCTAssertFalse(changes.foldersChanged, "a page of clips alone must not force a re-list")
+    }
+
+    /// A renamed folder arrives as one folder record and nothing for the
+    /// clips under it — their stored paths are now stale, so the page says
+    /// so and `ViewerModel.openRemoteLibrary` re-lists.
+    func testAPageWithAChangedFolderSaysSo() async throws {
+        transport.responses = [.init(json: """
+        {"newStartPageToken":"t2","changes":[
+          {"fileId":"e1","removed":false,
+           "file":{"id":"e1","name":"2026-02-14_Hoch-Ybrig",
+                   "mimeType":"application/vnd.google-apps.folder","parents":["d1"]}}
+        ]}
+        """)]
+
+        let changes = try await provider.changes(since: "t1", forRoot: "d1")
+
+        XCTAssertEqual(changes.changed, [])
+        XCTAssertTrue(changes.foldersChanged)
     }
 
     /// The drive change log must be asked for, not the user log: files moved

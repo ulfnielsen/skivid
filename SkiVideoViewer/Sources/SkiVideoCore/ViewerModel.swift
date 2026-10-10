@@ -624,6 +624,141 @@ public final class ViewerModel: ObservableObject {
                             knownFolderPath: knownFolderPath())
     }
 
+    // MARK: - Renaming an event
+
+    /// Every folder of the event the sidebar shows as `eventName`, as names
+    /// from the library root. Matched by the sidebar's own fold (case and
+    /// diacritics, `LibraryGrouping.fold`): the sidebar shows `hochybrig`,
+    /// `Hochybrig` and `Höchybrig` as one event, so the rename must move every
+    /// one of them, or a spelling would be left behind under the old name.
+    func eventRenameFolders(for eventName: String) -> [[String]] {
+        let wanted = LibraryGrouping.fold(eventName)
+        var paths = Set<[String]>()
+        if let remoteIndex {
+            for file in remoteIndex.files where file.path.count >= 2 {
+                let eventIndex = remoteIndex.convention == .eventThenAthlete
+                    ? file.path.count - 2 : file.path.count - 1
+                if LibraryGrouping.fold(file.path[eventIndex]) == wanted {
+                    paths.insert(Array(file.path[...eventIndex]))
+                }
+            }
+        } else if let directory {
+            // Both spellings of the root, for the reason `VideoLibrary.scan`
+            // gives: the scan hands back clips under the resolved path.
+            let roots = [directory.standardizedFileURL.pathComponents,
+                         directory.resolvingSymlinksInPath().standardizedFileURL.pathComponents]
+            // `group.event` is nil for an athlete folder directly under the
+            // root, whose "event folder" would be the root's own parent.
+            for group in athletes where group.event != nil {
+                for video in group.videos {
+                    let eventFolder = video.standardizedFileURL
+                        .deletingLastPathComponent().deletingLastPathComponent()
+                    guard LibraryGrouping.fold(eventFolder.lastPathComponent) == wanted else { continue }
+                    let components = eventFolder.pathComponents
+                    guard let root = roots.first(where: {
+                        components.count > $0.count && Array(components.prefix($0.count)) == $0
+                    }) else { continue }
+                    paths.insert(Array(components.dropFirst(root.count)))
+                }
+            }
+        }
+        return paths.sorted { $0.joined(separator: "/") < $1.joined(separator: "/") }
+    }
+
+    /// The rename for one sidebar event, or why there is none.
+    public func eventRenameTarget(for eventName: String) throws -> EventRenameModel {
+        let paths = eventRenameFolders(for: eventName)
+        if let library = openLibrary, case let .drive(rootID) = library.kind {
+            guard let writer = remoteProvider as? ItemUpdatable else {
+                throw EventRenameRefusal.cannotWrite(libraryName: library.name)
+            }
+            return EventRenameModel(oldName: eventName, eventFolders: paths,
+                                    folders: DriveEventFolders(writer: writer, rootID: rootID,
+                                                               presenter: oauthPresenter))
+        }
+        guard let directory else { throw EventRenameRefusal.noLibraryOpen }
+        return EventRenameModel(oldName: eventName, eventFolders: paths,
+                                folders: LocalEventFolders(root: directory))
+    }
+
+    /// Clips and athletes the sidebar shows under `eventName`, for "Merge?".
+    /// Matched by the same fold as `eventRenameFolders(for:)`, so the count
+    /// describes exactly the folders the rename would move.
+    public func eventClipCount(named eventName: String) -> EventClipCount {
+        let wanted = LibraryGrouping.fold(eventName)
+        let groups = athletes.filter { $0.event.map(LibraryGrouping.fold) == wanted }
+        return EventClipCount(clips: groups.reduce(0) { $0 + $1.videos.count },
+                              athletes: Set(groups.map(\.name)).count)
+    }
+
+    /// Opens the open library again — a Drive library through its change
+    /// feed (which re-lists after a folder change), a local one by rescanning
+    /// — and opens on the clip that was open, selected and fetched once.
+    ///
+    /// Reselection is exact or not at all; when nothing matches, the open's
+    /// default selection stands. A Drive clip is found by file id, which a
+    /// rename keeps. A local clip has no id, and camera names repeat every
+    /// day (`C0001.MP4`), so it is found by its exact path — and, only when
+    /// the caller names the event it just renamed, by that path with the
+    /// event folder swapped from `renamedEvent.from` to `renamedEvent.to`.
+    public func reloadOpenLibrary(renamedEvent: (from: String, to: String)? = nil) async throws {
+        let previous = currentVideo
+        if isUsingRemoteLibrary {
+            guard let library = openLibrary, case let .drive(rootID) = library.kind else {
+                throw EventRenameRefusal.noLibraryOpen
+            }
+            guard let remoteProvider, let clipCache else { throw RemoteLibraryError.notSignedIn }
+            // The open clears the search, which is right for a different
+            // drive and wrong for a Refresh of this one.
+            let query = athleteQuery
+            try await openRemoteLibrary(provider: remoteProvider,
+                                        root: RemoteFolder(id: rootID, name: library.name),
+                                        cache: clipCache,
+                                        preferring: previous.map(identity(of:)))
+            athleteQuery = query
+        } else if let directory {
+            var preferences: [(URL) -> Bool] = []
+            if let previous {
+                let exact = previous.standardizedFileURL.path
+                preferences.append { $0.standardizedFileURL.path == exact }
+                if let renamedEvent, let moved = Self.clip(previous, movedBy: renamedEvent) {
+                    preferences.append(moved)
+                }
+            }
+            try openDirectory(directory, preferring: preferences)
+        } else {
+            throw EventRenameRefusal.noLibraryOpen
+        }
+    }
+
+    /// Matches where a local clip lands when its event folder is renamed:
+    /// the same file, athlete and parent, under the new event name. The new
+    /// name is compared by the sidebar's fold because a merge goes into the
+    /// existing folder's own spelling (`EventRenamePlanner`), which may differ
+    /// from the typed one. Nil when the clip was not under the renamed event.
+    private static func clip(_ video: URL, movedBy rename: (from: String, to: String)) -> ((URL) -> Bool)? {
+        let file = video.standardizedFileURL
+        let athlete = file.deletingLastPathComponent()
+        let event = athlete.deletingLastPathComponent()
+        guard LibraryGrouping.fold(event.lastPathComponent) == LibraryGrouping.fold(rename.from) else { return nil }
+        // Standardised as its own URL, not derived from the clip's: the clip
+        // has already moved, and `standardizedFileURL` drops `/private` from
+        // a temp path only while the path exists (measured) — so the old
+        // clip's spelling and the rescanned one's would never compare equal.
+        // The parent is untouched by the rename, so it still exists.
+        let parent = event.deletingLastPathComponent().standardizedFileURL.path
+        let newEvent = LibraryGrouping.fold(rename.to)
+        return { candidate in
+            let file2 = candidate.standardizedFileURL
+            let athlete2 = file2.deletingLastPathComponent()
+            let event2 = athlete2.deletingLastPathComponent()
+            return file2.lastPathComponent == file.lastPathComponent
+                && athlete2.lastPathComponent == athlete.lastPathComponent
+                && LibraryGrouping.fold(event2.lastPathComponent) == newEvent
+                && event2.deletingLastPathComponent().standardizedFileURL.path == parent
+        }
+    }
+
     /// A folder the open drive's index lists a clip in, as folder names under
     /// its root — the upload batch's safety probe looks for it. The
     /// lexicographically smallest path, so the same library always offers the
@@ -718,7 +853,8 @@ public final class ViewerModel: ObservableObject {
         root: RemoteFolder,
         cache: ClipCache,
         convention: FolderConvention? = nil,
-        rebuilding: Bool = false
+        rebuilding: Bool = false,
+        preferring preferredClip: ClipIdentity? = nil
     ) async throws {
         status = rebuilding ? "Rebuilding \(root.name)…" : "Listing \(root.name)…"
         if rebuilding { RemoteLibraryIndex.discard(forRoot: root.id) }
@@ -728,6 +864,17 @@ public final class ViewerModel: ObservableObject {
         // closed for months still resyncs in a bounded number of calls — where
         // a re-sweep would list the whole drive every time.
         var index = RemoteLibraryIndex.load(forRoot: root.id)
+        // The coach's explicit layout pick, carried across a re-list. The
+        // re-list throws the stored index away, and the index is where
+        // "chosen by the operator" is recorded — without this, a reopen
+        // after a rename would quietly hand the layout back to inference.
+        var keptConvention: FolderConvention?
+        // The re-list resumes from the change page's cursor, not from a fresh
+        // one minted after the sweep: anything that changed *during* the
+        // sweep sits between the two, and a fresh cursor would skip it for
+        // good. Replaying it next time is harmless — applying a change the
+        // sweep already saw leaves the index as it was.
+        var relistCursor: String?
         if let stored = index,
            let cursor = stored.cursor,
            let incremental = provider as? IncrementallyEnumerable {
@@ -735,9 +882,26 @@ public final class ViewerModel: ObservableObject {
             // Bytes are never deleted here. A `removed` change means the clip
             // left *this library*, which Drive also reports for lost access
             // and a corpus move — evicting on it would make a coach pay to
-            // re-download a clip that never went anywhere.
-            index = stored.applying(changes)
-        } else if index == nil {
+            // re-download a clip that never went anywhere. The re-list below
+            // deletes nothing either: it only rebuilds the index, and the
+            // cache is keyed by file id, which a folder rename keeps.
+            //
+            // A renamed or moved folder leaves every clip under it with a
+            // stale stored path, and by our reading of Drive's API — not
+            // verified live; see the rename-event spec — the change page does
+            // not list them.
+            // Re-list instead. Not free — a whole-drive sweep — and not only
+            // after a rename: an upload that creates a new event or athlete
+            // folder logs a folder change too.
+            index = changes.foldersChanged ? nil : stored.applying(changes)
+            if changes.foldersChanged {
+                relistCursor = changes.cursor
+                if stored.conventionWasChosen, convention == nil {
+                    keptConvention = stored.convention
+                }
+            }
+        }
+        if index == nil {
             var files: [RemoteFile] = []
             for try await file in provider.enumerate(root) { files.append(file) }
             // No convention here: the sweep's own files are what the layout is
@@ -747,7 +911,9 @@ public final class ViewerModel: ObservableObject {
                 providerIdentifier: type(of: provider).identifier,
                 rootName: root.name, files: files
             )
-            if let incremental = provider as? IncrementallyEnumerable {
+            if let relistCursor {
+                swept = swept.withCursor(relistCursor)
+            } else if let incremental = provider as? IncrementallyEnumerable {
                 swept = swept.withCursor(try await incremental.startCursor(forRoot: root.id))
             }
             index = swept
@@ -758,7 +924,7 @@ public final class ViewerModel: ObservableObject {
         // explicit pick wins outright and is recorded as explicit; otherwise
         // the folders are read afresh, every open. `.athleteThenEvent` where
         // they say nothing either way.
-        if let convention {
+        if let convention = convention ?? keptConvention {
             index = index.settingConvention(convention, chosenByOperator: true)
         } else if !index.conventionWasChosen {
             index = index.settingConvention(
@@ -778,10 +944,14 @@ public final class ViewerModel: ObservableObject {
         let ordered = LibraryGrouping.order(index.athletes, by: sidebarGrouping)
         athletes = ordered
         activeAthleteID = nil
-        selectedAthleteID = ordered[0].id
+        let opened = index
+        let opening = Self.openingSelection(in: ordered, preferring: preferredClip.map { wanted in
+            [{ opened.file(for: $0)?.identity(inProvider: opened.providerIdentifier) == wanted }]
+        } ?? [])
+        selectedAthleteID = opening.athleteID
         athleteQuery = ""
         zoom.reset()
-        selectInitialAthlete(ordered[0].id)
+        selectInitialAthlete(opening.athleteID, at: opening.videoIndex)
         let clipCount = index.athletes.reduce(0) { $0 + $1.videos.count }
         status = "\(root.name) — \(clipCount) clips"
         // A failure to persist is a slower next launch, not a reason to
@@ -1104,25 +1274,49 @@ public final class ViewerModel: ObservableObject {
 
     public func openDirectory(_ url: URL) {
         do {
-            let scannedAthletes = try VideoLibrary.scan(url)
-            guard !scannedAthletes.isEmpty else { throw ViewerError.noVideos }
-            endSlowMotion()
-            player.pause()
-            directory = url
-            let ordered = LibraryGrouping.order(scannedAthletes, by: sidebarGrouping)
-            athletes = ordered
-            remoteIndex = nil
-            remoteProvider = nil
-            clipCache = nil
-            materialisedByFileID = [:]
-            isUsingRemoteLibrary = false
-            activeAthleteID = nil
-            selectedAthleteID = ordered[0].id
-            zoom.reset()
-            selectInitialAthlete(ordered[0].id)
+            try openDirectory(url, preferring: [])
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Scans and shows a folder, opening on the first clip that satisfies the
+    /// earliest of `preferences` instead of the first group's first clip.
+    /// Throws before touching any state, so a failed rescan leaves the library
+    /// on screen exactly as it was.
+    func openDirectory(_ url: URL, preferring preferences: [(URL) -> Bool]) throws {
+        let scannedAthletes = try VideoLibrary.scan(url)
+        guard !scannedAthletes.isEmpty else { throw ViewerError.noVideos }
+        endSlowMotion()
+        player.pause()
+        directory = url
+        let ordered = LibraryGrouping.order(scannedAthletes, by: sidebarGrouping)
+        athletes = ordered
+        remoteIndex = nil
+        remoteProvider = nil
+        clipCache = nil
+        materialisedByFileID = [:]
+        isUsingRemoteLibrary = false
+        activeAthleteID = nil
+        let opening = Self.openingSelection(in: ordered, preferring: preferences)
+        selectedAthleteID = opening.athleteID
+        zoom.reset()
+        selectInitialAthlete(opening.athleteID, at: opening.videoIndex)
+    }
+
+    /// Where an open lands: the first clip matching the earliest preference
+    /// that matches anything, else the first group's first clip. Picked
+    /// before anything is selected, so a reload selects — and fetches — one
+    /// clip once, rather than opening on clip 0 and stepping away from it.
+    private static func openingSelection(
+        in ordered: [AthleteGroup], preferring preferences: [(URL) -> Bool]
+    ) -> (athleteID: String, videoIndex: Int) {
+        for matches in preferences {
+            for group in ordered {
+                if let index = group.videos.firstIndex(where: matches) { return (group.id, index) }
+            }
+        }
+        return (ordered[0].id, 0)
     }
 
     public func selectAthlete(_ id: String?) {
@@ -1139,13 +1333,13 @@ public final class ViewerModel: ObservableObject {
     /// look at. The fetch itself is still tracked in `fetchTasks`, same as
     /// every other selection change — see that property for why leaving it
     /// untracked was measured to flake `isPreparingClip`.
-    private func selectInitialAthlete(_ id: String?) {
-        guard applySelection(id) else { return }
+    private func selectInitialAthlete(_ id: String?, at videoIndex: Int = 0) {
+        guard applySelection(id, at: videoIndex) else { return }
         fetchCurrentClip()
     }
 
     @discardableResult
-    private func applySelection(_ id: String?) -> Bool {
+    private func applySelection(_ id: String?, at index: Int = 0) -> Bool {
         guard let id,
               id != activeAthleteID,
               athletes.contains(where: { $0.id == id })
@@ -1155,7 +1349,7 @@ public final class ViewerModel: ObservableObject {
         endSlowMotion()
         activeAthleteID = id
         selectedAthleteID = id
-        videoIndex = 0
+        videoIndex = index
         loadCurrentVideo()
         return true
     }

@@ -11,7 +11,7 @@ import SwiftUI
 /// `launchArgument`:
 ///  - "From Photos…" hands over fixture movies through the real
 ///    `PhotosClipExporter`, instead of presenting the picker;
-///  - a `FakeClubDrive` (an in-memory `ItemCreatable`) is signed in and opened
+///  - a `FakeClubDrive` (an in-memory `ItemUpdatable`) is signed in and opened
 ///    as a Drive library with a known layout, through the same
 ///    `ViewerModel.signIn` / `chooseRoot` calls the Google sheet makes — so
 ///    `uploadTarget()` resolves exactly as it does for a coach;
@@ -105,10 +105,16 @@ struct FakeClubDriveReadout: View {
     }
 }
 
-/// An in-memory club Drive: one seed clip so the library has an athlete to
-/// open, a folder tree that `find…`/`create…`/`upload` read and write, and a
-/// log of every upload by its full path under the root.
-final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
+/// An in-memory club Drive: two seed clips in two events so the library has
+/// an athlete to open and an event name to collide with, a folder tree that
+/// `find…`/`create…`/`upload`/`rename`/`move` read and write, and a log of
+/// every upload by its full path under the root.
+///
+/// `ItemUpdatable` so `RenameEventUITests` can rename an event against it;
+/// `IncrementallyEnumerable` so the reload after that rename re-lists.
+/// Without a cursor, `openRemoteLibrary` takes the stored index as current and
+/// never enumerates again, so the sidebar would keep the old event name.
+final class FakeClubDrive: ItemUpdatable, IncrementallyEnumerable, @unchecked Sendable {
     static let identifier = "uitest-fake-drive"
 
     @MainActor final class Log: ObservableObject {
@@ -126,10 +132,17 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
     /// compares with the clip on disk — see `UploadBatchModel.placement`.
     private var files: [(id: String, name: String, parent: String, size: Int64?)] = []
     private var nextID = 0
+    /// Bumped by every write; the change feed's cursor. See `changes(since:)`.
+    private var revision = 0
 
     /// The one clip the library lists, so a phone has an athlete to tap.
     static let seedPath = ["2026-01-10_Seed Camp", "Seed Athlete"]
     static let seedName = "seed.mp4"
+    /// A second event on the same date, so renaming the first to "Spring
+    /// Camp" collides and asks "Merge?". Its athlete is distinct so
+    /// `PhotosToDriveUITests`' `sidebar.athlete.Seed Athlete` stays unique.
+    static let secondPath = ["2026-01-10_Spring-Camp", "Other Athlete"]
+    static let secondName = "seed2.mp4"
 
     init(rootID: String, fixture: URL?) {
         self.rootID = rootID
@@ -137,6 +150,10 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
         var parent = rootID
         for name in Self.seedPath { parent = createFolderLocked(named: name, parent: parent) }
         files.append((id: mintLocked("file"), name: Self.seedName, parent: parent,
+                      size: fixture.flatMap(Self.size(of:))))
+        var second = rootID
+        for name in Self.secondPath { second = createFolderLocked(named: name, parent: second) }
+        files.append((id: mintLocked("file"), name: Self.secondName, parent: second,
                       size: fixture.flatMap(Self.size(of:))))
     }
 
@@ -153,13 +170,35 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
         [RemoteFolder(id: rootID, name: UITestPhotosToDriveSeam.libraryName)]
     }
 
+    /// Every file, each at its path in the live folder tree — so a renamed
+    /// or moved folder shows on the next listing, as Drive's would.
     func enumerate(_ folder: RemoteFolder) -> AsyncThrowingStream<RemoteFile, Error> {
-        let size = fixture.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int64 } ?? 0
-        let seed = RemoteFile(id: "seed-file", name: Self.seedName, path: Self.seedPath,
-                              size: size, contentVersion: "1", md5: nil)
+        let listed: [RemoteFile] = locked {
+            files.map {
+                RemoteFile(id: $0.id, name: $0.name, path: pathLocked(of: $0.parent),
+                           size: $0.size ?? 0, contentVersion: "1", md5: nil)
+            }
+        }
         return AsyncThrowingStream { continuation in
-            continuation.yield(seed)
+            for file in listed { continuation.yield(file) }
             continuation.finish()
+        }
+    }
+
+    // MARK: IncrementallyEnumerable
+
+    func startCursor(forRoot rootID: String) async throws -> String {
+        locked { String(revision) }
+    }
+
+    /// Coarser than Drive's, on purpose: any write since `cursor` reports
+    /// `foldersChanged`, so the open re-lists. That is the path a real folder
+    /// rename takes (Drive logs the folder, not the clips under it), and for
+    /// an upload a re-list reaches the same index as applying the change.
+    func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges {
+        locked {
+            RemoteLibraryChanges(changed: [], removed: [], cursor: String(revision),
+                                 foldersChanged: cursor != String(revision))
         }
     }
 
@@ -184,7 +223,10 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
     }
 
     func createFolder(named name: String, parent parentID: String) async throws -> RemoteItem {
-        locked { RemoteItem(id: createFolderLocked(named: name, parent: parentID), name: name) }
+        locked {
+            revision += 1
+            return RemoteItem(id: createFolderLocked(named: name, parent: parentID), name: name)
+        }
     }
 
     func findOrCreateFolder(named name: String, parent parentID: String) async throws -> RemoteItem {
@@ -203,10 +245,46 @@ final class FakeClubDrive: ItemCreatable, @unchecked Sendable {
             let id = mintLocked("file")
             let size = Self.size(of: url)
             files.append((id: id, name: name, parent: parentID, size: size))
+            revision += 1
             return (RemoteItem(id: id, name: name, size: size), (pathLocked(of: parentID) + [name]).joined(separator: "/"))
         }
         await MainActor.run { log.record(path) }
         return item
+    }
+
+    // MARK: ItemUpdatable
+
+    func listChildren(of folderID: String) async throws -> [RemoteChild] {
+        locked {
+            folders.filter { $0.value.parent == folderID }.map { RemoteChild(id: $0.key, name: $0.value.name, isFolder: true) }
+                + files.filter { $0.parent == folderID }.map { RemoteChild(id: $0.id, name: $0.name, isFolder: false) }
+        }
+    }
+
+    func rename(itemID: String, to newName: String) async throws {
+        locked {
+            if let folder = folders[itemID] { folders[itemID] = (newName, folder.parent) }
+            if let i = files.firstIndex(where: { $0.id == itemID }) { files[i].name = newName }
+            revision += 1
+        }
+    }
+
+    func move(itemID: String, from oldParentID: String, to newParentID: String) async throws {
+        locked {
+            if let folder = folders[itemID] { folders[itemID] = (folder.name, newParentID) }
+            if let i = files.firstIndex(where: { $0.id == itemID }) { files[i].parent = newParentID }
+            revision += 1
+        }
+    }
+
+    /// Only ever an emptied folder in the rename runner; a file goes too, so
+    /// a trashed one does not linger in the listing.
+    func trash(itemID: String) async throws {
+        locked {
+            folders.removeValue(forKey: itemID)
+            files.removeAll { $0.id == itemID }
+            revision += 1
+        }
     }
 
     private static func size(of url: URL) -> Int64? {

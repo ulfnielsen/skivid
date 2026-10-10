@@ -5,6 +5,10 @@ import SwiftUI
 final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDelegate {
     /// Readable for tests; only this controller sets it.
     private(set) var window: NSWindow?
+    /// Whether the window exists, shown or minimised. `windowWillClose`
+    /// drops `window`, so non-nil means open. Not `isVisible`: that is false
+    /// for a minimised window, which still holds its clip paths.
+    var isOpen: Bool { window != nil }
     /// The source handed to this window's model, kept so a test can check
     /// what it is scoped to. Weak: the model owns it.
     private(set) weak var inputSource: AppKitInputSource?

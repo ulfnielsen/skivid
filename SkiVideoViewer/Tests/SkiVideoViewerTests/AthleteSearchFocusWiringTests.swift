@@ -251,6 +251,7 @@ private final class NoSecondaryScreensForFocus: SecondaryScreenPresenter {
     let canPresentComparison = false
     let canPresentSorting = false
     let screensCoverTheViewer = false
+    let hasOpenWindow = false
 
     func presentComparison(
         initialLeftVideo: URL?,

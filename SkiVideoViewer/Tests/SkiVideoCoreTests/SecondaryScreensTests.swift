@@ -8,6 +8,7 @@ final class SecondaryScreensTests: XCTestCase {
         var canPresentComparison: Bool { false }
         var canPresentSorting: Bool { false }
         var screensCoverTheViewer: Bool { false }
+        var hasOpenWindow = false
         private(set) var comparisonCalls = 0
         private(set) var sortingCalls = 0
 
@@ -36,6 +37,7 @@ final class SecondaryScreensTests: XCTestCase {
         var canPresentComparison: Bool { true }
         var canPresentSorting: Bool { false }
         var screensCoverTheViewer: Bool { false }
+        var hasOpenWindow = false
 
         func presentComparison(
             initialLeftVideo: URL?,
