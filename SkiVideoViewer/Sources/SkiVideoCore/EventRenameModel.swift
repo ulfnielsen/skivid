@@ -41,16 +41,25 @@ public final class EventRenameModel: ObservableObject {
     }
 
     @discardableResult
-    public func run(newName: String) async -> Bool {
+    public func run(newName: String, allowMerge: Bool = false) async -> Bool {
         guard !isRunning else { return false }
         isRunning = true
         defer { isRunning = false }
         stopReason = nil
         done = 0
         total = 0
+        leftInPlace = []
         do {
             try await folders.prepareToWrite()
             let plan = try await EventRenamePlanner.plan(eventFolders: eventFolders, newName: newName, in: folders)
+            // targetExists and this plan are separate reads, and prepareToWrite
+            // (Drive's consent sheet) can sit between them for as long as the
+            // coach takes. If the target appeared meanwhile, the coach was never
+            // asked about merging, so stop before anything moves.
+            if plan.mergesIntoExisting && !allowMerge {
+                stopReason = "\u{201C}\(newName)\u{201D} now exists \u{2014} choose Merge or another name."
+                return false
+            }
             total = plan.steps.count
             for step in plan.steps {
                 switch step {
@@ -80,7 +89,13 @@ public final class EventRenameModel: ObservableObject {
             return "You don't have permission to change folders in this library."
         }
         if case RemoteLibraryError.notSignedIn = error { return "Sign in to Google Drive again, then try again." }
-        let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        return "Renamed \(done) of \(total) — \(detail). Try again."
+        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+            return "Stopped after \(done) of \(total). Rename again to finish."
+        }
+        var detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        // Messages from Drive usually end in a full stop already; add one only
+        // when missing so the sentence never doubles it.
+        if !detail.hasSuffix(".") { detail += "." }
+        return "Renamed \(done) of \(total). \(detail) Try again."
     }
 }

@@ -74,17 +74,60 @@ final class EventRenameModelTests: XCTestCase {
     func testAMergeLeavesCollisionsAndBinsWhatEmptied() async throws {
         try file("2026-02-14_Hochybrig/Anna/IMG_1.mov")
         try file("2026-02-14_Hochybrig/Anna/IMG_2.mov")
+        try file("2026-02-14_Hochybrig/Bo/IMG_3.mov")
         try file("2026-02-14_Hoch-Ybrig/Anna/IMG_1.mov")
         let model = EventRenameModel(
             oldName: "2026-02-14_Hochybrig", eventFolders: [["2026-02-14_Hochybrig"]],
             folders: LocalEventFolders(root: root))
         let merges = try await model.targetExists(newName: "2026-02-14_Hoch-Ybrig")
         XCTAssertTrue(merges)
-        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig", allowMerge: true)
         XCTAssertTrue(ok)
+        XCTAssertTrue(exists("2026-02-14_Hoch-Ybrig/Bo/IMG_3.mov"))
+        XCTAssertFalse(exists("2026-02-14_Hochybrig/Bo"), "an athlete folder that emptied completely is gone")
         XCTAssertTrue(exists("2026-02-14_Hoch-Ybrig/Anna/IMG_2.mov"))
         XCTAssertTrue(exists("2026-02-14_Hochybrig/Anna/IMG_1.mov"), "the collision stays")
         XCTAssertEqual(model.leftInPlace, [["2026-02-14_Hochybrig", "Anna", "IMG_1.mov"]])
+    }
+
+    /// The target appeared after `targetExists` said no (on Drive the consent
+    /// sheet sits in that window): the coach was never asked, so nothing moves.
+    func testATargetThatAppearsAfterTheQuestionStopsBeforeMoving() async throws {
+        try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["Anna", "2026-02-14_Hochybrig"]],
+            folders: LocalEventFolders(root: root))
+        let merges = try await model.targetExists(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(merges)
+        try file("Anna/2026-02-14_Hoch-Ybrig/IMG_9.mov")
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(model.stopReason,
+                       "\u{201C}2026-02-14_Hoch-Ybrig\u{201D} now exists \u{2014} choose Merge or another name.")
+        XCTAssertTrue(exists("Anna/2026-02-14_Hochybrig/IMG_1.mov"))
+        XCTAssertEqual(model.done, 0)
+    }
+
+    func testCancellationSaysHowFarItGot() async throws {
+        try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
+        for error in [CancellationError() as Error, URLError(.cancelled)] {
+            let model = EventRenameModel(
+                oldName: "2026-02-14_Hochybrig", eventFolders: [["Anna", "2026-02-14_Hochybrig"]],
+                folders: ThrowingFolders(error))
+            let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+            XCTAssertFalse(ok)
+            XCTAssertEqual(model.stopReason, "Stopped after 0 of 1. Rename again to finish.")
+        }
+    }
+
+    func testBeingSignedOutAsksToSignInAgain() async throws {
+        try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["Anna", "2026-02-14_Hochybrig"]],
+            folders: ThrowingFolders(RemoteLibraryError.notSignedIn))
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(model.stopReason, "Sign in to Google Drive again, then try again.")
     }
 
     func testNoWriteAccessStopsWithoutRetryWording() async throws {
@@ -103,10 +146,10 @@ final class EventRenameModelTests: XCTestCase {
         try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
         let model = EventRenameModel(
             oldName: "2026-02-14_Hochybrig", eventFolders: [["Anna", "2026-02-14_Hochybrig"]],
-            folders: ThrowingFolders(RemoteUploadError.retryClip("Drive is busy")))
+            folders: ThrowingFolders(RemoteUploadError.retryClip("Google Drive is busy \u{2014} try again shortly.")))
         let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
         XCTAssertFalse(ok)
-        XCTAssertEqual(model.stopReason, "Renamed 0 of 1 \u{2014} Drive is busy. Try again.")
+        XCTAssertEqual(model.stopReason, "Renamed 0 of 1. Google Drive is busy \u{2014} try again shortly. Try again.")
     }
 
     /// A file that lands in the target between planning and moving makes the
@@ -122,12 +165,12 @@ final class EventRenameModelTests: XCTestCase {
         let model = EventRenameModel(
             oldName: "2026-02-14_Hochybrig", eventFolders: [["2026-02-14_Hochybrig"]], folders: racing)
 
-        let first = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        let first = await model.run(newName: "2026-02-14_Hoch-Ybrig", allowMerge: true)
         XCTAssertFalse(first)
         XCTAssertEqual(model.stopReason?.contains("already in the target"), true)
         XCTAssertTrue(exists("2026-02-14_Hochybrig/Anna/IMG_2.mov"), "nothing was overwritten or lost")
 
-        let second = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        let second = await model.run(newName: "2026-02-14_Hoch-Ybrig", allowMerge: true)
         XCTAssertTrue(second)
         XCTAssertNil(model.stopReason)
         XCTAssertEqual(Set(model.leftInPlace), [
