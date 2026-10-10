@@ -48,6 +48,8 @@ struct UploadTrayView: View {
                 .background(.bar)
         }
         .onAppear { model.refresh() }
+        // Auto-Lock would suspend the app, and the upload with it.
+        .modifier(KeepsScreenAwake(active: model.isUploading))
         // A container, so this identifier names the tray without replacing
         // the identifiers of the controls inside it — on a plain stack it is
         // handed down to every child, and `upload.start` became unfindable.
