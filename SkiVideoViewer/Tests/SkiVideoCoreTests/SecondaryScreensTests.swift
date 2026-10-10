@@ -7,6 +7,7 @@ final class SecondaryScreensTests: XCTestCase {
     private final class UnavailablePresenter: SecondaryScreenPresenter {
         var canPresentComparison: Bool { false }
         var canPresentSorting: Bool { false }
+        var screensCoverTheViewer: Bool { false }
         private(set) var comparisonCalls = 0
         private(set) var sortingCalls = 0
 
@@ -34,6 +35,7 @@ final class SecondaryScreensTests: XCTestCase {
     private final class ComparisonOnlyPresenter: SecondaryScreenPresenter {
         var canPresentComparison: Bool { true }
         var canPresentSorting: Bool { false }
+        var screensCoverTheViewer: Bool { false }
 
         func presentComparison(
             initialLeftVideo: URL?,

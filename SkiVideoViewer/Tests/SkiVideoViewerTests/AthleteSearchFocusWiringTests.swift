@@ -250,6 +250,7 @@ final class AthleteSearchFocusWiringTests: XCTestCase {
 private final class NoSecondaryScreensForFocus: SecondaryScreenPresenter {
     let canPresentComparison = false
     let canPresentSorting = false
+    let screensCoverTheViewer = false
 
     func presentComparison(
         initialLeftVideo: URL?,

@@ -582,6 +582,7 @@ final class ViewerControlsWiringTests: XCTestCase {
 private final class NoSecondaryScreens: SecondaryScreenPresenter {
     let canPresentComparison = false
     let canPresentSorting = false
+    let screensCoverTheViewer = false
 
     func presentComparison(
         initialLeftVideo: URL?,

@@ -3,7 +3,11 @@ import SkiVideoCore
 import SwiftUI
 
 final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegate {
-    private var window: NSWindow?
+    /// Readable for tests; only this controller sets it.
+    private(set) var window: NSWindow?
+    /// The source handed to this window's model, kept so a test can check
+    /// what it is scoped to. Weak: the model owns it.
+    private(set) weak var inputSource: AppKitInputSource?
     private var closingWindows: [NSWindow] = []
     private var onClose: (() -> Void)?
 
@@ -79,8 +83,9 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         window.contentView = NSHostingView(rootView: rootView)
         window.delegate = self
         self.window = window
-        // Keys typed into the viewer must reach the viewer while this window
-        // is open — see `AppKitInputSource.ownWindow`.
+        inputSource = input
+        // The viewer stays keyboard-live beside this window, so this source
+        // must only hear keys typed here — see `AppKitInputSource.ownWindow`.
         input.ownWindow = window
         // Fill the usable display area while retaining the normal macOS title bar.
         window.setFrame(frame, display: true)

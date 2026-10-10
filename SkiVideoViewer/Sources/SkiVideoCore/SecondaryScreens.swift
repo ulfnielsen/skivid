@@ -21,6 +21,22 @@ public protocol SecondaryScreenPresenter: AnyObject {
     var canPresentComparison: Bool { get }
     var canPresentSorting: Bool { get }
 
+    /// Whether Compare and Sort take the viewer's place while they are up.
+    ///
+    /// True on iPad and iPhone, where both are full-screen covers: the viewer
+    /// is not on screen to receive a key, so `ContentView` switches its
+    /// keyboard controls off for the duration and back on at `onClose`.
+    ///
+    /// False on macOS, where each opens in a window of its own beside the
+    /// viewer's. The viewer must keep playing on Space there while either is
+    /// open, so its controls stay on; what keeps three live sources from
+    /// answering each other's keys is that every one is scoped to its own
+    /// window (`AppKitInputSource.ownWindow`). Switching the viewer off was
+    /// exactly why Space did nothing in it while the sorting window was open.
+    ///
+    /// A constant, like the two flags above, for the same reason.
+    var screensCoverTheViewer: Bool { get }
+
     /// `prepare` is how a pane materialises a cloud clip it was just handed.
     /// This protocol only forwards it — see `ClipPreparer`, which carries the
     /// whole rationale, including why it is a closure and not a `ViewerModel`.

@@ -48,6 +48,8 @@ final class IOSSecondaryScreenPresenter: ObservableObject, SecondaryScreenPresen
 
     var canPresentComparison: Bool { true }
     var canPresentSorting: Bool { true }
+    /// Both screens are full-screen covers. See the protocol requirement.
+    var screensCoverTheViewer: Bool { true }
 
     func presentComparison(
         initialLeftVideo: URL?,

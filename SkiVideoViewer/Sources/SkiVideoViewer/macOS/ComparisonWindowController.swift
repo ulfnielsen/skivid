@@ -3,7 +3,11 @@ import SkiVideoCore
 import SwiftUI
 
 final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDelegate {
-    private var window: NSWindow?
+    /// Readable for tests; only this controller sets it.
+    private(set) var window: NSWindow?
+    /// The source handed to this window's model, kept so a test can check
+    /// what it is scoped to. Weak: the model owns it.
+    private(set) weak var inputSource: AppKitInputSource?
     private var closingWindows: [NSWindow] = []
     private var onClose: (() -> Void)?
 
@@ -29,10 +33,11 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
             backing: .buffered,
             defer: false
         )
+        let input = AppKitInputSource()
         let root = ComparisonView(
             initialLeftVideo: initialLeftVideo,
             openLibrary: openLibrary,
-            input: AppKitInputSource(),
+            input: input,
             folderPicker: AppKitFolderPicker(),
             prepare: prepare
         ) { [weak window] in
@@ -44,6 +49,10 @@ final class ComparisonWindowController: NSObject, ObservableObject, NSWindowDele
         window.contentView = NSHostingView(rootView: root)
         window.delegate = self
         self.window = window
+        inputSource = input
+        // The viewer stays keyboard-live beside this window, so this source
+        // must only hear keys typed here — see `AppKitInputSource.ownWindow`.
+        input.ownWindow = window
         window.setFrame(frame, display: true)
         window.makeKeyAndOrderFront(nil)
     }

@@ -177,6 +177,23 @@ struct ContentView: View {
     /// attached to the split view the bar shows only the title; attached to
     /// `detail` all three items appear. Sharing the builder keeps the two
     /// platforms from drifting apart.
+    /// Where Compare and Sort cover the viewer (iPad, iPhone), its keyboard
+    /// controls go off while they are up and back on when they close. Where
+    /// they open beside it (macOS windows) the viewer stays live, so Space
+    /// still plays it — the sources are kept apart by window instead. See
+    /// `SecondaryScreenPresenter.screensCoverTheViewer`.
+    private func pauseViewerKeysIfCovered() {
+        if secondaryScreens.screensCoverTheViewer {
+            model.setKeyboardControlsEnabled(false)
+        }
+    }
+
+    private func resumeViewerKeysIfCovered() {
+        if secondaryScreens.screensCoverTheViewer {
+            model.setKeyboardControlsEnabled(true)
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         // Absent on a phone rather than present and broken. `ComparisonView`
@@ -190,7 +207,7 @@ struct ContentView: View {
         if secondaryScreens.canPresentComparison, !isCompact {
             ToolbarItem {
                 Button {
-                    model.setKeyboardControlsEnabled(false)
+                    pauseViewerKeysIfCovered()
                     secondaryScreens.presentComparison(
                         initialLeftVideo: model.currentPlaybackURL,
                         openLibrary: model.comparisonLibrary,
@@ -201,9 +218,7 @@ struct ContentView: View {
                         // `ClipSourceMenu`) only ever sees this closure, never
                         // `model` itself.
                         prepare: ClipPreparer { choice in await model.prepareClip(choice) },
-                        onClose: {
-                            model.setKeyboardControlsEnabled(true)
-                        }
+                        onClose: resumeViewerKeysIfCovered
                     )
                 } label: {
                     Label("Compare Videos…", systemImage: "rectangle.split.2x1")
@@ -213,7 +228,7 @@ struct ContentView: View {
         if secondaryScreens.canPresentSorting {
             ToolbarItem {
                 Button {
-                    model.setKeyboardControlsEnabled(false)
+                    pauseViewerKeysIfCovered()
                     secondaryScreens.presentSorting(
                         libraryAthletes: model.athletes,
                         // Asked now, before any tagging: a coach should learn
@@ -225,9 +240,7 @@ struct ContentView: View {
                         openResizedLibrary: { outputDirectory in
                             model.openDirectory(outputDirectory)
                         },
-                        onClose: {
-                            model.setKeyboardControlsEnabled(true)
-                        }
+                        onClose: resumeViewerKeysIfCovered
                     )
                 } label: {
                     Label("Sort & Resize…", systemImage: "tag")
