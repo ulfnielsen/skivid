@@ -199,4 +199,44 @@ final class EventRenamePlanTests: XCTestCase {
             .removeIfEmpty([old]),
         ])
     }
+
+    /// Name order puts `IMG_5--IMG_7.skialignment.json` before `IMG_5.mov`
+    /// ("-" sorts before "."). A run stopped between the two would leave the
+    /// target holding a file of the stem and keep the clip behind for good, so
+    /// videos are planned first.
+    func testVideosAreMovedBeforeTheirSidecars() async throws {
+        try file("\(old)/Anna/IMG_5.mov")
+        try file("\(old)/Anna/IMG_5.skianalysis.json")
+        try file("\(old)/Anna/IMG_5--IMG_7.skialignment.json")
+        try file("\(new)/Anna/IMG_1.mov")
+        let p = try await plan()
+        XCTAssertEqual(p.steps, [
+            .move("IMG_5.mov", from: [old, "Anna"], to: [new, "Anna"]),
+            .move("IMG_5--IMG_7.skialignment.json", from: [old, "Anna"], to: [new, "Anna"]),
+            .move("IMG_5.skianalysis.json", from: [old, "Anna"], to: [new, "Anna"]),
+            .removeIfEmpty([old, "Anna"]),
+            .removeIfEmpty([old]),
+        ])
+    }
+
+    /// After a run stopped right after the video moved: only sidecars are left
+    /// in the source, and they follow their clip rather than staying.
+    func testSidecarsWhoseClipAlreadyMovedAreMoved() async throws {
+        try file("\(old)/Anna/IMG_5.skianalysis.json")
+        try file("\(old)/Anna/IMG_5--IMG_7.skialignment.json")
+        try file("\(new)/Anna/IMG_5.mov")
+        let p = try await plan()
+        XCTAssertEqual(movedNames(p), ["IMG_5.skianalysis.json", "IMG_5--IMG_7.skialignment.json"])
+        XCTAssertEqual(p.leftInPlace, [])
+    }
+
+    /// Clash lookup ignores case, so the stem test must too: on a
+    /// case-insensitive volume `img_1.mov` would load `IMG_1.skianalysis.json`.
+    func testAStemIsMatchedIgnoringCase() async throws {
+        try file("\(old)/Anna/img_1.mov")
+        try file("\(new)/Anna/IMG_1.skianalysis.json")
+        let p = try await plan()
+        XCTAssertEqual(movedNames(p), [])
+        XCTAssertEqual(stayed(p), ["img_1.mov"])
+    }
 }

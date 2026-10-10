@@ -73,7 +73,17 @@ public enum EventRenamePlanner {
                 incoming.contains { !$0.isFolder && belongs($0.name, to: stem) && existing[$0.name.lowercased()] != nil }
                     || inTarget.contains { !$0.isFolder && belongs($0.name, to: stem) }
             })
-        for entry in incoming {
+        // Videos are planned before everything else. Name order puts
+        // `<stem>--<other>.skialignment.json` ahead of `<stem>.mov` ("-" sorts
+        // before "."), and Drive's order is not guaranteed at all. A run
+        // stopped after a sidecar moved but before its clip would leave the
+        // target holding a file of the stem, so rule (b) would keep the clip
+        // behind on every re-plan. With videos first, a stopped run leaves
+        // only sidecars whose video already moved; those form no staying stem
+        // (stems come from incoming videos), so the next run moves them.
+        let ordered = incoming.filter { !$0.isFolder && isVideo($0.name) }
+            + incoming.filter { $0.isFolder || !isVideo($0.name) }
+        for entry in ordered {
             let clash = existing[entry.name.lowercased()]
             if entry.isFolder {
                 if let clash, clash.isFolder {
@@ -98,6 +108,9 @@ public enum EventRenamePlanner {
     }
 
     private static func belongs(_ name: String, to stem: String) -> Bool {
-        name.hasPrefix(stem + ".") || name.hasPrefix(stem + "--")
+        // Ignoring case, like the clash lookup: on a case-insensitive volume
+        // `img_1.mov` would load `IMG_1.skianalysis.json` as its own.
+        let name = name.lowercased(), stem = stem.lowercased()
+        return name.hasPrefix(stem + ".") || name.hasPrefix(stem + "--")
     }
 }
