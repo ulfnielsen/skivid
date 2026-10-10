@@ -17,7 +17,7 @@ final class EventRenameTargetTests: XCTestCase {
     /// against the same store, or the reload finds no stored index, sweeps
     /// from scratch, and passes without ever reaching the change-feed branch
     /// they exist to test. Callers wrap the whole test body instead.
-    private func openDrive(_ files: [RemoteFile], convention: FolderConvention,
+    private func openDrive(_ files: [RemoteFile], convention: FolderConvention?,
                            writer: FakeDriveWriter = FakeDriveWriter()) async throws -> ViewerModel {
         writer.listedFiles = files
         let model = ViewerModel(input: FakeInputSource(), folderPicker: FakeFolderPicker(),
@@ -173,33 +173,207 @@ final class EventRenameTargetTests: XCTestCase {
             ]
             writer.nextChanges = RemoteLibraryChanges(changed: [], removed: [], cursor: "c2", foldersChanged: true)
             try await model.reloadOpenLibrary()
+            await model.settleFetches()
             XCTAssertEqual(model.currentVideo?.lastPathComponent, "b.mov")
             XCTAssertEqual(model.currentClipIdentity, .remote(provider: FakeDriveWriter.identifier, fileID: "2"))
             XCTAssertEqual(model.events.compactMap(\.name), ["2026-02-14_Hoch-Ybrig"])
         }
     }
 
-    /// A local clip has no id; it is found again by athlete and file name
-    /// after the folder above it was renamed on disk.
-    func testALocalOpenClipIsReselectedAfterTheRename() async throws {
-        for path in ["2026-02-14_Hochybrig/Anna/a.mov", "2026-02-14_Hochybrig/Anna/b.mov",
-                     "2026-01-01_Other/Bo/c.mov"] {
+    private func makeFiles(_ paths: [String]) throws {
+        for path in paths {
             let url = root.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data([1]).write(to: url)
         }
+    }
+
+    private func openLocal() -> ViewerModel {
         let model = ViewerModel(input: FakeInputSource(), folderPicker: FakeFolderPicker(),
                                 oauthPresenter: FakeOAuthPresenter())
         model.openDirectory(root)
-        let anna = try XCTUnwrap(model.athletes.first { $0.name == "Anna" })
-        model.selectAthlete(anna.id)
-        _ = model.changeVideo(by: 1)
-        XCTAssertEqual(model.currentVideo?.lastPathComponent, "b.mov")
+        return model
+    }
+
+    /// Selects the clip at `path` (relative to `root`) the way a coach would.
+    private func select(_ path: String, in model: ViewerModel) throws {
+        let wanted = root.appendingPathComponent(path).standardizedFileURL
+        let group = try XCTUnwrap(model.athletes.first { $0.videos.contains { $0.standardizedFileURL == wanted } })
+        let index = try XCTUnwrap(group.videos.firstIndex { $0.standardizedFileURL == wanted })
+        model.selectAthlete(group.id)
+        if index > 0 { _ = model.changeVideo(by: index) }
+        XCTAssertEqual(model.currentVideo?.standardizedFileURL, wanted)
+    }
+
+    private func currentRelativePath(_ model: ViewerModel) -> String? {
+        model.currentVideo.map { Array($0.standardizedFileURL.pathComponents.suffix(3)).joined(separator: "/") }
+    }
+
+    /// Camera file names repeat every day. A plain Refresh must keep the
+    /// exact clip, not jump to the first same-named clip in sidebar order.
+    func testAPlainLocalReloadKeepsTheExactClipWhenCameraNamesRepeat() async throws {
+        try makeFiles(["2026-02-14_Hochybrig/Anna/C0001.MP4", "2026-02-20_Brunni/Anna/C0001.MP4"])
+        let model = openLocal()
+        // Events sort descending, so 02-14 is the later-sorting one.
+        try select("2026-02-14_Hochybrig/Anna/C0001.MP4", in: model)
+        try await bounded { try await model.reloadOpenLibrary() }
+        XCTAssertEqual(currentRelativePath(model), "2026-02-14_Hochybrig/Anna/C0001.MP4")
+    }
+
+    /// After a local rename the clip follows to the new event — and only
+    /// because the caller said which event was renamed.
+    func testALocalOpenClipFollowsItsRenamedEvent() async throws {
+        try makeFiles(["2026-02-14_Hochybrig/Anna/a.mov", "2026-02-14_Hochybrig/Anna/C0001.MP4",
+                       "2026-02-20_Brunni/Anna/C0001.MP4"])
+        let model = openLocal()
+        try select("2026-02-14_Hochybrig/Anna/C0001.MP4", in: model)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("2026-02-14_Hochybrig"),
+                                         to: root.appendingPathComponent("2026-02-14_Hoch-Ybrig"))
+        try await bounded {
+            try await model.reloadOpenLibrary(renamedEvent: (from: "2026-02-14_Hochybrig", to: "2026-02-14_Hoch-Ybrig"))
+        }
+        XCTAssertEqual(currentRelativePath(model), "2026-02-14_Hoch-Ybrig/Anna/C0001.MP4")
+    }
+
+    /// Without the rename named, a moved clip is not guessed at: the default
+    /// selection stands rather than a same-named clip from another day.
+    func testALocalClipThatMovedUnannouncedFallsBackToTheDefault() async throws {
+        try makeFiles(["2026-02-14_Hochybrig/Anna/C0001.MP4", "2026-02-20_Brunni/Anna/C0001.MP4"])
+        let model = openLocal()
+        try select("2026-02-14_Hochybrig/Anna/C0001.MP4", in: model)
         try FileManager.default.moveItem(at: root.appendingPathComponent("2026-02-14_Hochybrig"),
                                          to: root.appendingPathComponent("2026-02-14_Hoch-Ybrig"))
         try await bounded { try await model.reloadOpenLibrary() }
-        XCTAssertEqual(model.currentVideo?.lastPathComponent, "b.mov")
-        XCTAssertEqual(model.currentVideo?.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent,
-                       "2026-02-14_Hoch-Ybrig")
+        XCTAssertEqual(currentRelativePath(model), "2026-02-20_Brunni/Anna/C0001.MP4")
+    }
+
+    /// A rescan that fails leaves the library as it was; nothing steps from a
+    /// stale index.
+    func testAFailedLocalRescanThrowsAndKeepsTheSelection() async throws {
+        try makeFiles(["2026-02-14_Hochybrig/Anna/a.mov", "2026-02-14_Hochybrig/Anna/b.mov"])
+        let model = openLocal()
+        try select("2026-02-14_Hochybrig/Anna/b.mov", in: model)
+        try FileManager.default.removeItem(at: root)
+        var thrown: Error?
+        try await bounded {
+            do { try await model.reloadOpenLibrary() } catch { thrown = error }
+        }
+        XCTAssertNotNil(thrown)
+        XCTAssertEqual(currentRelativePath(model), "2026-02-14_Hochybrig/Anna/b.mov")
+    }
+
+    /// Review: the reload used to auto-select group 0's first clip, fetch it,
+    /// then step to the old clip — up to three player loads and a download
+    /// nobody asked for. It must fetch only the clip that was open.
+    func testADriveReloadFetchesOnlyThePreferredClip() async throws {
+        try await boundedWithStore {
+            let writer = FakeDriveWriter()
+            let model = try await self.openDrive([
+                remoteFile("1", "a.mov", ["2026-02-20_Brunni", "Anna"]),
+                remoteFile("2", "b.mov", ["2026-02-14_Hochybrig", "Bo"]),
+                remoteFile("3", "c.mov", ["2026-02-14_Hochybrig", "Bo"]),
+            ], convention: .eventThenAthlete, writer: writer)
+            let bo = try XCTUnwrap(model.athletes.first { $0.name == "Bo" })
+            model.selectAthlete(bo.id)
+            _ = model.changeVideo(by: 1)
+            await model.settleFetches()
+            XCTAssertEqual(model.currentClipIdentity, .remote(provider: FakeDriveWriter.identifier, fileID: "3"))
+            // Neighbour prefetches are untracked tasks, so `settleFetches`
+            // does not wait for them. The open, the select and the step each
+            // fetch once, and the select and the step each prefetch one
+            // neighbour: five requests. Wait for all five, or a late one
+            // would be counted against the reload.
+            let deadline = Date().addingTimeInterval(5)
+            while writer.downloadRequests.count < 5, Date() < deadline {
+                try await Task.sleep(nanoseconds: 2_000_000)
+            }
+            XCTAssertEqual(writer.downloadRequests.count, 5)
+            writer.resetDownloadRequests()
+            try await model.reloadOpenLibrary()
+            await model.settleFetches()
+            XCTAssertEqual(writer.downloadRequests, ["3"])
+            XCTAssertEqual(model.currentClipIdentity, .remote(provider: FakeDriveWriter.identifier, fileID: "3"))
+        }
+    }
+
+    func testADriveReloadKeepsTheSidebarSearch() async throws {
+        try await boundedWithStore {
+            let model = try await self.openDrive([remoteFile("1", "a.mov", ["2026-02-14_Hochybrig", "Anna"])],
+                                                 convention: .eventThenAthlete)
+            model.athleteQuery = "ann"
+            try await model.reloadOpenLibrary()
+            XCTAssertEqual(model.athleteQuery, "ann")
+        }
+    }
+
+    /// A Refresh that cannot reach the drive must say so, not return as if
+    /// it had refreshed. There is no sign-out today, so the reachable case is
+    /// a drive opened without a library record — no root id to reopen.
+    func testADriveReloadWithoutALibraryRecordThrows() async throws {
+        try await boundedWithStore {
+            let writer = FakeDriveWriter()
+            writer.listedFiles = [remoteFile("1", "a.mov", ["2026-02-14_Hochybrig", "Anna"])]
+            let model = ViewerModel(input: FakeInputSource(), folderPicker: FakeFolderPicker(),
+                                    oauthPresenter: FakeOAuthPresenter())
+            try await model.openRemoteLibrary(
+                provider: writer, root: RemoteFolder(id: "drive-1", name: "Club"),
+                cache: ClipCache(root: self.root.appendingPathComponent(".cache"),
+                                 downloader: FakeClipDownloader(), budget: 1_000))
+            var thrown: Error?
+            do { try await model.reloadOpenLibrary() } catch { thrown = error }
+            XCTAssertNotNil(thrown)
+        }
+    }
+
+    func testAReloadWithNothingOpenThrows() async throws {
+        let model = ViewerModel(input: FakeInputSource(), folderPicker: FakeFolderPicker(),
+                                oauthPresenter: FakeOAuthPresenter())
+        var thrown: Error?
+        try await bounded { do { try await model.reloadOpenLibrary() } catch { thrown = error } }
+        XCTAssertEqual(thrown as? EventRenameRefusal, .noLibraryOpen)
+    }
+
+    /// The re-list keeps the change page's cursor rather than minting a fresh
+    /// one after the sweep: a change made during the sweep is replayed on the
+    /// next open instead of falling between the two.
+    func testTheReListKeepsTheChangePagesCursor() async throws {
+        try await boundedWithStore {
+            let writer = FakeDriveWriter()
+            let model = try await self.openDrive([remoteFile("1", "a.mov", ["2026-02-14_Hochybrig", "Anna"])],
+                                                 convention: .eventThenAthlete, writer: writer)
+            writer.listedFiles = [remoteFile("1", "a.mov", ["2026-02-14_Hoch-Ybrig", "Anna"])]
+            writer.nextChanges = RemoteLibraryChanges(changed: [], removed: [], cursor: "c2", foldersChanged: true)
+            try await model.reloadOpenLibrary()
+            writer.nextChanges = nil
+            try await model.reloadOpenLibrary()
+            XCTAssertEqual(writer.changesRequestedSince, ["c1", "c2"])
+        }
+    }
+
+    /// An inferred layout is not a choice: after a re-list the folders are
+    /// read afresh, and a library that now reads event-first becomes so.
+    func testAnInferredLayoutIsReInferredAfterTheReList() async throws {
+        try await boundedWithStore {
+            let writer = FakeDriveWriter()
+            let model = try await self.openDrive([remoteFile("1", "a.mov", ["Anna", "2026-02-14_Hochybrig"])],
+                                                 convention: nil, writer: writer)
+            XCTAssertEqual(model.events.compactMap(\.name), ["2026-02-14_Hochybrig"])
+            writer.listedFiles = [remoteFile("1", "a.mov", ["2026-02-14_Hochybrig", "Anna"])]
+            writer.nextChanges = RemoteLibraryChanges(changed: [], removed: [], cursor: "c2", foldersChanged: true)
+            try await model.reloadOpenLibrary()
+            XCTAssertEqual(model.athletes.map(\.name), ["Anna"])
+            XCTAssertEqual(model.eventRenameFolders(for: "2026-02-14_Hochybrig"), [["2026-02-14_Hochybrig"]])
+        }
+    }
+
+    /// The event is the folder above the athlete, however deep it sits.
+    func testANestedEventFirstDrivePathCollectsTheFullPath() async throws {
+        try await boundedWithStore {
+            let model = try await self.openDrive([
+                remoteFile("1", "a.mov", ["2026", "2026-02-14_Hochybrig", "Anna"]),
+                remoteFile("2", "b.mov", ["2026", "2026-02-14_Hochybrig", "Bo"]),
+            ], convention: .eventThenAthlete)
+            XCTAssertEqual(model.eventRenameFolders(for: "2026-02-14_Hochybrig"), [["2026", "2026-02-14_Hochybrig"]])
+        }
     }
 }

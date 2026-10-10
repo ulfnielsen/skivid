@@ -76,6 +76,49 @@ final class EventRenamePlanTests: XCTestCase {
                        ["IMG_1.mov", "IMG_1.skianalysis.json", "IMG_1--IMG_7.skialignment.json"])
     }
 
+    /// Two spellings of one sidebar event side by side under one parent:
+    /// the first renames, the second merges into what the first became. On
+    /// Drive the siblings can differ by case; APFS (case-insensitive) cannot
+    /// hold `hochybrig` beside `Hochybrig`, so the fixture uses an accent
+    /// variant, which APFS does hold and the sidebar's fold groups the same
+    /// way. Not a "Merge?" — the coach renamed one event, and nothing by the
+    /// new name existed.
+    func testSiblingSpellingsOfOneEventRenameThenMerge() async throws {
+        try file("2026-01-10_Zurs/Anna/IMG_1.mov")
+        try file("2026-01-10_Zürs/Anna/IMG_2.mov")
+        try file("2026-01-10_Zürs/Bo/IMG_3.mov")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, 2,
+                       "precondition: the volume holds both spellings")
+        let plan = try await EventRenamePlanner.plan(
+            eventFolders: [["2026-01-10_Zurs"], ["2026-01-10_Zürs"]], newName: "2026-01-10_Zuers", in: folders)
+        XCTAssertEqual(plan.steps, [
+            .rename(["2026-01-10_Zurs"], to: "2026-01-10_Zuers"),
+            .move("IMG_2.mov", from: ["2026-01-10_Zürs", "Anna"], to: ["2026-01-10_Zuers", "Anna"]),
+            .removeIfEmpty(["2026-01-10_Zürs", "Anna"]),
+            .move("Bo", from: ["2026-01-10_Zürs"], to: ["2026-01-10_Zuers"]),
+            .removeIfEmpty(["2026-01-10_Zürs"]),
+        ])
+        XCTAssertFalse(plan.mergesIntoExisting)
+    }
+
+    /// The same, run for real: both spellings end up as one folder.
+    @MainActor
+    func testSiblingSpellingsOfOneEventEndAsOneFolder() async throws {
+        try file("2026-01-10_Zurs/Anna/IMG_1.mov")
+        try file("2026-01-10_Zürs/Anna/IMG_2.mov")
+        try file("2026-01-10_Zürs/Bo/IMG_3.mov")
+        let model = EventRenameModel(oldName: "2026-01-10_Zurs",
+                                     eventFolders: [["2026-01-10_Zurs"], ["2026-01-10_Zürs"]],
+                                     folders: folders)
+        let ok = await model.run(newName: "2026-01-10_Zuers")
+        XCTAssertTrue(ok, model.stopReason ?? "")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["2026-01-10_Zuers"])
+        for path in ["Anna/IMG_1.mov", "Anna/IMG_2.mov", "Bo/IMG_3.mov"] {
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("2026-01-10_Zuers/" + path).path), path)
+        }
+    }
+
     func testAFolderAlreadyRenamedPlansNothing() async throws {
         try file("2026-02-14_Hoch-Ybrig/Anna/IMG_1.mov")
         let plan = try await EventRenamePlanner.plan(

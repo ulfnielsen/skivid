@@ -190,7 +190,14 @@ final class FakeDriveWriter: ItemUpdatable, IncrementallyEnumerable, @unchecked 
             continuation.finish()
         }
     }
+    private var _downloadRequests: [String] = []
+    /// File ids `downloadSource` was asked for — one per fetch the viewer
+    /// started, which is how a test counts fetches.
+    var downloadRequests: [String] { locked { _downloadRequests } }
+    func resetDownloadRequests() { locked { _downloadRequests = [] } }
+
     func downloadSource(for file: RemoteFile) async throws -> DownloadSource {
+        locked { _downloadRequests.append(file.id) }
         throw RemoteLibraryError.api("not a reading fake")
     }
 
@@ -199,8 +206,12 @@ final class FakeDriveWriter: ItemUpdatable, IncrementallyEnumerable, @unchecked 
     /// The page the next reopen reads; nil reports nothing changed.
     var nextChanges: RemoteLibraryChanges?
     func startCursor(forRoot rootID: String) async throws -> String { "c1" }
+    private var _changesRequestedSince: [String] = []
+    /// The cursor each `changes` call was asked from, in order.
+    var changesRequestedSince: [String] { locked { _changesRequestedSince } }
     func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges {
-        nextChanges ?? RemoteLibraryChanges(changed: [], removed: [], cursor: cursor)
+        locked { _changesRequestedSince.append(cursor) }
+        return nextChanges ?? RemoteLibraryChanges(changed: [], removed: [], cursor: cursor)
     }
 
     // MARK: Locked helpers

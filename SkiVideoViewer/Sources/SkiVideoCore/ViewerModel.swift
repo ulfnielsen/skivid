@@ -693,39 +693,69 @@ public final class ViewerModel: ObservableObject {
 
     /// Opens the open library again — a Drive library through its change
     /// feed (which re-lists after a folder change), a local one by rescanning
-    /// — and re-selects the clip that was open, wherever it now lives.
+    /// — and opens on the clip that was open, selected and fetched once.
     ///
-    /// A Drive clip is found again by file id, which a rename keeps. A local
-    /// clip has no stable id, so it is found by athlete and file name; when
-    /// two events hold the same pair, the first in sidebar order wins.
-    public func reloadOpenLibrary() async throws {
+    /// Reselection is exact or not at all; when nothing matches, the open's
+    /// default selection stands. A Drive clip is found by file id, which a
+    /// rename keeps. A local clip has no id, and camera names repeat every
+    /// day (`C0001.MP4`), so it is found by its exact path — and, only when
+    /// the caller names the event it just renamed, by that path with the
+    /// event folder swapped from `renamedEvent.from` to `renamedEvent.to`.
+    public func reloadOpenLibrary(renamedEvent: (from: String, to: String)? = nil) async throws {
         let previous = currentVideo
-        let previousID = previous.map(identity(of:))
-        // `currentAthlete`, not `selectedAthleteID`: it is the group
-        // `currentVideo` was read from, so the two always describe one clip.
-        let previousAthlete = currentAthlete?.name
-        if let library = openLibrary, case let .drive(rootID) = library.kind,
-           let remoteProvider, let clipCache {
+        if isUsingRemoteLibrary {
+            guard let library = openLibrary, case let .drive(rootID) = library.kind else {
+                throw EventRenameRefusal.noLibraryOpen
+            }
+            guard let remoteProvider, let clipCache else { throw RemoteLibraryError.notSignedIn }
+            // The open clears the search, which is right for a different
+            // drive and wrong for a Refresh of this one.
+            let query = athleteQuery
             try await openRemoteLibrary(provider: remoteProvider,
                                         root: RemoteFolder(id: rootID, name: library.name),
-                                        cache: clipCache)
+                                        cache: clipCache,
+                                        preferring: previous.map(identity(of:)))
+            athleteQuery = query
         } else if let directory {
-            openDirectory(directory)
+            var preferences: [(URL) -> Bool] = []
+            if let previous {
+                let exact = previous.standardizedFileURL.path
+                preferences.append { $0.standardizedFileURL.path == exact }
+                if let renamedEvent, let moved = Self.clip(previous, movedBy: renamedEvent) {
+                    preferences.append(moved)
+                }
+            }
+            try openDirectory(directory, preferring: preferences)
+        } else {
+            throw EventRenameRefusal.noLibraryOpen
         }
-        guard let previous else { return }
-        for group in athletes {
-            let match = group.videos.firstIndex { video in
-                if case .remote = previousID { return identity(of: video) == previousID }
-                return group.name == previousAthlete && video.lastPathComponent == previous.lastPathComponent
-            }
-            if let match {
-                // Both opens leave the first group active at clip 0, and
-                // `selectAthlete` ignores the group already active — so in
-                // every case the step below starts from clip 0.
-                selectAthlete(group.id)
-                if match > 0 { _ = changeVideo(by: match) }
-                return
-            }
+    }
+
+    /// Matches where a local clip lands when its event folder is renamed:
+    /// the same file, athlete and parent, under the new event name. The new
+    /// name is compared by the sidebar's fold because a merge goes into the
+    /// existing folder's own spelling (`EventRenamePlanner`), which may differ
+    /// from the typed one. Nil when the clip was not under the renamed event.
+    private static func clip(_ video: URL, movedBy rename: (from: String, to: String)) -> ((URL) -> Bool)? {
+        let file = video.standardizedFileURL
+        let athlete = file.deletingLastPathComponent()
+        let event = athlete.deletingLastPathComponent()
+        guard LibraryGrouping.fold(event.lastPathComponent) == LibraryGrouping.fold(rename.from) else { return nil }
+        // Standardised as its own URL, not derived from the clip's: the clip
+        // has already moved, and `standardizedFileURL` drops `/private` from
+        // a temp path only while the path exists (measured) — so the old
+        // clip's spelling and the rescanned one's would never compare equal.
+        // The parent is untouched by the rename, so it still exists.
+        let parent = event.deletingLastPathComponent().standardizedFileURL.path
+        let newEvent = LibraryGrouping.fold(rename.to)
+        return { candidate in
+            let file2 = candidate.standardizedFileURL
+            let athlete2 = file2.deletingLastPathComponent()
+            let event2 = athlete2.deletingLastPathComponent()
+            return file2.lastPathComponent == file.lastPathComponent
+                && athlete2.lastPathComponent == athlete.lastPathComponent
+                && LibraryGrouping.fold(event2.lastPathComponent) == newEvent
+                && event2.deletingLastPathComponent().standardizedFileURL.path == parent
         }
     }
 
@@ -823,7 +853,8 @@ public final class ViewerModel: ObservableObject {
         root: RemoteFolder,
         cache: ClipCache,
         convention: FolderConvention? = nil,
-        rebuilding: Bool = false
+        rebuilding: Bool = false,
+        preferring preferredClip: ClipIdentity? = nil
     ) async throws {
         status = rebuilding ? "Rebuilding \(root.name)…" : "Listing \(root.name)…"
         if rebuilding { RemoteLibraryIndex.discard(forRoot: root.id) }
@@ -838,6 +869,12 @@ public final class ViewerModel: ObservableObject {
         // "chosen by the operator" is recorded — without this, a reopen
         // after a rename would quietly hand the layout back to inference.
         var keptConvention: FolderConvention?
+        // The re-list resumes from the change page's cursor, not from a fresh
+        // one minted after the sweep: anything that changed *during* the
+        // sweep sits between the two, and a fresh cursor would skip it for
+        // good. Replaying it next time is harmless — applying a change the
+        // sweep already saw leaves the index as it was.
+        var relistCursor: String?
         if let stored = index,
            let cursor = stored.cursor,
            let incremental = provider as? IncrementallyEnumerable {
@@ -855,8 +892,11 @@ public final class ViewerModel: ObservableObject {
             // after a rename: an upload that creates a new event or athlete
             // folder logs a folder change too.
             index = changes.foldersChanged ? nil : stored.applying(changes)
-            if changes.foldersChanged, stored.conventionWasChosen, convention == nil {
-                keptConvention = stored.convention
+            if changes.foldersChanged {
+                relistCursor = changes.cursor
+                if stored.conventionWasChosen, convention == nil {
+                    keptConvention = stored.convention
+                }
             }
         }
         if index == nil {
@@ -869,7 +909,9 @@ public final class ViewerModel: ObservableObject {
                 providerIdentifier: type(of: provider).identifier,
                 rootName: root.name, files: files
             )
-            if let incremental = provider as? IncrementallyEnumerable {
+            if let relistCursor {
+                swept = swept.withCursor(relistCursor)
+            } else if let incremental = provider as? IncrementallyEnumerable {
                 swept = swept.withCursor(try await incremental.startCursor(forRoot: root.id))
             }
             index = swept
@@ -900,10 +942,14 @@ public final class ViewerModel: ObservableObject {
         let ordered = LibraryGrouping.order(index.athletes, by: sidebarGrouping)
         athletes = ordered
         activeAthleteID = nil
-        selectedAthleteID = ordered[0].id
+        let opened = index
+        let opening = Self.openingSelection(in: ordered, preferring: preferredClip.map { wanted in
+            [{ opened.file(for: $0)?.identity(inProvider: opened.providerIdentifier) == wanted }]
+        } ?? [])
+        selectedAthleteID = opening.athleteID
         athleteQuery = ""
         zoom.reset()
-        selectInitialAthlete(ordered[0].id)
+        selectInitialAthlete(opening.athleteID, at: opening.videoIndex)
         let clipCount = index.athletes.reduce(0) { $0 + $1.videos.count }
         status = "\(root.name) — \(clipCount) clips"
         // A failure to persist is a slower next launch, not a reason to
@@ -1226,25 +1272,49 @@ public final class ViewerModel: ObservableObject {
 
     public func openDirectory(_ url: URL) {
         do {
-            let scannedAthletes = try VideoLibrary.scan(url)
-            guard !scannedAthletes.isEmpty else { throw ViewerError.noVideos }
-            endSlowMotion()
-            player.pause()
-            directory = url
-            let ordered = LibraryGrouping.order(scannedAthletes, by: sidebarGrouping)
-            athletes = ordered
-            remoteIndex = nil
-            remoteProvider = nil
-            clipCache = nil
-            materialisedByFileID = [:]
-            isUsingRemoteLibrary = false
-            activeAthleteID = nil
-            selectedAthleteID = ordered[0].id
-            zoom.reset()
-            selectInitialAthlete(ordered[0].id)
+            try openDirectory(url, preferring: [])
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Scans and shows a folder, opening on the first clip that satisfies the
+    /// earliest of `preferences` instead of the first group's first clip.
+    /// Throws before touching any state, so a failed rescan leaves the library
+    /// on screen exactly as it was.
+    func openDirectory(_ url: URL, preferring preferences: [(URL) -> Bool]) throws {
+        let scannedAthletes = try VideoLibrary.scan(url)
+        guard !scannedAthletes.isEmpty else { throw ViewerError.noVideos }
+        endSlowMotion()
+        player.pause()
+        directory = url
+        let ordered = LibraryGrouping.order(scannedAthletes, by: sidebarGrouping)
+        athletes = ordered
+        remoteIndex = nil
+        remoteProvider = nil
+        clipCache = nil
+        materialisedByFileID = [:]
+        isUsingRemoteLibrary = false
+        activeAthleteID = nil
+        let opening = Self.openingSelection(in: ordered, preferring: preferences)
+        selectedAthleteID = opening.athleteID
+        zoom.reset()
+        selectInitialAthlete(opening.athleteID, at: opening.videoIndex)
+    }
+
+    /// Where an open lands: the first clip matching the earliest preference
+    /// that matches anything, else the first group's first clip. Picked
+    /// before anything is selected, so a reload selects — and fetches — one
+    /// clip once, rather than opening on clip 0 and stepping away from it.
+    private static func openingSelection(
+        in ordered: [AthleteGroup], preferring preferences: [(URL) -> Bool]
+    ) -> (athleteID: String, videoIndex: Int) {
+        for matches in preferences {
+            for group in ordered {
+                if let index = group.videos.firstIndex(where: matches) { return (group.id, index) }
+            }
+        }
+        return (ordered[0].id, 0)
     }
 
     public func selectAthlete(_ id: String?) {
@@ -1261,13 +1331,13 @@ public final class ViewerModel: ObservableObject {
     /// look at. The fetch itself is still tracked in `fetchTasks`, same as
     /// every other selection change — see that property for why leaving it
     /// untracked was measured to flake `isPreparingClip`.
-    private func selectInitialAthlete(_ id: String?) {
-        guard applySelection(id) else { return }
+    private func selectInitialAthlete(_ id: String?, at videoIndex: Int = 0) {
+        guard applySelection(id, at: videoIndex) else { return }
         fetchCurrentClip()
     }
 
     @discardableResult
-    private func applySelection(_ id: String?) -> Bool {
+    private func applySelection(_ id: String?, at index: Int = 0) -> Bool {
         guard let id,
               id != activeAthleteID,
               athletes.contains(where: { $0.id == id })
@@ -1277,7 +1347,7 @@ public final class ViewerModel: ObservableObject {
         endSlowMotion()
         activeAthleteID = id
         selectedAthleteID = id
-        videoIndex = 0
+        videoIndex = index
         loadCurrentVideo()
         return true
     }

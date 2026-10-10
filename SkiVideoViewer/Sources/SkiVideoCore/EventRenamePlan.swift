@@ -26,10 +26,25 @@ public enum EventRenamePlanner {
         eventFolders: [[String]], newName: String, in folders: any EventFolderWriting
     ) async throws -> EventRenamePlan {
         var plan = EventRenamePlan()
+        // Renames this plan has already decided on, new path to old. Two
+        // spellings of one event can sit side by side (`hochybrig` and
+        // `Hochybrig` on Drive, `Zurs` and `Zürs` anywhere), and the sidebar
+        // shows them as one event. The first is renamed; the second must then
+        // merge into what the first *will be* — which does not exist yet, so
+        // the live folders alone would plan a second rename onto a taken name.
+        var plannedRenames: [[String]: [String]] = [:]
         for path in eventFolders.sorted(by: { $0.joined(separator: "/") < $1.joined(separator: "/") }) {
             guard let oldName = path.last, oldName != newName,
                   try await folders.children(of: path) != nil else { continue }
             let parent = Array(path.dropLast())
+            if plannedRenames[parent + [newName]] != nil {
+                // Not `mergesIntoExisting`: nothing by the new name existed,
+                // so there is no "Merge?" for the coach to answer.
+                try await merge(path, into: parent + [newName], folders: folders,
+                                renamed: plannedRenames, plan: &plan)
+                plan.steps.append(.removeIfEmpty(path))
+                continue
+            }
             let siblings = try await folders.children(of: parent) ?? []
             // Folder names match ignoring case: a local volume treats `B` and
             // `b` as one folder, so a "new" name differing only in case
@@ -41,10 +56,12 @@ public enum EventRenamePlanner {
                 $0.isFolder && $0.name != oldName && $0.name.caseInsensitiveCompare(newName) == .orderedSame
             }) {
                 plan.mergesIntoExisting = true
-                try await merge(path, into: parent + [existing.name], folders: folders, plan: &plan)
+                try await merge(path, into: parent + [existing.name], folders: folders,
+                                renamed: plannedRenames, plan: &plan)
                 plan.steps.append(.removeIfEmpty(path))
             } else {
                 plan.steps.append(.rename(path, to: newName))
+                plannedRenames[parent + [newName]] = path
             }
         }
         return plan
@@ -52,10 +69,12 @@ public enum EventRenamePlanner {
 
     private static func merge(
         _ source: [String], into target: [String],
-        folders: any EventFolderWriting, plan: inout EventRenamePlan
+        folders: any EventFolderWriting, renamed: [[String]: [String]],
+        plan: inout EventRenamePlan
     ) async throws {
         let incoming = try await folders.children(of: source) ?? []
-        let inTarget = try await folders.children(of: target) ?? []
+        // A target this plan creates by renaming is read where it lives now.
+        let inTarget = try await folders.children(of: livePath(of: target, renamed: renamed)) ?? []
         let existing = Dictionary(inTarget.map { ($0.name.lowercased(), $0) },
                                   uniquingKeysWith: { first, _ in first })
         // Sidecars are keyed by stem (`<stem>.skianalysis.json`,
@@ -88,7 +107,7 @@ public enum EventRenamePlanner {
             if entry.isFolder {
                 if let clash, clash.isFolder {
                     try await merge(source + [entry.name], into: target + [clash.name],
-                                    folders: folders, plan: &plan)
+                                    folders: folders, renamed: renamed, plan: &plan)
                     plan.steps.append(.removeIfEmpty(source + [entry.name]))
                 } else if clash != nil {
                     plan.leftInPlace.append(source + [entry.name])
@@ -101,6 +120,15 @@ public enum EventRenamePlanner {
                 plan.steps.append(.move(entry.name, from: source, to: target))
             }
         }
+    }
+
+    /// Where `path` is before this plan runs: a path under a folder the plan
+    /// renames is read under the folder's old name.
+    private static func livePath(of path: [String], renamed: [[String]: [String]]) -> [String] {
+        for (newPath, oldPath) in renamed where path.starts(with: newPath) {
+            return oldPath + path.dropFirst(newPath.count)
+        }
+        return path
     }
 
     private static func isVideo(_ name: String) -> Bool {
