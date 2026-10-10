@@ -6,7 +6,7 @@ import Foundation
 /// clip's upload throw or hang. Locked rather than an actor so the
 /// protocol's plain `async` methods can be called from any context, the way
 /// `GoogleDriveProvider`'s are.
-final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
+final class FakeDriveWriter: ItemUpdatable, @unchecked Sendable {
     static let identifier = "fake-writer"
 
     private let lock = NSLock()
@@ -144,6 +144,37 @@ final class FakeDriveWriter: ItemCreatable, @unchecked Sendable {
             return RemoteItem(id: id, name: name, size: size)
         }
     }
+
+    // MARK: ItemUpdatable
+
+    private var _trashedIDs: [String] = []
+    var trashedIDs: [String] { locked { _trashedIDs } }
+
+    func listChildren(of folderID: String) async throws -> [RemoteChild] {
+        locked {
+            let subfolders = folders.filter { $0.value.parent == folderID && !_trashedIDs.contains($0.key) }
+                .map { RemoteChild(id: $0.key, name: $0.value.name, isFolder: true) }
+            let contained = files.filter { $0.parent == folderID && !_trashedIDs.contains($0.id) }
+                .map { RemoteChild(id: $0.id, name: $0.name, isFolder: false) }
+            return (subfolders + contained).sorted { $0.name < $1.name }
+        }
+    }
+
+    func rename(itemID: String, to newName: String) async throws {
+        locked {
+            if let folder = folders[itemID] { folders[itemID] = (newName, folder.parent) }
+            if let index = files.firstIndex(where: { $0.id == itemID }) { files[index].name = newName }
+        }
+    }
+
+    func move(itemID: String, from oldParentID: String, to newParentID: String) async throws {
+        locked {
+            if let folder = folders[itemID] { folders[itemID] = (folder.name, newParentID) }
+            if let index = files.firstIndex(where: { $0.id == itemID }) { files[index].parent = newParentID }
+        }
+    }
+
+    func trash(itemID: String) async throws { locked { _trashedIDs.append(itemID) } }
 
     // MARK: RemoteLibraryProvider (reading, for opening it as a library)
 
