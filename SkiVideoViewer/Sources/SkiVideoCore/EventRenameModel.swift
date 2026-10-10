@@ -11,6 +11,19 @@ public struct EventClipCount: Equatable, Sendable {
     }
 }
 
+/// Why the open library offers no rename.
+public enum EventRenameRefusal: Error, Equatable, LocalizedError {
+    case noLibraryOpen
+    case cannotWrite(libraryName: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noLibraryOpen: return "Open a library first."
+        case let .cannotWrite(name): return "\(name) cannot be changed from this app."
+        }
+    }
+}
+
 /// Runs one event's rename: plans from the live folders, executes step by
 /// step with progress, and stops with a reason the coach can act on. Running
 /// it again re-plans, so a rename stopped partway finishes instead of

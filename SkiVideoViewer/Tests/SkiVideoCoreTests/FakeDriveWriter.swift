@@ -6,7 +6,7 @@ import Foundation
 /// clip's upload throw or hang. Locked rather than an actor so the
 /// protocol's plain `async` methods can be called from any context, the way
 /// `GoogleDriveProvider`'s are.
-final class FakeDriveWriter: ItemUpdatable, @unchecked Sendable {
+final class FakeDriveWriter: ItemUpdatable, IncrementallyEnumerable, @unchecked Sendable {
     static let identifier = "fake-writer"
 
     private let lock = NSLock()
@@ -192,6 +192,15 @@ final class FakeDriveWriter: ItemUpdatable, @unchecked Sendable {
     }
     func downloadSource(for file: RemoteFile) async throws -> DownloadSource {
         throw RemoteLibraryError.api("not a reading fake")
+    }
+
+    // MARK: IncrementallyEnumerable (so a reopen goes through the change feed)
+
+    /// The page the next reopen reads; nil reports nothing changed.
+    var nextChanges: RemoteLibraryChanges?
+    func startCursor(forRoot rootID: String) async throws -> String { "c1" }
+    func changes(since cursor: String, forRoot rootID: String) async throws -> RemoteLibraryChanges {
+        nextChanges ?? RemoteLibraryChanges(changed: [], removed: [], cursor: cursor)
     }
 
     // MARK: Locked helpers

@@ -272,11 +272,16 @@ public struct RemoteLibraryChanges: Sendable {
     /// should not pay to download the clip again.
     public let removed: [String]
     public let cursor: String
+    /// A folder in the library was renamed, moved or otherwise changed. Its
+    /// clips are not in `changed` — Drive logs the folder, not what is under
+    /// it — so their stored paths are stale and only a re-list corrects them.
+    public let foldersChanged: Bool
 
-    public init(changed: [RemoteFile], removed: [String], cursor: String) {
+    public init(changed: [RemoteFile], removed: [String], cursor: String, foldersChanged: Bool = false) {
         self.changed = changed
         self.removed = removed
         self.cursor = cursor
+        self.foldersChanged = foldersChanged
     }
 }
 

@@ -832,7 +832,10 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
                 )
             },
             removed: removed,
-            cursor: nextCursor ?? cursor
+            cursor: nextCursor ?? cursor,
+            // A changed folder's descendants are not in this page — their
+            // stored paths still carry the old name. The caller re-lists.
+            foldersChanged: !folders.isEmpty
         )
     }
 

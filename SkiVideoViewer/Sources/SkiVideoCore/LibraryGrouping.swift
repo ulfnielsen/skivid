@@ -201,7 +201,10 @@ enum LibraryGrouping {
         return byPath == .orderedAscending
     }
 
-    private static func fold(_ name: String) -> String {
+    /// Internal, not private: the event rename must match folder names by
+    /// exactly this rule, or it would miss a spelling the sidebar shows as
+    /// part of the event it was asked to rename.
+    static func fold(_ name: String) -> String {
         name.folding(
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: .current
