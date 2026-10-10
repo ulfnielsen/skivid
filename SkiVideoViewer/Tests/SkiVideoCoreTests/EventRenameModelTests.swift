@@ -125,6 +125,34 @@ final class EventRenameModelTests: XCTestCase {
         XCTAssertEqual(model.leftInPlace, [])
     }
 
+    /// A pair's alignment sidecar is named from both stems and sits beside
+    /// the left clip. After a real merge — one athlete merged clip by clip,
+    /// the other moved whole — the store must find it again from the clips'
+    /// new places, or every alignment in a merged event is silently lost.
+    func testALocalPairsAlignmentStillResolvesAfterAMerge() async throws {
+        try file("2026-02-14_A/Anna/C0094.MP4")
+        try file("2026-02-14_A/Bo/C0092.MP4")
+        try file("2026-02-14_B/Anna/IMG_9.mov")
+        let url = { (path: String) in self.root.appendingPathComponent(path) }
+        let track = AlignmentTrack(
+            version: AlignmentTrack.currentVersion,
+            computedAt: Date(timeIntervalSince1970: 1_754_140_000),
+            leftClip: "C0094.MP4", rightClip: "C0092.MP4",
+            leftStart: 18.56, rightStart: 4.40, parameters: .current,
+            samples: [AlignmentSample(time: 0, translation: CGVector(dx: 0.031, dy: -0.017),
+                                      overlap: 0.913, residual: 5.04, identityResidual: 9.63)])
+        try AlignmentTrackStore.save(track, left: url("2026-02-14_A/Anna/C0094.MP4"),
+                                     right: url("2026-02-14_A/Bo/C0092.MP4"))
+        let model = EventRenameModel(
+            oldName: "2026-02-14_A", eventFolders: [["2026-02-14_A"]], folders: LocalEventFolders(root: root))
+        let ok = await model.run(newName: "2026-02-14_B", allowMerge: true)
+        XCTAssertTrue(ok)
+        XCTAssertFalse(exists("2026-02-14_A"), "the merge emptied and removed the old event")
+        let loaded = AlignmentTrackStore.load(left: url("2026-02-14_B/Anna/C0094.MP4"),
+                                              right: url("2026-02-14_B/Bo/C0092.MP4"))
+        XCTAssertEqual(loaded, track)
+    }
+
     /// The target appeared after `targetExists` said no (on Drive the consent
     /// sheet sits in that window): the coach was never asked, so nothing moves.
     func testATargetThatAppearsAfterTheQuestionStopsBeforeMoving() async throws {
