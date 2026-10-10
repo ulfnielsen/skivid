@@ -15,18 +15,24 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SkiVideoViewerApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
-    @StateObject private var model = ViewerModel(
-        input: AppKitInputSource(),
-        folderPicker: AppKitFolderPicker(),
-        // Not AppKitOAuthPresenter directly: that one only speaks loopback,
-        // which the built-in Desktop client uses but a club-supplied iOS
-        // client is forbidden. MacOAuthPresenter picks between the two.
-        oauthPresenter: MacOAuthPresenter()
-    )
+    @StateObject private var model: ViewerModel
+    /// The viewer's keyboard source, kept so its window can be named once
+    /// SwiftUI has built it — see `HostWindowReader` below.
+    private let viewerInput: AppKitInputSource
     private let initialDirectory: URL?
     private let secondaryScreens = MacSecondaryScreenPresenter()
 
     init() {
+        let input = AppKitInputSource()
+        viewerInput = input
+        _model = StateObject(wrappedValue: ViewerModel(
+            input: input,
+            folderPicker: AppKitFolderPicker(),
+            // Not AppKitOAuthPresenter directly: that one only speaks loopback,
+            // which the built-in Desktop client uses but a club-supplied iOS
+            // client is forbidden. MacOAuthPresenter picks between the two.
+            oauthPresenter: MacOAuthPresenter()
+        ))
         if let argument = CommandLine.arguments.dropFirst().first {
             let expanded = NSString(string: argument).expandingTildeInPath
             initialDirectory = URL(fileURLWithPath: expanded, isDirectory: true)
@@ -42,6 +48,15 @@ struct SkiVideoViewerApp: App {
                 initialDirectory: initialDirectory,
                 secondaryScreens: secondaryScreens
             )
+            // The viewer's source stays enabled while the sorting and
+            // comparison windows are open, so it is scoped to the viewer's
+            // own window, as theirs are to theirs — see
+            // `AppKitInputSource.ownWindow`. A nil (the view leaving its
+            // window) is ignored: the weak reference already lets go, and the
+            // source then handles nothing until a window is named again.
+            .background(HostWindowReader { window in
+                if let window { viewerInput.ownWindow = window }
+            })
         }
         .defaultSize(width: 1200, height: 760)
         .commands {

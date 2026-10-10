@@ -16,9 +16,31 @@ public protocol HTTPTransport: Sendable {
     /// streams it from disk; setting `httpBody` would read the whole thing into
     /// memory first, on a device where that is a real cost.
     func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, HTTPURLResponse)
+
+    /// Sends `request` with bytes `range` of a file as the body.
+    ///
+    /// For resuming a resumable upload: after a dropped connection the server
+    /// reports how much it has, and only the rest should be sent. Same
+    /// streaming concern as `upload(_:fromFile:)`.
+    func upload(
+        _ request: URLRequest, fromFile file: URL, range: Range<Int64>
+    ) async throws -> (Data, HTTPURLResponse)
 }
 
 public extension HTTPTransport {
+    /// Reads just the range and sends it as an ordinary body — the test
+    /// fakes' counterpart of the default above.
+    func upload(
+        _ request: URLRequest, fromFile file: URL, range: Range<Int64>
+    ) async throws -> (Data, HTTPURLResponse) {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(range.lowerBound))
+        var request = request
+        request.httpBody = try handle.read(upToCount: Int(range.count)) ?? Data()
+        return try await data(for: request)
+    }
+
     /// Reads the file and sends it as an ordinary body.
     ///
     /// The default exists for the test fakes: they record whatever
@@ -60,5 +82,33 @@ public struct URLSessionTransport: HTTPTransport {
             throw RemoteLibraryError.api("The server's reply was not an HTTP response.")
         }
         return (data, http)
+    }
+
+    /// `URLSession` can only stream a whole file, so the range is first copied
+    /// to a temporary file in small buffers — constant memory, however large
+    /// the clip — and that is streamed. A range starting at 0 and covering the
+    /// file skips the copy.
+    public func upload(
+        _ request: URLRequest, fromFile file: URL, range: Range<Int64>
+    ) async throws -> (Data, HTTPURLResponse) {
+        let size = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? -1
+        if range.lowerBound == 0 && range.upperBound == size {
+            return try await upload(request, fromFile: file)
+        }
+        let slice = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).upload")
+        FileManager.default.createFile(atPath: slice.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: slice) }
+        let input = try FileHandle(forReadingFrom: file)
+        let output = try FileHandle(forWritingTo: slice)
+        defer { try? input.close(); try? output.close() }
+        try input.seek(toOffset: UInt64(range.lowerBound))
+        var remaining = Int(range.count)
+        while remaining > 0 {
+            guard let chunk = try input.read(upToCount: min(remaining, 1 << 20)), !chunk.isEmpty else { break }
+            try output.write(contentsOf: chunk)
+            remaining -= chunk.count
+        }
+        return try await upload(request, fromFile: slice)
     }
 }

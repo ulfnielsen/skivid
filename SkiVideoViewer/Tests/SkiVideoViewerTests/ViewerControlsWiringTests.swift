@@ -582,6 +582,7 @@ final class ViewerControlsWiringTests: XCTestCase {
 private final class NoSecondaryScreens: SecondaryScreenPresenter {
     let canPresentComparison = false
     let canPresentSorting = false
+    let screensCoverTheViewer = false
 
     func presentComparison(
         initialLeftVideo: URL?,
@@ -594,6 +595,7 @@ private final class NoSecondaryScreens: SecondaryScreenPresenter {
 
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {

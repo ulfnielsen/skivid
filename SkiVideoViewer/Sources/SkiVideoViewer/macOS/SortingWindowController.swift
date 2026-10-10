@@ -3,7 +3,11 @@ import SkiVideoCore
 import SwiftUI
 
 final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegate {
-    private var window: NSWindow?
+    /// Readable for tests; only this controller sets it.
+    private(set) var window: NSWindow?
+    /// The source handed to this window's model, kept so a test can check
+    /// what it is scoped to. Weak: the model owns it.
+    private(set) weak var inputSource: AppKitInputSource?
     private var closingWindows: [NSWindow] = []
     private var onClose: (() -> Void)?
 
@@ -18,6 +22,7 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
     @MainActor
     func show(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -57,6 +62,7 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
             defaultNamesURL: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Ski/athletes.txt"),
             libraryAthletes: libraryAthletes,
+            upload: upload,
             // Unchanged Mac behaviour: the source is a folder on this Mac, not
             // a card, so the session still organizes it in place.
             // `outputRoot` is passed for the pairing's sake even though it is
@@ -77,6 +83,10 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         window.contentView = NSHostingView(rootView: rootView)
         window.delegate = self
         self.window = window
+        inputSource = input
+        // The viewer stays keyboard-live beside this window, so this source
+        // must only hear keys typed here — see `AppKitInputSource.ownWindow`.
+        input.ownWindow = window
         // Fill the usable display area while retaining the normal macOS title bar.
         window.setFrame(frame, display: true)
         window.makeKeyAndOrderFront(nil)

@@ -62,6 +62,7 @@ public final class SortingModel: ObservableObject {
     /// a folder picker cannot open the two "Choose…" panels.
     private let input: PlaybackInputSource?
     private let folderPicker: FolderPicker?
+    private let photosImporter: PhotosImporting?
     /// The open library's athlete names, one per (athlete, event) pair —
     /// snapshotted at construction, the same way `defaultNamesURL` is read
     /// once rather than watched. `reloadNames()` merges it with the names
@@ -80,11 +81,13 @@ public final class SortingModel: ObservableObject {
         input: PlaybackInputSource? = nil,
         folderPicker: FolderPicker? = nil,
         defaultNamesURL: URL? = nil,
-        libraryAthletes: [AthleteGroup] = []
+        libraryAthletes: [AthleteGroup] = [],
+        photosImporter: PhotosImporting? = nil
     ) {
         self.mediaPipeline = mediaPipeline
         self.input = input
         self.folderPicker = folderPicker
+        self.photosImporter = photosImporter
         self.libraryAthletes = libraryAthletes
         namesPath = defaultNamesURL.map { url in
             FileManager.default.fileExists(atPath: url.path) ? url.path : ""
@@ -112,6 +115,32 @@ public final class SortingModel: ObservableObject {
     public static func defaultOutputRoot() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Sorted", isDirectory: true)
+    }
+
+    /// Where this session's finished resizes are, for the upload tray to read
+    /// back (`SortedOutput.clips(in:)`). A read-only session's output root is
+    /// known before any tagging — which is what lets the tray be reopened
+    /// after the app was killed, with nothing tagged this launch. A Mac
+    /// session writes beside its source, so it is known only once sorting has
+    /// begun; nil until then.
+    public var uploadRoot: URL? {
+        resizedDirectory ?? (keepsSourceIntact ? outputRoot : nil)
+    }
+
+    /// This session's own event folder under `uploadRoot` — where every clip
+    /// tagged since `beginSorting` lands. Nil until sorting has begun. The
+    /// finished-tagging tray reads only this, so a season of older events
+    /// under the same root stays out of it.
+    public var sessionOutputDirectory: URL? {
+        guard let resizedDirectory, !eventFolder.isEmpty else { return nil }
+        return resizedDirectory.appendingPathComponent(eventFolder, isDirectory: true)
+    }
+
+    /// Tagging is done and no resize is still queued or running: everything
+    /// this session will produce is on disk. The tray waits for this so it
+    /// does not show a list that is still growing.
+    public var resizesAreSettled: Bool {
+        taggingFinished && completedResizes == queuedResizes
     }
 
     public var currentVideo: URL? {
@@ -156,6 +185,48 @@ public final class SortingModel: ObservableObject {
                   confirmLabel: "Choose"
               )
         else { return }
+        useSource(url)
+    }
+
+    public var canChooseFromPhotos: Bool { photosImporter != nil }
+
+    /// Makes the Photos picks the source. The folder they land in is scratch
+    /// (see `discardPhotosScratchIfIdle`), which is safe as a source because a
+    /// Photos session is always `keepsSourceIntact`: resizes are written under
+    /// `outputRoot`, never beside it.
+    public func chooseFromPhotos() async {
+        guard let photosImporter else { return }
+        // An import wipes the previous scratch folder, and resizes still
+        // running from it would lose their sources mid-encode.
+        guard completedResizes == queuedResizes else {
+            errorMessage = "Wait for the current resizes to finish before choosing clips from Photos."
+            return
+        }
+        let before = status
+        status = "Copying clips from Photos…"
+        defer { status = before }
+        do {
+            guard let url = try await photosImporter.importClips() else { return }
+            useSource(url)
+        } catch {
+            errorMessage = error.localizedDescription
+            // A failed import has already removed the scratch folder, which may
+            // be where `sourcePath` pointed. Leave it empty, not dangling.
+            if !FileManager.default.fileExists(atPath: sourcePath) { sourcePath = "" }
+        }
+    }
+
+    /// Deletes the Photos copies once nothing can still read them. Called when
+    /// the sheet goes away and when a sort finishes. A resize still running
+    /// reads its source from this folder, and the queue outlives the sheet, so
+    /// while any are in flight the folder is left for the next import or app
+    /// launch to clear instead.
+    public func discardPhotosScratchIfIdle() {
+        guard completedResizes == queuedResizes else { return }
+        photosImporter?.discard()
+    }
+
+    private func useSource(_ url: URL) {
         sourcePath = url.path
         if let firstVideo = try? SortingLibrary.rawVideos(in: url).first {
             eventDate = SortingLibrary.suggestedEventDate(from: firstVideo)
@@ -427,6 +498,9 @@ public final class SortingModel: ObservableObject {
 
     private func completeIfPossible() {
         guard taggingFinished, completedResizes == queuedResizes else { return }
+        // Only a clean finish. A failed resize's source is the scratch copy,
+        // and the coach may want it; the next import or launch clears it.
+        if failedResizes.isEmpty { discardPhotosScratchIfIdle() }
         if failedResizes.isEmpty, let resizedDirectory {
             completedOutputDirectory = resizedDirectory
             status = "Finished. Your resized library is ready."

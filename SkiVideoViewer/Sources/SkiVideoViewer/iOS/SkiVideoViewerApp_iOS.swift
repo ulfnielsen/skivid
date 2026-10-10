@@ -9,6 +9,15 @@ struct SkiVideoViewerApp_iOS: App {
         // so the app tells it, once, before anything renders a sentence with
         // the device's name in it.
         LocalSource.deviceName = UIDevice.current.userInterfaceIdiom == .phone ? "iPhone" : "iPad"
+        // Photos copies from a session that was killed, or closed while resizes
+        // were running, are still in Caches. Nothing from a previous launch can
+        // be reading them, so launch is the one moment this is always safe.
+        PhotosClipExporter().clear()
+        #if DEBUG
+        // Before the models below exist: their stores must already point at
+        // the UI test's throwaway ones.
+        if UITestPhotosToDriveSeam.isActive { UITestPhotosToDriveSeam.isolateStorage() }
+        #endif
     }
 
     @StateObject private var model = ViewerModel(
@@ -29,6 +38,11 @@ struct SkiVideoViewerApp_iOS: App {
                 initialDirectory: nil,
                 secondaryScreens: secondaryScreens
             )
+            #if DEBUG
+            .task {
+                if UITestPhotosToDriveSeam.isActive { await UITestPhotosToDriveSeam.openFakeDrive(in: model) }
+            }
+            #endif
             .fullScreenCover(item: $secondaryScreens.comparison) { request in
                 ComparisonView(
                     initialLeftVideo: request.initialLeftVideo,
@@ -73,13 +87,40 @@ struct SkiVideoViewerApp_iOS: App {
                     // `ContentView`'s Sort & Resize button, which is what
                     // captures `ViewerModel.athletes` in the first place.
                     libraryAthletes: request.libraryAthletes,
+                    upload: request.upload,
                     // The one pairing this initializer exists to make explicit:
                     // an iPad's source is a Files location — very often the SD
                     // card itself — so this session must never write into it.
                     keepsSourceIntact: true,
-                    outputRoot: SortingModel.defaultOutputRoot()
+                    outputRoot: Self.sortingOutputRoot,
+                    // Copies land in Caches, never under `outputRoot`: the
+                    // resized, tagged clips outlive the sort, the copies do not.
+                    photosImporter: Self.makePhotosImporter()
                 )
+                #if DEBUG
+                .overlay(alignment: .top) {
+                    if UITestPhotosToDriveSeam.isActive {
+                        FakeClubDriveReadout(log: UITestPhotosToDriveSeam.drive.log)
+                    }
+                }
+                #endif
             }
         }
+    }
+
+    private static var sortingOutputRoot: URL {
+        #if DEBUG
+        if UITestPhotosToDriveSeam.isActive { return UITestPhotosToDriveSeam.outputRoot }
+        #endif
+        return SortingModel.defaultOutputRoot()
+    }
+
+    @MainActor private static func makePhotosImporter() -> PhotosImporting {
+        #if DEBUG
+        // PHPicker runs out of process and XCUITest cannot drive it; see
+        // `UITestPhotosToDriveSeam`.
+        if UITestPhotosToDriveSeam.isActive { return UITestPhotosToDriveSeam.photosImporter() }
+        #endif
+        return PHPickerPhotosImporter()
     }
 }

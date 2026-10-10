@@ -84,6 +84,79 @@ final class AppKitInputSourceTests: XCTestCase {
         }
     }
 
+    /// Regression: the sorting window's source stays enabled for as long as
+    /// that window is open — including the whole upload tray after tagging.
+    /// Unscoped, it answered Space typed into the viewer for the sorting
+    /// player. (That was half of "Space does nothing in the viewer"; the other
+    /// half was `ContentView` switching the viewer's own source off — see
+    /// `AppKitInputSource.ownWindow`.)
+    func testASourceScopedToItsWindowLetsOtherWindowsKeysThrough() {
+        let own = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                           styleMask: [.titled], backing: .buffered, defer: false)
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+        source.ownWindow = own
+
+        let elsewhere = key(49, windowNumber: other.windowNumber)
+        XCTAssertTrue(elsewhere.window === other, "premise: the event must resolve to the other window")
+        XCTAssertFalse(source.handle(elsewhere), "Space in another window must reach that window")
+        XCTAssertTrue(captured.isEmpty)
+
+        XCTAssertTrue(source.handle(key(49, windowNumber: own.windowNumber)))
+        XCTAssertEqual(captured.count, 1, "Space in its own window still toggles playback")
+    }
+
+    /// The macOS arrangement once the viewer stays live beside the sorting and
+    /// comparison windows: one source per window, each scoped to its own.
+    /// Space in either window must toggle exactly that window's playback and
+    /// leave the other's alone, whichever monitor AppKit happens to call first.
+    func testTwoScopedSourcesEachHandleOnlyTheirOwnWindowsSpace() {
+        let viewerWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                                    styleMask: [.titled], backing: .buffered, defer: false)
+        let sortingWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                                     styleMask: [.titled], backing: .buffered, defer: false)
+        let viewer = AppKitInputSource()
+        let sorting = AppKitInputSource()
+        var viewerIntents = 0
+        var sortingIntents = 0
+        viewer.onIntent = { _ in viewerIntents += 1 }
+        sorting.onIntent = { _ in sortingIntents += 1 }
+        viewer.ownWindow = viewerWindow
+        sorting.ownWindow = sortingWindow
+
+        let inViewer = key(49, windowNumber: viewerWindow.windowNumber)
+        XCTAssertFalse(sorting.handle(inViewer), "the sorting source must let the viewer's Space through")
+        XCTAssertTrue(viewer.handle(inViewer))
+        let inSorting = key(49, windowNumber: sortingWindow.windowNumber)
+        XCTAssertFalse(viewer.handle(inSorting), "the viewer source must let the sorting window's Space through")
+        XCTAssertTrue(sorting.handle(inSorting))
+
+        XCTAssertEqual(viewerIntents, 1)
+        XCTAssertEqual(sortingIntents, 1)
+    }
+
+    /// `ownWindow` is weak. Once the window it named is gone, a scoped source
+    /// must not quietly fall back to the app-wide behaviour of a source that
+    /// was never scoped — that would put it back in front of every other
+    /// window's keys, the very thing scoping exists to stop.
+    func testASourceWhoseWindowHasGoneHandlesNothing() {
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+        autoreleasepool {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            source.ownWindow = window
+        }
+        XCTAssertNil(source.ownWindow, "premise: the window must really be gone")
+        XCTAssertFalse(source.handle(key(49)), "Space must pass through to whoever owns it now")
+        XCTAssertTrue(captured.isEmpty)
+    }
+
     func testArrowsEmitClipSteps() {
         let intents = capture([key(126), key(125)])
         XCTAssertEqual(intents.count, 2)

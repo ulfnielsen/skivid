@@ -151,6 +151,90 @@ public protocol ContentReplaceable: RemoteLibraryProvider {
     func replaceContents(ofFileID fileID: String, withFileAt url: URL) async throws -> String?
 }
 
+/// A folder or file this app created, or found already there.
+public struct RemoteItem: Equatable, Sendable {
+    public let id: String
+    public let name: String
+    /// Bytes, as Drive reports them. Only `findFile` asks for it — the upload
+    /// batch compares it with the local clip to tell a re-run of the same clip
+    /// from a different clip that shares its name. Nil where Drive gives none
+    /// (folders, Google Docs) or where the caller did not ask.
+    public let size: Int64?
+
+    public init(id: String, name: String, size: Int64? = nil) {
+        self.id = id
+        self.name = name
+        self.size = size
+    }
+}
+
+/// How a failed upload should be handled by whoever is running a batch.
+/// Not-signed-in still arrives as `RemoteLibraryError.notSignedIn`, which is
+/// also "stop"; anything else untyped is a `RemoteLibraryError.api`.
+public enum RemoteUploadError: LocalizedError, Equatable {
+    /// Worth trying this clip again: the connection kept dropping, or the
+    /// upload session expired (a retry opens a fresh one). The batch goes on.
+    case retryClip(String)
+    /// Every further clip would fail the same way — e.g. no edit access to
+    /// the club's drive. Stop the batch.
+    case stopBatch(String)
+    /// Drive refused the write for want of edit access. Stops the batch like
+    /// `.stopBatch`, but typed so the batch — which knows the folder the clip
+    /// was going into, where the provider knows only its id — can say where.
+    case noWriteAccess
+
+    public var errorDescription: String? {
+        switch self {
+        case .retryClip(let message), .stopBatch(let message): return message
+        case .noWriteAccess:
+            return "You don't have permission to add clips to this folder in Google Drive."
+        }
+    }
+}
+
+/// What a provider offers when a client may create folders and upload new
+/// files — the club-Drive upload, as opposed to `ContentReplaceable`'s repair
+/// of a file that already exists.
+///
+/// Its own protocol for the reasons `ContentReplaceable` is: writes are absent
+/// from `RemoteLibraryProvider`, and the upload code (and a test fake) should
+/// depend on this shape rather than on `GoogleDriveProvider`. Reached with
+/// `as? ItemCreatable`. It restates `authorizeWrites(presenter:)` rather than
+/// inheriting `ContentReplaceable`, so a provider that can upload but not
+/// replace does not have to stub `replaceContents`; `GoogleDriveProvider`
+/// satisfies both with the one method, so there is a single consent path.
+///
+/// The `find…` lookups ask the provider itself, never anything the app
+/// remembers: the app can be killed mid-batch, and "nothing uploads twice"
+/// has to hold across that.
+public protocol ItemCreatable: RemoteLibraryProvider {
+    /// Same contract as `ContentReplaceable.authorizeWrites`.
+    func authorizeWrites(presenter: OAuthPresenter) async throws
+
+    /// A non-trashed folder called `name` directly inside `parentID`, or nil.
+    func findFolder(named name: String, parent parentID: String) async throws -> RemoteItem?
+
+    /// A non-trashed file (not a folder) called `name` directly inside
+    /// `parentID`, or nil. What the upload's skip rule asks.
+    func findFile(named name: String, parent parentID: String) async throws -> RemoteItem?
+
+    /// Creates a folder. Does not look first — see `findOrCreateFolder`.
+    func createFolder(named name: String, parent parentID: String) async throws -> RemoteItem
+
+    /// `findFolder`, else `createFolder`, in that order, so two coaches
+    /// filing the same event do not make two folders (barring a true race).
+    func findOrCreateFolder(named name: String, parent parentID: String) async throws -> RemoteItem
+
+    /// Uploads the file at `url` as a new file called `name` in `parentID`.
+    /// Does not check for an existing file of that name; the caller does,
+    /// with `findFile`. Retries within a bound and resumes from the server's
+    /// offset; past that bound it throws `RemoteUploadError.retryClip`. A 403
+    /// throws by its reason — `.retryClip` for a rate limit, `.stopBatch` for
+    /// a full drive, `.noWriteAccess` otherwise; an expired session throws
+    /// `.retryClip`.
+    func upload(fileAt url: URL, named name: String, parent parentID: String) async throws -> RemoteItem
+}
+
 public struct RemoteLibraryChanges: Sendable {
     public let changed: [RemoteFile]
     /// File ids that left the library. **Not a licence to delete cached

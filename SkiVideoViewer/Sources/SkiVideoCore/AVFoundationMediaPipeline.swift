@@ -38,9 +38,20 @@ public struct AVFoundationMediaPipeline: MediaPipeline {
         let transform = try await videoTrack.load(.preferredTransform)
         let (outWidth, outHeight) = Self.outputSize(natural: natural, transform: transform)
 
-        // Destination must not exist — AVAssetWriter refuses otherwise.
-        try? FileManager.default.removeItem(at: destination)
-        let writer = try AVAssetWriter(outputURL: destination, fileType: .mov)
+        // Written under a hidden name beside the destination and moved into
+        // place only once the export completed. The destination used to be
+        // exported to directly, so an in-flight, failed or killed resize left
+        // a truncated file at the final path — which `SortedOutput.clips` (and
+        // so the upload tray) would have listed as a finished clip. A hidden
+        // file is skipped by that scan, and survives nothing worse than a
+        // leftover dot-file if the app is killed mid-export.
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".resize-\(UUID().uuidString).\(destination.pathExtension)")
+        // AVAssetWriter refuses an existing output, and a failure must leave
+        // nothing behind; after success `moveItem` has consumed it.
+        try? FileManager.default.removeItem(at: staging)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let writer = try AVAssetWriter(outputURL: staging, fileType: .mov)
         writer.metadata = Self.metadata(athlete: athlete)
 
         let videoInput = AVAssetWriterInput(
@@ -145,6 +156,12 @@ public struct AVFoundationMediaPipeline: MediaPipeline {
         await writer.finishWriting()
         guard writer.status == .completed else {
             throw MediaPipelineError.exportFailed(writer.error?.localizedDescription ?? "the resize did not complete")
+        }
+        // Atomic on one volume, which staging beside the destination guarantees.
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+        } else {
+            try FileManager.default.moveItem(at: staging, to: destination)
         }
     }
 

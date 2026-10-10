@@ -591,6 +591,48 @@ public final class ViewerModel: ObservableObject {
         return libraries.first { $0.id == openLibraryID }
     }
 
+    /// Where a sorted clip would go in Drive, or why nowhere. Cheap and
+    /// synchronous: ask it before tagging begins, not after.
+    ///
+    /// The index's layout counts only when it is known — the coach's own pick,
+    /// or one read off the folders. `openRemoteLibrary` falls back to
+    /// athlete-then-event when the folders say nothing; that is a display
+    /// default for grouping and must not decide where footage is filed.
+    public func uploadDestination() throws -> UploadDestination {
+        var known: FolderConvention?
+        if let remoteIndex {
+            known = remoteIndex.conventionWasChosen
+                ? remoteIndex.convention
+                : RemoteLibraryIndex.inferredConvention(from: remoteIndex.files)
+        }
+        return try UploadDestination.resolve(library: openLibrary, indexConvention: known)
+    }
+
+    /// What an upload batch needs from the open library — its destination,
+    /// the provider as a writer, and the presenter for Google's consent screen
+    /// — or the reason there is none. Asked when the sorting screen opens, so
+    /// a coach learns before tagging that uploading will not be possible.
+    ///
+    /// The provider is handed out as `any ItemCreatable`; `UploadBatchModel`
+    /// never sees `GoogleDriveProvider`, which is what lets a fake stand in.
+    public func uploadTarget() throws -> UploadTarget {
+        let destination = try uploadDestination()
+        guard let writer = remoteProvider as? ItemCreatable else {
+            throw UploadRefusal.cannotWrite(libraryName: destination.libraryName)
+        }
+        return UploadTarget(destination: destination, provider: writer, presenter: oauthPresenter,
+                            knownFolderPath: knownFolderPath())
+    }
+
+    /// A folder the open drive's index lists a clip in, as folder names under
+    /// its root — the upload batch's safety probe looks for it. The
+    /// lexicographically smallest path, so the same library always offers the
+    /// same folder; nil when the index lists no clip inside a folder.
+    private func knownFolderPath() -> [String]? {
+        remoteIndex?.files.map(\.path).filter { !$0.isEmpty }
+            .min { $0.joined(separator: "/") < $1.joined(separator: "/") }
+    }
+
     /// The name for the window. A library has a name now, so the window can use
     /// it: "Remote Library" answered a question nobody asked, and a coach with
     /// two clubs' drives connected could not tell from the title which one they

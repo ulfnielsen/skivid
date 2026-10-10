@@ -250,6 +250,7 @@ final class AthleteSearchFocusWiringTests: XCTestCase {
 private final class NoSecondaryScreensForFocus: SecondaryScreenPresenter {
     let canPresentComparison = false
     let canPresentSorting = false
+    let screensCoverTheViewer = false
 
     func presentComparison(
         initialLeftVideo: URL?,
@@ -262,6 +263,7 @@ private final class NoSecondaryScreensForFocus: SecondaryScreenPresenter {
 
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {

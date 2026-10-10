@@ -7,6 +7,7 @@ final class SecondaryScreensTests: XCTestCase {
     private final class UnavailablePresenter: SecondaryScreenPresenter {
         var canPresentComparison: Bool { false }
         var canPresentSorting: Bool { false }
+        var screensCoverTheViewer: Bool { false }
         private(set) var comparisonCalls = 0
         private(set) var sortingCalls = 0
 
@@ -21,6 +22,7 @@ final class SecondaryScreensTests: XCTestCase {
 
         func presentSorting(
             libraryAthletes: [AthleteGroup],
+            upload: Result<UploadTarget, UploadRefusal>,
             openResizedLibrary: @escaping (URL) -> Void,
             onClose: @escaping () -> Void
         ) {
@@ -33,6 +35,7 @@ final class SecondaryScreensTests: XCTestCase {
     private final class ComparisonOnlyPresenter: SecondaryScreenPresenter {
         var canPresentComparison: Bool { true }
         var canPresentSorting: Bool { false }
+        var screensCoverTheViewer: Bool { false }
 
         func presentComparison(
             initialLeftVideo: URL?,
@@ -43,6 +46,7 @@ final class SecondaryScreensTests: XCTestCase {
 
         func presentSorting(
             libraryAthletes: [AthleteGroup],
+            upload: Result<UploadTarget, UploadRefusal>,
             openResizedLibrary: @escaping (URL) -> Void,
             onClose: @escaping () -> Void
         ) {}
@@ -73,7 +77,8 @@ final class SecondaryScreensTests: XCTestCase {
         // The view hides the buttons, but a stray call must not trap.
         let presenter = UnavailablePresenter()
         presenter.presentComparison(initialLeftVideo: nil, openLibrary: [], prepare: .none) {}
-        presenter.presentSorting(libraryAthletes: [], openResizedLibrary: { _ in }) {}
+        presenter.presentSorting(libraryAthletes: [], upload: .failure(.noLibraryOpen),
+                                 openResizedLibrary: { _ in }) {}
         XCTAssertEqual(presenter.comparisonCalls, 1)
         XCTAssertEqual(presenter.sortingCalls, 1)
     }

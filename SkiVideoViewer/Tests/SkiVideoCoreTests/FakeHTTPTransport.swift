@@ -22,12 +22,19 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
         /// on the whole transport so a test can fail one request and let the
         /// next succeed, which is what the fall-back paths do.
         let failure: Error?
+        /// Extra response headers: `Location` and `Range` for resumable uploads.
+        var headers: [String: String] = [:]
 
         init(status: Int = 200, json: String, contentType: String = "application/json") {
             self.status = status
             self.body = Data(json.utf8)
             self.contentType = contentType
             self.failure = nil
+        }
+
+        init(status: Int, headers: [String: String], json: String = "") {
+            self.init(status: status, json: json)
+            self.headers = headers
         }
 
         init(failure: Error) {
@@ -72,7 +79,8 @@ final class FakeHTTPTransport: HTTPTransport, @unchecked Sendable {
         }
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
-            httpVersion: nil, headerFields: ["Content-Type": response.contentType]
+            httpVersion: nil,
+            headerFields: ["Content-Type": response.contentType].merging(response.headers) { $1 }
         )!
         return (response.body, http)
     }

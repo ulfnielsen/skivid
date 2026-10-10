@@ -5,7 +5,20 @@ struct SortingSheet: View {
     @StateObject private var model: SortingModel
     @Binding var isPresented: Bool
     let openResizedLibrary: (URL) -> Void
+    /// Where tagged clips can upload, or why they cannot — asked as this
+    /// screen opened, before any tagging (see `ContentView`).
+    let upload: Result<UploadTarget, UploadRefusal>
     @FocusState private var athleteFieldIsFocused: Bool
+    /// Two trays, deliberately not one. The finished-tagging screen's is this
+    /// session's event folder only (`sessionOutputDirectory`): a season of
+    /// older events under the same root would bury it, cost a Drive lookup
+    /// each, and be swept into "Upload N" — re-uploading any old clip an
+    /// admin had since moved. The setup screen's "Clips waiting to upload…"
+    /// is the deliberate whole-history view, for what a killed app or a lost
+    /// signal left behind. Each is remade only if its directory moves.
+    @State private var sessionTray: UploadBatchModel?
+    @State private var historyTray: UploadBatchModel?
+    @State private var isShowingHistoryTray = false
 
     /// `keepsSourceIntact` and `outputRoot` have no default here, deliberately:
     /// `outputRoot` on `SortingModel` is silently ignored whenever
@@ -27,11 +40,14 @@ struct SortingSheet: View {
         folderPicker: FolderPicker,
         defaultNamesURL: URL?,
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         keepsSourceIntact: Bool,
-        outputRoot: URL
+        outputRoot: URL,
+        photosImporter: PhotosImporting? = nil
     ) {
         _isPresented = isPresented
         self.openResizedLibrary = openResizedLibrary
+        self.upload = upload
         // Built inside `StateObject`'s autoclosure so it only runs once, the
         // first time this view is materialised. `SortingSheet` is created
         // fresh from `.fullScreenCover(item:)`'s content closure on iPad,
@@ -44,7 +60,8 @@ struct SortingSheet: View {
                 input: input,
                 folderPicker: folderPicker,
                 defaultNamesURL: defaultNamesURL,
-                libraryAthletes: libraryAthletes
+                libraryAthletes: libraryAthletes,
+                photosImporter: photosImporter
             )
             sortingModel.keepsSourceIntact = keepsSourceIntact
             sortingModel.outputRoot = outputRoot
@@ -77,6 +94,30 @@ struct SortingSheet: View {
         .frame(minWidth: isCompact ? nil : 820, minHeight: isCompact ? nil : 640)
         .onDisappear {
             model.stopPlayback()
+            model.discardPhotosScratchIfIdle()
+            // The batch is foreground and watched by design; closing the
+            // screen is the coach walking away from it. What was not sent
+            // stays on disk and shows as waiting next time.
+            sessionTray?.cancel()
+            historyTray?.cancel()
+        }
+        .onChange(of: model.resizesAreSettled) { settled in
+            if settled { ensureSessionTray() }
+        }
+        .sheet(isPresented: $isShowingHistoryTray, onDismiss: { historyTray?.cancel() }) {
+            if let tray = historyTray {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Waiting to upload").font(.headline)
+                        Spacer()
+                        Button("Done") { isShowingHistoryTray = false }
+                            .accessibilityIdentifier("upload.done")
+                    }
+                    .padding(16)
+                    UploadTrayView(model: tray)
+                }
+                .frame(minWidth: isCompact ? nil : 520, minHeight: isCompact ? nil : 480)
+            }
         }
         .alert(
             "Sorting could not continue",
@@ -179,6 +220,61 @@ struct SortingSheet: View {
                      + "\(model.athleteNames.count == 1 ? "name" : "names") loaded for autocomplete.")
                     .foregroundStyle(.secondary)
             }
+
+            uploadNotice
+        }
+    }
+
+    /// Said before tagging, not after: a coach about to tag twenty clips for a
+    /// library that cannot take them should know now. Sorting still works
+    /// either way — the SD-card flow never needed Drive.
+    @ViewBuilder
+    private var uploadNotice: some View {
+        switch upload {
+        case let .success(target):
+            VStack(alignment: .leading, spacing: 8) {
+                Label("When tagging is done, the clips can be uploaded to \(target.destination.libraryName).",
+                      systemImage: "icloud.and.arrow.up")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                // Only where the sorted output is known before tagging (a
+                // read-only session's output root): the way back to clips a
+                // killed app, or a dropped signal, left waiting.
+                if model.uploadRoot != nil {
+                    Button("Clips waiting to upload…") {
+                        ensureHistoryTray()
+                        isShowingHistoryTray = historyTray != nil
+                    }
+                    .accessibilityIdentifier("sorting.showUploadTray")
+                }
+            }
+        case let .failure(refusal):
+            Label("Uploading will not be available. \(refusal.localizedDescription) Sorting still works.",
+                  systemImage: "icloud.slash")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("sorting.uploadRefusal")
+        }
+    }
+
+    /// This session's tray: its event folder only. Made when the resizes
+    /// settle; remade if a second sort in the same window moves the folder.
+    private func ensureSessionTray() {
+        guard case let .success(target) = upload, let folder = model.sessionOutputDirectory else { return }
+        let source = UploadBatchModel.Source.eventFolder(folder)
+        if sessionTray?.source != source {
+            sessionTray?.cancel()
+            sessionTray = UploadBatchModel(source: source, target: target)
+        }
+    }
+
+    /// Every event under the output root, for the setup screen's entry point.
+    private func ensureHistoryTray() {
+        guard case let .success(target) = upload, let root = model.uploadRoot else { return }
+        let source = UploadBatchModel.Source.outputRoot(root)
+        if historyTray?.source != source {
+            historyTray?.cancel()
+            historyTray = UploadBatchModel(source: source, target: target)
         }
     }
 
@@ -231,6 +327,12 @@ struct SortingSheet: View {
                 Task { await model.chooseSourceDirectory() }
             }
             .accessibilityIdentifier("sorting.chooseSource")
+            if model.canChooseFromPhotos {
+                Button("From Photos…") {
+                    Task { await model.chooseFromPhotos() }
+                }
+                .accessibilityIdentifier("sorting.chooseFromPhotos")
+            }
         }
     }
 
@@ -267,6 +369,31 @@ struct SortingSheet: View {
                 // you are about to tag.
                 SinglePlayerView(player: model.player)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.resizesAreSettled, let tray = sessionTray {
+                // Tagging is done and every resize has landed: what is on
+                // disk is final, so this is the moment to show what waits.
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(model.status)
+                            .foregroundStyle(.secondary)
+                        if !model.failedResizes.isEmpty {
+                            Text(model.failedResizes.joined(separator: "\n"))
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let output = model.completedOutputDirectory {
+                            Button("Open Resized Library") {
+                                openResizedLibrary(output)
+                                isPresented = false
+                            }
+                            .keyboardShortcut(.defaultAction)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    UploadTrayView(model: tray)
+                }
             } else {
                 VStack(spacing: 12) {
                     ProgressView(value: Double(model.completedResizes), total: Double(max(model.queuedResizes, 1)))

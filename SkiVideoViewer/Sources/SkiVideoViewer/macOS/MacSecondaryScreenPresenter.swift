@@ -10,6 +10,9 @@ final class MacSecondaryScreenPresenter: SecondaryScreenPresenter {
     // reads these while building `body` without observing this object.
     var canPresentComparison: Bool { true }
     var canPresentSorting: Bool { true }
+    /// Both screens are separate windows; the viewer stays on screen and
+    /// keyboard-live beside them. See the protocol requirement.
+    var screensCoverTheViewer: Bool { false }
 
     private let comparisonWindow = ComparisonWindowController()
     private let sortingWindow = SortingWindowController()
@@ -30,11 +33,13 @@ final class MacSecondaryScreenPresenter: SecondaryScreenPresenter {
 
     func presentSorting(
         libraryAthletes: [AthleteGroup],
+        upload: Result<UploadTarget, UploadRefusal>,
         openResizedLibrary: @escaping (URL) -> Void,
         onClose: @escaping () -> Void
     ) {
         sortingWindow.show(
             libraryAthletes: libraryAthletes,
+            upload: upload,
             openResizedLibrary: openResizedLibrary,
             onClose: onClose
         )

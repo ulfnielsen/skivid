@@ -53,6 +53,43 @@ final class AppKitInputSource: PlaybackInputSource {
     /// silent when it is off.
     var arrowsRepeat = false
 
+    /// When set, only keys typed into this window are handled; every other
+    /// window's keys pass through untouched.
+    ///
+    /// Why it exists. `NSEvent.addLocalMonitorForEvents` is app-wide: every
+    /// source's monitor sees every key typed into any of the app's windows,
+    /// and a monitor that returns nil ends that event's dispatch. On macOS the
+    /// viewer, sorting and comparison windows can all be open at once, each
+    /// with its own enabled source, so an unscoped source answers — and
+    /// consumes — keys meant for another window.
+    ///
+    /// What actually broke Space in the viewer while the sorting window was
+    /// open was two things, and d287d69 fixed only the second:
+    ///  1. `ContentView` switched the viewer's source *off* for as long as the
+    ///     sorting (or comparison) window was open, so no key reached it at
+    ///     all. It now does that only where those screens cover the viewer —
+    ///     see `SecondaryScreenPresenter.screensCoverTheViewer`.
+    ///  2. The sorting window's source was unscoped and stays enabled until
+    ///     that window closes — through the whole upload tray — so it took the
+    ///     viewer's Space for the sorting player.
+    /// With the viewer now live too, every macOS source is scoped: the viewer
+    /// to its main window (through `HostWindowReader`), sorting and comparison
+    /// to theirs. Scoped, no source can take another window's key, so the
+    /// order AppKit calls the monitors in no longer matters.
+    ///
+    /// Weak, because the window owns this source's consumer, not the other way
+    /// round. Once a scoped window is gone the source handles nothing rather
+    /// than falling back to app-wide — see `wasScoped`. Never set, the source
+    /// is app-wide; only tests rely on that now.
+    weak var ownWindow: NSWindow? {
+        didSet { if ownWindow != nil { wasScoped = true } }
+    }
+
+    /// Whether `ownWindow` was ever set. A weak reference zeroes silently, so
+    /// without this a source whose window had been released would read as one
+    /// never scoped and go back to answering every window's keys.
+    private var wasScoped = false
+
     /// Which arrow key is physically held for slow motion. Deliberately *not*
     /// the same fact as the model's `SlowMotionHold`, which is hold state: the
     /// model tears its hold down from `endSlowMotion()` whenever the library
@@ -160,6 +197,12 @@ final class AppKitInputSource: PlaybackInputSource {
             if heldDirection != nil, !event.modifierFlags.contains(.command) {
                 cancelHold()
             }
+            return false
+        }
+
+        // Below the flags-change branch: a hold must still be able to end
+        // whichever window the modifier is lifted over.
+        if wasScoped, ownWindow == nil || event.window !== ownWindow {
             return false
         }
 
