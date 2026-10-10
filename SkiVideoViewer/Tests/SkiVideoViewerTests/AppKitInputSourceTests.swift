@@ -85,9 +85,11 @@ final class AppKitInputSourceTests: XCTestCase {
     }
 
     /// Regression: the sorting window's source stays enabled for as long as
-    /// that window is open — including the whole upload tray after tagging —
-    /// and its monitor, added after the viewer's, sees keys first. Unscoped,
-    /// it swallowed Space typed into the viewer, so play/pause died there.
+    /// that window is open — including the whole upload tray after tagging.
+    /// Unscoped, it answered Space typed into the viewer for the sorting
+    /// player. (That was half of "Space does nothing in the viewer"; the other
+    /// half was `ContentView` switching the viewer's own source off — see
+    /// `AppKitInputSource.ownWindow`.)
     func testASourceScopedToItsWindowLetsOtherWindowsKeysThrough() {
         let own = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
                            styleMask: [.titled], backing: .buffered, defer: false)
