@@ -289,7 +289,7 @@ extension GoogleDriveProvider: ItemCreatable {
             ?? "application/octet-stream"
     }
 
-    private static func request(_ components: URLComponents, bearer: String, method: String) -> URLRequest {
+    static func request(_ components: URLComponents, bearer: String, method: String) -> URLRequest {
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
