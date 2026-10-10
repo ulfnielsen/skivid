@@ -38,6 +38,37 @@ final class PhoneNavigationUITests: XCTestCase {
         _ = app
     }
 
+    /// Back to the libraries and into the same one again.
+    ///
+    /// The push used to hang off a *change* of `openLibraryID`. Reopening the
+    /// library that is already open writes the same id, so the library
+    /// reloaded and the phone stayed on the libraries list — reported on a
+    /// real iPhone as "never works the second time".
+    func testReopeningTheSameLibraryPushesTheAthletesAgain() throws {
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .phone,
+            "the stack only exists at compact width; the iPad has two columns"
+        )
+
+        let app = walkToAClip()
+        let back = app.navigationBars.buttons.firstMatch
+        back.tap()
+        XCTAssertTrue(app.buttons["sidebar.athlete.Snow"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()
+
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Snow'")).firstMatch
+        XCTAssertTrue(
+            row.waitForExistence(timeout: 20),
+            "Back twice must reach the libraries list; buttons were \(app.buttons.allElementsBoundByIndex.map(\.label))"
+        )
+        row.tap()
+
+        XCTAssertTrue(
+            app.buttons["sidebar.athlete.Snow"].waitForExistence(timeout: 30),
+            "opening the same library again must push the athlete list again"
+        )
+    }
+
     /// Sorting opens on a phone and every control lands on the screen.
     ///
     /// `SortingSheet` declared `.frame(minWidth: 820, minHeight: 640)` against

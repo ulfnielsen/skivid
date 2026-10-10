@@ -111,10 +111,12 @@ struct ContentView: View {
         // needs no equivalent because its second column was already there.
         // Only from the root, so reopening the same library from Back does not
         // stack a second copy of the athlete list on top of the first.
+        //
+        // A change of id covers Add Folder and Connect Drive; a row tap calls
+        // `showAthletesOnPhone` itself, because tapping the library already
+        // open changes nothing here and once left the phone on the list.
         .onChange(of: model.openLibraryID) { id in
-            if isCompact, id != nil, phonePath.isEmpty {
-                phonePath.append(.athletes)
-            }
+            if id != nil { showAthletesOnPhone() }
         }
         .sheet(isPresented: $isShowingGoogleDriveSheet) {
             GoogleDriveSheet(model: model, isPresented: $isShowingGoogleDriveSheet, cache: clipCache)
@@ -131,6 +133,12 @@ struct ContentView: View {
             }
         } message: {
             Text(model.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private func showAthletesOnPhone() {
+        if isCompact, phonePath.isEmpty {
+            phonePath.append(.athletes)
         }
     }
 
@@ -164,7 +172,8 @@ struct ContentView: View {
                 model: model,
                 cache: clipCache,
                 makeProvider: GoogleDriveSheet.makeConfiguredProvider,
-                onConnectDrive: { isShowingGoogleDriveSheet = true }
+                onConnectDrive: { isShowingGoogleDriveSheet = true },
+                onOpened: showAthletesOnPhone
             )
             .navigationDestination(for: PhoneScreen.self) { screen in
                 switch screen {

@@ -23,6 +23,10 @@ struct LibrariesView: View {
     /// for one rather than reaching for it.
     let makeProvider: () -> (any RemoteLibraryProvider)?
     let onConnectDrive: () -> Void
+    /// Runs after every row that opens, including the one already open. The
+    /// phone moves on to the athletes from here: a change of `openLibraryID`
+    /// cannot say "opened again", because reopening writes the same id.
+    var onOpened: () -> Void = {}
 
     /// The last failure, against the row that produced it. Held here rather
     /// than in the model because it belongs to this screen: a library that
@@ -234,6 +238,7 @@ struct LibrariesView: View {
             let failure = await model.open(library, cache: cache, provider: makeProvider())
             failures[library.id] = failure
             opening = nil
+            if failure == nil { onOpened() }
         }
     }
 
