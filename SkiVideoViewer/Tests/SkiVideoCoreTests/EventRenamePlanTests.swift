@@ -282,4 +282,18 @@ final class EventRenamePlanTests: XCTestCase {
         XCTAssertEqual(movedNames(p), [])
         XCTAssertEqual(stayed(p), ["img_1.mov"])
     }
+
+    /// A clip iCloud has not downloaded is listed under its real name and
+    /// stays with every sidecar of its stem, even when the target holds
+    /// nothing of it: a placeholder cannot be moved as the clip, and a
+    /// sidecar moved without its clip could later sit beside another one.
+    func testAnICloudPlaceholderClipStaysWithItsSidecars() async throws {
+        try file("\(old)/Anna/.C0001.MP4.icloud")
+        try file("\(old)/Anna/C0001.skianalysis.json")
+        try file("\(old)/Anna/C0002.MP4")
+        try file("\(new)/Anna/IMG_9.mov")
+        let p = try await plan()
+        XCTAssertEqual(movedNames(p), ["C0002.MP4"])
+        XCTAssertEqual(p.leftInPlace, [[old, "Anna", "C0001.MP4"], [old, "Anna", "C0001.skianalysis.json"]])
+    }
 }

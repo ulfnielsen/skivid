@@ -11,7 +11,9 @@ public struct EventRenamePlan: Equatable, Sendable {
 
     public var steps: [Step] = []
     /// Files that stay where they are because the target already holds the
-    /// same name — a clip together with its sidecars. Never overwritten.
+    /// same name or a file of the same clip, or because the clip is an iCloud
+    /// placeholder not downloaded yet (listed under the clip's name) — a clip
+    /// together with its sidecars. Never overwritten.
     public var leftInPlace: [[String]] = []
     /// True when the new name already exists somewhere this rename touches,
     /// which is what the "Merge?" question is about.
@@ -85,13 +87,18 @@ public enum EventRenamePlanner {
         // Otherwise a moved clip would load a sidecar that is not its own
         // (leaving its own stranded), or a moved sidecar would become the
         // analysis of a clip already there. Decided before any entry is planned.
+        // A third case: (c) the clip is an iCloud placeholder not downloaded
+        // yet. Moving `.X.icloud` is not moving the clip, so the stem stays
+        // whole and the coach is told, rather than its sidecars going alone.
         let stayingStems = Set(incoming
             .filter { !$0.isFolder && isVideo($0.name) }
-            .map { ($0.name as NSString).deletingPathExtension }
-            .filter { stem in
-                incoming.contains { !$0.isFolder && belongs($0.name, to: stem) && existing[$0.name.lowercased()] != nil }
+            .filter { video in
+                let stem = (video.name as NSString).deletingPathExtension
+                return video.isPlaceholder
+                    || incoming.contains { !$0.isFolder && belongs($0.name, to: stem) && existing[$0.name.lowercased()] != nil }
                     || inTarget.contains { !$0.isFolder && belongs($0.name, to: stem) }
-            })
+            }
+            .map { ($0.name as NSString).deletingPathExtension })
         // Videos are planned before everything else. Name order puts
         // `<stem>--<other>.skialignment.json` ahead of `<stem>.mov` ("-" sorts
         // before "."), and Drive's order is not guaranteed at all. A run
@@ -114,7 +121,8 @@ public enum EventRenamePlanner {
                 } else {
                     plan.steps.append(.move(entry.name, from: source, to: target))
                 }
-            } else if clash != nil || stayingStems.contains(where: { belongs(entry.name, to: $0) }) {
+            } else if clash != nil || entry.isPlaceholder
+                        || stayingStems.contains(where: { belongs(entry.name, to: $0) }) {
                 plan.leftInPlace.append(source + [entry.name])
             } else {
                 plan.steps.append(.move(entry.name, from: source, to: target))

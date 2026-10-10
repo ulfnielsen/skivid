@@ -90,6 +90,21 @@ final class EventFoldersTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Cy/.IMG_2.mov.icloud").path))
     }
 
+    /// iCloud keeps a clip it has not downloaded as `.C0001.MP4.icloud`. The
+    /// planner must see that clip, so it is listed by its real name and
+    /// flagged; other hidden files stay unlisted.
+    func testLocalListsAnICloudPlaceholderUnderItsRealName() async throws {
+        try file("2026-02-14_A/Anna/.C0001.MP4.icloud")
+        try file("2026-02-14_A/Anna/.keep")
+        try file("2026-02-14_A/Anna/C0001.skianalysis.json")
+        let folders = LocalEventFolders(root: root)
+        let entries = try await folders.children(of: ["2026-02-14_A", "Anna"])
+        XCTAssertEqual(entries, [
+            FolderEntry(name: "C0001.MP4", isFolder: false, isPlaceholder: true),
+            FolderEntry(name: "C0001.skianalysis.json", isFolder: false),
+        ])
+    }
+
     /// A `._x` *directory* is not AppleDouble clutter — it may hold anything —
     /// and deleting it would be recursive, so it keeps its folder.
     func testLocalKeepsAFolderHoldingADotUnderscoreDirectory() async throws {

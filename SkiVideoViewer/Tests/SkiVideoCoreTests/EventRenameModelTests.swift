@@ -90,6 +90,41 @@ final class EventRenameModelTests: XCTestCase {
         XCTAssertEqual(model.leftInPlace, [["2026-02-14_Hochybrig", "Anna", "IMG_1.mov"]])
     }
 
+    /// Final review: a clip iCloud has not downloaded sits as a hidden
+    /// `.C0001.MP4.icloud`. Unseen, its visible analysis was moved alone and
+    /// landed beside a *different* `C0001.MP4`, loading as that clip's.
+    func testAnICloudPlaceholderClipKeepsItsSidecarBehindInAMerge() async throws {
+        try file("2026-02-14_A/Anna/.C0001.MP4.icloud")
+        try file("2026-02-14_A/Anna/C0001.skianalysis.json")
+        try file("2026-02-14_B/Anna/C0001.MP4")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_A", eventFolders: [["2026-02-14_A"]], folders: LocalEventFolders(root: root))
+        let ok = await model.run(newName: "2026-02-14_B", allowMerge: true)
+        XCTAssertTrue(ok)
+        XCTAssertTrue(exists("2026-02-14_A/Anna/C0001.skianalysis.json"))
+        XCTAssertFalse(exists("2026-02-14_B/Anna/C0001.skianalysis.json"))
+        XCTAssertTrue(exists("2026-02-14_A/Anna/.C0001.MP4.icloud"))
+        XCTAssertEqual(model.leftInPlace, [
+            ["2026-02-14_A", "Anna", "C0001.MP4"],
+            ["2026-02-14_A", "Anna", "C0001.skianalysis.json"],
+        ])
+    }
+
+    /// Without a merge the folder itself is renamed, so the placeholder
+    /// travels with it and iCloud keeps tracking the clip.
+    func testAPlainRenameCarriesAnICloudPlaceholderWithTheFolder() async throws {
+        try file("2026-02-14_A/Anna/.C0001.MP4.icloud")
+        try file("2026-02-14_A/Anna/C0001.skianalysis.json")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_A", eventFolders: [["2026-02-14_A"]], folders: LocalEventFolders(root: root))
+        let ok = await model.run(newName: "2026-02-14_B")
+        XCTAssertTrue(ok)
+        XCTAssertTrue(exists("2026-02-14_B/Anna/.C0001.MP4.icloud"))
+        XCTAssertTrue(exists("2026-02-14_B/Anna/C0001.skianalysis.json"))
+        XCTAssertFalse(exists("2026-02-14_A"))
+        XCTAssertEqual(model.leftInPlace, [])
+    }
+
     /// The target appeared after `targetExists` said no (on Drive the consent
     /// sheet sits in that window): the coach was never asked, so nothing moves.
     func testATargetThatAppearsAfterTheQuestionStopsBeforeMoving() async throws {

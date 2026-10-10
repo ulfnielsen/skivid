@@ -4,10 +4,14 @@ import Foundation
 public struct FolderEntry: Equatable, Sendable {
     public let name: String
     public let isFolder: Bool
+    /// A local iCloud file not downloaded yet: on disk it is the hidden
+    /// `.<name>.icloud`, reported here under `name`. Drive never sets it.
+    public let isPlaceholder: Bool
 
-    public init(name: String, isFolder: Bool) {
+    public init(name: String, isFolder: Bool, isPlaceholder: Bool = false) {
         self.name = name
         self.isFolder = isFolder
+        self.isPlaceholder = isPlaceholder
     }
 }
 
@@ -60,12 +64,24 @@ public struct LocalEventFolders: EventFolderWriting {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return nil }
-        return try FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
-        ).map {
-            FolderEntry(name: $0.lastPathComponent,
-                        isFolder: (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false)
-        }.sorted { $0.name < $1.name }
+        // Hidden entries are skipped, except an iCloud placeholder
+        // (`.C0001.MP4.icloud` for a clip not downloaded yet), which is
+        // reported as the clip it stands for. Skipping it too would let the
+        // planner move the clip's visible sidecars alone, and in a merge they
+        // could land beside a different clip of the same name.
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.isDirectoryKey]
+        ).compactMap { url -> FolderEntry? in
+            let name = url.lastPathComponent
+            let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard name.hasPrefix(".") else { return FolderEntry(name: name, isFolder: isFolder) }
+            guard !isFolder, name.hasSuffix(".icloud"), name.count > ".icloud".count + 1 else { return nil }
+            return FolderEntry(name: String(name.dropFirst().dropLast(".icloud".count)),
+                               isFolder: false, isPlaceholder: true)
+        }
+        // Should a downloaded copy sit beside its placeholder, the real file wins.
+        let real = Set(entries.filter { !$0.isPlaceholder }.map(\.name))
+        return entries.filter { !$0.isPlaceholder || !real.contains($0.name) }.sorted { $0.name < $1.name }
     }
 
     public func rename(_ path: [String], to newName: String) async throws {
