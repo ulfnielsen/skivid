@@ -273,8 +273,10 @@ public struct RemoteLibraryChanges: Sendable {
     public let removed: [String]
     public let cursor: String
     /// A folder in the library was renamed, moved or otherwise changed. Its
-    /// clips are not in `changed` — Drive logs the folder, not what is under
-    /// it — so their stored paths are stale and only a re-list corrects them.
+    /// clips are assumed not to be in `changed` — by our reading of Drive's
+    /// API it logs the folder, not what is under it; not verified live, see
+    /// the rename-event spec — so their stored paths are stale and only a
+    /// re-list corrects them.
     public let foldersChanged: Bool
 
     public init(changed: [RemoteFile], removed: [String], cursor: String, foldersChanged: Bool = false) {

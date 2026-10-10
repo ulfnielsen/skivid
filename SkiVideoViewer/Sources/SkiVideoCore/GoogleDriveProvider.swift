@@ -833,8 +833,10 @@ extension GoogleDriveProvider: IncrementallyEnumerable {
             },
             removed: removed,
             cursor: nextCursor ?? cursor,
-            // A changed folder's descendants are not in this page — their
-            // stored paths still carry the old name. The caller re-lists.
+            // A changed folder's descendants are, by our reading of Drive's
+            // API, not in this page (not verified live; see the rename-event
+            // spec) — their stored paths still carry the old name. The caller
+            // re-lists.
             foldersChanged: !folders.isEmpty
         )
     }

@@ -887,7 +887,9 @@ public final class ViewerModel: ObservableObject {
             // cache is keyed by file id, which a folder rename keeps.
             //
             // A renamed or moved folder leaves every clip under it with a
-            // stale stored path, and the change page does not list them.
+            // stale stored path, and by our reading of Drive's API — not
+            // verified live; see the rename-event spec — the change page does
+            // not list them.
             // Re-list instead. Not free — a whole-drive sweep — and not only
             // after a rename: an upload that creates a new event or athlete
             // folder logs a folder change too.
