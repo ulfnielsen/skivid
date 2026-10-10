@@ -53,6 +53,17 @@ final class AppKitInputSource: PlaybackInputSource {
     /// silent when it is off.
     var arrowsRepeat = false
 
+    /// When set, only keys typed into this window are handled; every other
+    /// window's keys pass through untouched.
+    ///
+    /// Needed because the monitor is app-wide and the newest monitor sees keys
+    /// first. The sorting window's source is created after the viewer's and
+    /// stays enabled until that window closes — through the whole upload tray
+    /// after tagging — so, unscoped, it swallowed Space typed into the viewer
+    /// and play/pause stopped working there. Nil keeps the app-wide
+    /// behaviour, which the viewer's own source relies on.
+    weak var ownWindow: NSWindow?
+
     /// Which arrow key is physically held for slow motion. Deliberately *not*
     /// the same fact as the model's `SlowMotionHold`, which is hold state: the
     /// model tears its hold down from `endSlowMotion()` whenever the library
@@ -160,6 +171,12 @@ final class AppKitInputSource: PlaybackInputSource {
             if heldDirection != nil, !event.modifierFlags.contains(.command) {
                 cancelHold()
             }
+            return false
+        }
+
+        // Below the flags-change branch: a hold must still be able to end
+        // whichever window the modifier is lifted over.
+        if let ownWindow, event.window !== ownWindow {
             return false
         }
 

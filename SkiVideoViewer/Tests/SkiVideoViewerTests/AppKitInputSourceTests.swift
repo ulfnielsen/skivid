@@ -84,6 +84,29 @@ final class AppKitInputSourceTests: XCTestCase {
         }
     }
 
+    /// Regression: the sorting window's source stays enabled for as long as
+    /// that window is open — including the whole upload tray after tagging —
+    /// and its monitor, added after the viewer's, sees keys first. Unscoped,
+    /// it swallowed Space typed into the viewer, so play/pause died there.
+    func testASourceScopedToItsWindowLetsOtherWindowsKeysThrough() {
+        let own = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                           styleMask: [.titled], backing: .buffered, defer: false)
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        let source = AppKitInputSource()
+        var captured: [PlaybackIntent] = []
+        source.onIntent = { captured.append($0) }
+        source.ownWindow = own
+
+        let elsewhere = key(49, windowNumber: other.windowNumber)
+        XCTAssertTrue(elsewhere.window === other, "premise: the event must resolve to the other window")
+        XCTAssertFalse(source.handle(elsewhere), "Space in another window must reach that window")
+        XCTAssertTrue(captured.isEmpty)
+
+        XCTAssertTrue(source.handle(key(49, windowNumber: own.windowNumber)))
+        XCTAssertEqual(captured.count, 1, "Space in its own window still toggles playback")
+    }
+
     func testArrowsEmitClipSteps() {
         let intents = capture([key(126), key(125)])
         XCTAssertEqual(intents.count, 2)

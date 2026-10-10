@@ -79,6 +79,9 @@ final class SortingWindowController: NSObject, ObservableObject, NSWindowDelegat
         window.contentView = NSHostingView(rootView: rootView)
         window.delegate = self
         self.window = window
+        // Keys typed into the viewer must reach the viewer while this window
+        // is open — see `AppKitInputSource.ownWindow`.
+        input.ownWindow = window
         // Fill the usable display area while retaining the normal macOS title bar.
         window.setFrame(frame, display: true)
         window.makeKeyAndOrderFront(nil)
