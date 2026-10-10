@@ -277,10 +277,70 @@ final class GoogleDriveItemCreationTests: XCTestCase {
         do {
             _ = try await provider.upload(fileAt: try clip(), named: "run.mp4", parent: "f9")
             XCTFail("403 must surface")
-        } catch let RemoteUploadError.stopBatch(message) {
-            XCTAssertTrue(message.lowercased().contains("permission"), message)
+        } catch RemoteUploadError.noWriteAccess {
         }
         XCTAssertEqual(transport.requests.count, 2)
+    }
+
+    // MARK: - What a 403 means
+
+    /// Drive's 403 is not only "no access". Per its "Resolve errors" guide the
+    /// `errors[].reason` also says rate limit or full drive, and each needs a
+    /// different answer — the repair feature's "permission to change this
+    /// file… replace the clip" was wrong for all of them.
+    private func forbidden(reason: String) -> FakeHTTPTransport.Response {
+        .init(status: 403, json: """
+            {"error":{"errors":[{"domain":"usageLimits","reason":"\(reason)","message":"x"}],            "code":403,"message":"x"}}
+            """)
+    }
+
+    private func uploadError(forbiddenBy reason: String) async throws -> Error {
+        transport.responses = [.init(status: 200, headers: ["Location": sessionURI]), forbidden(reason: reason)]
+        do {
+            _ = try await provider.upload(fileAt: try clip(), named: "run.mp4", parent: "f9")
+        } catch {
+            return error
+        }
+        XCTFail("a 403 must surface")
+        return CancellationError()
+    }
+
+    func testARateLimitedUploadIsRetriedLaterNotStopped() async throws {
+        for reason in ["userRateLimitExceeded", "rateLimitExceeded"] {
+            let error = try await uploadError(forbiddenBy: reason)
+            XCTAssertEqual(error as? RemoteUploadError,
+                           .retryClip("Google Drive is busy — try again shortly."), reason)
+        }
+    }
+
+    func testAFullDriveStopsTheBatch() async throws {
+        let error = try await uploadError(forbiddenBy: "storageQuotaExceeded")
+        XCTAssertEqual(error as? RemoteUploadError, .stopBatch("The club Drive is full."))
+    }
+
+    func testAPermissionRefusalSaysUploadNotRepair() async throws {
+        let error = try await uploadError(forbiddenBy: "insufficientFilePermissions")
+        XCTAssertEqual(error as? RemoteUploadError, .noWriteAccess)
+        XCTAssertFalse(error.localizedDescription.contains("replace the clip"), error.localizedDescription)
+    }
+
+    /// Folder creation comes before the first upload, so it is where a coach
+    /// without edit access meets the 403 first. It must read the same way.
+    func testAForbiddenFolderCreationIsSortedLikeAnUpload() async throws {
+        transport.responses = [forbidden(reason: "insufficientFilePermissions")]
+        do {
+            _ = try await provider.createFolder(named: "Hill", parent: "root1")
+            XCTFail("a 403 must surface")
+        } catch {
+            XCTAssertEqual(error as? RemoteUploadError, .noWriteAccess)
+        }
+        transport.responses = [forbidden(reason: "userRateLimitExceeded")]
+        do {
+            _ = try await provider.createFolder(named: "Hill", parent: "root1")
+            XCTFail("a 403 must surface")
+        } catch {
+            XCTAssertEqual(error as? RemoteUploadError, .retryClip("Google Drive is busy — try again shortly."))
+        }
     }
 
     func testAnExpiredSessionIsARetryableClipNotAStop() async throws {

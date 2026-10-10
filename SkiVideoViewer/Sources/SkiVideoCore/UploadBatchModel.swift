@@ -54,7 +54,8 @@ public struct UploadTarget {
 /// cannot be asked, the batch stops with nothing written.
 ///
 /// After that, errors sort three ways, and the split is the coach's experience:
-///  - `RemoteUploadError.stopBatch` and `RemoteLibraryError.notSignedIn` stop
+///  - `RemoteUploadError.stopBatch`, `.noWriteAccess` and
+///    `RemoteLibraryError.notSignedIn` stop
 ///    the batch. Every further clip would fail the same way, so the rest stay
 ///    waiting and `stopReason` says why.
 ///  - Cancellation returns the clip in flight to waiting. The coach chose it;
@@ -324,7 +325,7 @@ public final class UploadBatchModel: ObservableObject {
                 }
                 if Self.stopsTheBatch(error) {
                     setState(.waiting, for: id)
-                    stopReason = "Stopped at \(clip.file.lastPathComponent): \(error.localizedDescription)"
+                    stopReason = "Stopped at \(clip.file.lastPathComponent): \(stopMessage(error, clip: clip))"
                     return
                 }
                 outcome = .failed(error.localizedDescription)
@@ -458,8 +459,17 @@ public final class UploadBatchModel: ObservableObject {
         entries[index].state = state
     }
 
+    /// The provider knows a folder only by id; this knows its names, so a
+    /// refusal for want of access can say where.
+    private func stopMessage(_ error: Error, clip: SortedClip) -> String {
+        guard (error as? RemoteUploadError) == .noWriteAccess else { return error.localizedDescription }
+        let folder = target.destination.folderNames(for: clip).joined(separator: "/")
+        return "You don't have permission to add clips to \(folder) in \(libraryName)."
+    }
+
     private static func stopsTheBatch(_ error: Error) -> Bool {
         if case .stopBatch = error as? RemoteUploadError { return true }
+        if (error as? RemoteUploadError) == .noWriteAccess { return true }
         return (error as? RemoteLibraryError) == .notSignedIn
     }
 

@@ -527,6 +527,22 @@ final class UploadBatchModelTests: XCTestCase {
         XCTAssertEqual(states(model)["IMG_2.mov"], .uploaded)
     }
 
+    /// No edit access stops the batch in upload words, naming the folder the
+    /// clip was going into — not the repair feature's "change this file".
+    func testNoWriteAccessStopsTheBatchNamingTheFolder() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        try sortedClip("IMG_2.mov", athlete: "Bo")
+        drive.failUpload(of: "IMG_1.mov", with: RemoteUploadError.noWriteAccess)
+        let model = try makeModel()
+        await model.refresh().value
+
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(model.stopReason,
+                       "Stopped at IMG_1.mov: You don't have permission to add clips to \(event)/Ada in Club Drive.")
+        XCTAssertEqual(states(model), ["IMG_1.mov": .waiting, "IMG_2.mov": .waiting])
+    }
+
     func testAStopStopsTheBatchAndLeavesTheRestWaiting() async throws {
         try sortedClip("IMG_1.mov", athlete: "Ada")
         try sortedClip("IMG_2.mov", athlete: "Ada")

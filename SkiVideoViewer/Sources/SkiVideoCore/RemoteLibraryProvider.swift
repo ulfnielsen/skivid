@@ -178,10 +178,16 @@ public enum RemoteUploadError: LocalizedError, Equatable {
     /// Every further clip would fail the same way — e.g. no edit access to
     /// the club's drive. Stop the batch.
     case stopBatch(String)
+    /// Drive refused the write for want of edit access. Stops the batch like
+    /// `.stopBatch`, but typed so the batch — which knows the folder the clip
+    /// was going into, where the provider knows only its id — can say where.
+    case noWriteAccess
 
     public var errorDescription: String? {
         switch self {
         case .retryClip(let message), .stopBatch(let message): return message
+        case .noWriteAccess:
+            return "You don't have permission to add clips to this folder in Google Drive."
         }
     }
 }
@@ -223,7 +229,9 @@ public protocol ItemCreatable: RemoteLibraryProvider {
     /// Does not check for an existing file of that name; the caller does,
     /// with `findFile`. Retries within a bound and resumes from the server's
     /// offset; past that bound it throws `RemoteUploadError.retryClip`. A 403
-    /// throws `.stopBatch`; an expired session throws `.retryClip`.
+    /// throws by its reason — `.retryClip` for a rate limit, `.stopBatch` for
+    /// a full drive, `.noWriteAccess` otherwise; an expired session throws
+    /// `.retryClip`.
     func upload(fileAt url: URL, named name: String, parent parentID: String) async throws -> RemoteItem
 }
 

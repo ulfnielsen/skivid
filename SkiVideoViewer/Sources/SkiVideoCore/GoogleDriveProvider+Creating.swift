@@ -255,16 +255,13 @@ extension GoogleDriveProvider: ItemCreatable {
     // MARK: - Helpers
 
     /// Sorts an upload's refusal into what the caller should do about it:
-    /// 403 stops the batch (no edit access — every further clip would fail
-    /// the same way); 404/410 means the session expired, so the clip is
-    /// retried and opens a fresh one. Anything else keeps the generic error.
+    /// a 403 by its reason (`forbidden`); 404/410 means the session expired,
+    /// so the clip is retried and opens a fresh one. Anything else keeps the
+    /// generic error.
     private static func uploadFailure(data: Data, response: HTTPURLResponse) -> Error {
         switch response.statusCode {
         case 403:
-            guard case .api(let message) = describeWriteFailure(data: data, response: response) else {
-                return describeWriteFailure(data: data, response: response)
-            }
-            return RemoteUploadError.stopBatch(message)
+            return forbidden(data: data, response: response)
         case 404, 410:
             return RemoteUploadError.retryClip(
                 "The upload session expired. Try the clip again to start a fresh one.")
@@ -305,8 +302,47 @@ extension GoogleDriveProvider: ItemCreatable {
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
+    /// What a 403 on a create or an upload means, read from Drive's
+    /// `error.errors[].reason`. Drive answers 403 for more than missing
+    /// access — its "Resolve errors" guide lists `userRateLimitExceeded`,
+    /// `rateLimitExceeded` and `storageQuotaExceeded` under 403 too — and the
+    /// coach needs a different answer to each:
+    ///  - a rate limit passes: retry this clip later, the batch goes on;
+    ///  - a full drive does not: stop, every further clip would fail too;
+    ///  - anything else is taken as no edit access: stop, and let the batch
+    ///    name the folder (`RemoteUploadError.noWriteAccess`).
+    /// The reason strings and the JSON shape are taken from Drive's
+    /// documentation and covered by a fake transport; they have not been
+    /// seen from the live API. A 403 with no reason, or one not JSON, falls
+    /// to "no edit access" — the case this replaced always assumed.
+    ///
+    /// Not `describeWriteFailure`: that is the repair feature's wording —
+    /// "permission to change this file… replace the clip" — which describes
+    /// none of these to a coach uploading new clips.
+    static func forbidden(data: Data, response: HTTPURLResponse) -> Error {
+        struct Body: Decodable {
+            struct Details: Decodable {
+                struct Reason: Decodable { let reason: String? }
+                let errors: [Reason]?
+            }
+            let error: Details?
+        }
+        let reasons = Set((try? JSONDecoder().decode(Body.self, from: data))?.error?.errors?
+            .compactMap(\.reason) ?? [])
+        if !reasons.isDisjoint(with: ["userRateLimitExceeded", "rateLimitExceeded"]) {
+            return RemoteUploadError.retryClip("Google Drive is busy — try again shortly.")
+        }
+        if reasons.contains("storageQuotaExceeded") {
+            return RemoteUploadError.stopBatch("The club Drive is full.")
+        }
+        return RemoteUploadError.noWriteAccess
+    }
+
     private static func createdItem(_ data: Data, _ response: HTTPURLResponse) throws -> RemoteItem {
         guard (200...299).contains(response.statusCode) else {
+            // Folder creation comes before the first upload, so this is where
+            // a coach without edit access meets the 403 first.
+            if response.statusCode == 403 { throw forbidden(data: data, response: response) }
             throw describeWriteFailure(data: data, response: response)
         }
         struct Created: Decodable { let id: String; let name: String? }
