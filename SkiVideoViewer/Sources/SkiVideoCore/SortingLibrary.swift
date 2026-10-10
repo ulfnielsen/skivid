@@ -44,6 +44,14 @@ public enum SortingLibrary {
     /// sheet and changing nothing proposes no rename. Hyphens become spaces
     /// because `eventFolder` turned the title's spaces into hyphens.
     ///
+    /// That round trip holds only for names `eventFolder` could have made: a
+    /// real date, one underscore, and a title of letters and digits joined by
+    /// single hyphens. Anything else comes back changed, because `eventFolder`
+    /// cleans the title — `2026-02-14_Hoch_Ybrig` returns as
+    /// `2026-02-14_Hoch-Ybrig`, a doubled or trailing hyphen collapses, and an
+    /// undated name gains today's date — so for such a name an unchanged sheet
+    /// does propose a rename.
+    ///
     /// A name that does not start with a real `yyyy-MM-dd` before the first
     /// underscore has no date, and all of it is the title; the sheet then
     /// leaves the date picker on today, where the coach can see and change it.

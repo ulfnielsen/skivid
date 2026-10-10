@@ -27,6 +27,18 @@ final class EventFolderPartsTests: XCTestCase {
         }
     }
 
+    /// The round trip is only for names `eventFolder` could have made; the
+    /// doc says so, and this pins its examples.
+    func testNamesEventFolderCouldNotHaveMadeComeBackChanged() throws {
+        for (name, back) in [("2026-02-14_Hoch_Ybrig", "2026-02-14_Hoch-Ybrig"),
+                             ("2026-02-14_Hoch--Ybrig-", "2026-02-14_Hoch-Ybrig")] {
+            let parts = SortingLibrary.eventFolderParts(name)
+            let date = try XCTUnwrap(parts.date, name)
+            XCTAssertEqual(try SortingLibrary.eventFolder(date: date, title: parts.title), back)
+        }
+        XCTAssertNil(SortingLibrary.eventFolderParts("Hochybrig").date, "an undated name gets today in the sheet")
+    }
+
     func testOnlyTheFirstUnderscoreSeparatesTheDate() {
         let parts = SortingLibrary.eventFolderParts("2026-08-08_Neuss_Halle")
         XCTAssertEqual(parts.date, day("2026-08-08"))
