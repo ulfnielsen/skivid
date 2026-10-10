@@ -48,6 +48,10 @@ struct UploadTrayView: View {
                 .background(.bar)
         }
         .onAppear { model.refresh() }
+        // A container, so this identifier names the tray without replacing
+        // the identifiers of the controls inside it — on a plain stack it is
+        // handed down to every child, and `upload.start` became unfindable.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("upload.tray")
     }
 
@@ -118,6 +122,9 @@ struct UploadTrayView: View {
             }
         }
         .padding(.vertical, 2)
+        // A container for the same reason as the tray's: the row keeps its
+        // own identifier and `upload.state.<name>` survives inside it.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("upload.row.\(name)")
     }
 
