@@ -375,47 +375,7 @@ struct ContentView: View {
                             // date-prefixed folder like `2026-08-08_Wittenburg`
                             // — and the date is the part that makes one
                             // session tell itself apart from another.
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    if collapsedSections.contains(event.id) {
-                                        collapsedSections.remove(event.id)
-                                    } else {
-                                        collapsedSections.insert(event.id)
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "chevron.right")
-                                        // Rotated rather than swapped for a
-                                        // second glyph, so the turn animates
-                                        // and reads as one control changing
-                                        // state instead of two icons.
-                                        .rotationEffect(
-                                            .degrees(collapsedSections.contains(event.id) ? 0 : 90)
-                                        )
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                    Text(name)
-                                        .font(.title3.weight(.semibold))
-                                        .foregroundStyle(.primary)
-                                        .textCase(nil)
-                                    Spacer()
-                                }
-                                // The whole row is the target, not just the
-                                // glyph — a chevron alone is a small thing to
-                                // hit repeatedly across a season of sessions.
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.top, 6)
-                            .padding(.bottom, 2)
-                            // Only when sections are events: grouped by
-                            // athlete, this header is an athlete's name.
-                            .contextMenu {
-                                if model.sidebarGrouping == .event {
-                                    Button("Rename Event…") { requestRename(of: name) }
-                                }
-                            }
+                            eventHeader(event.id, name: name)
                         }
                     }
                 }
@@ -448,6 +408,85 @@ struct ContentView: View {
                 )
             }
         }
+    }
+
+    /// An event's section header: a tap folds the section, and — when the
+    /// sidebar is grouped by event — a long-press (iOS) or right-click (Mac)
+    /// offers "Rename Event…".
+    ///
+    /// **Why a `Menu` on iOS and `.contextMenu` on the Mac.** On iOS, a
+    /// `.contextMenu` on a List *section header* never opens: measured in
+    /// `RenameEventUITests` on the iPhone 17 Pro simulator, a 1 s press
+    /// highlighted the header, then ran its tap action (the section folded)
+    /// and no menu appeared. The likely mechanism — unverified — is that a
+    /// List presents context menus through its collection view, which offers
+    /// them for cells and not for supplementary header views. A `Menu` with a
+    /// `primaryAction` carries its own menu on the control itself, so a tap
+    /// still folds and a long-press opens the menu.
+    @ViewBuilder
+    private func eventHeader(_ id: String, name: String) -> some View {
+        let toggle = {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if collapsedSections.contains(id) {
+                    collapsedSections.remove(id)
+                } else {
+                    collapsedSections.insert(id)
+                }
+            }
+        }
+        let label = HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                // Rotated rather than swapped for a second glyph, so the turn
+                // animates and reads as one control changing state instead
+                // of two icons.
+                .rotationEffect(.degrees(collapsedSections.contains(id) ? 0 : 90))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(name)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .textCase(nil)
+            Spacer()
+        }
+        // The whole row is the target, not just the glyph — a chevron alone
+        // is a small thing to hit repeatedly across a season of sessions.
+        .contentShape(Rectangle())
+
+        Group {
+            #if os(iOS)
+            // Only when sections are events: grouped by athlete, this header
+            // is an athlete's name, and a plain button has no menu to offer.
+            if model.sidebarGrouping == .event {
+                Menu {
+                    Button("Rename Event…") { requestRename(of: name) }
+                } label: {
+                    label
+                } primaryAction: {
+                    toggle()
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .tint(.primary)
+            } else {
+                Button(action: toggle) { label }
+                    .buttonStyle(.plain)
+            }
+            #else
+            Button(action: toggle) { label }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    if model.sidebarGrouping == .event {
+                        Button("Rename Event…") { requestRename(of: name) }
+                    }
+                }
+            #endif
+        }
+        // The spoken label is the event's name; the identifier lets a test
+        // find the header without depending on it. On the control itself, a
+        // leaf, so it overrides no identifier inside.
+        .accessibilityIdentifier("sidebar.event.\(name)")
+        .padding(.top, 6)
+        .padding(.bottom, 2)
     }
 
     /// One athlete, reached two ways.
