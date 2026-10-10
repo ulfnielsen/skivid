@@ -32,13 +32,19 @@ final class UploadBatchModelTests: XCTestCase {
         return url
     }
 
-    private func makeModel(_ convention: FolderConvention = .eventThenAthlete) throws -> UploadBatchModel {
+    /// `knownFolder` nil is a library with nothing in it yet, so the safety
+    /// probe has nothing to look for and is skipped — see
+    /// `UploadTarget.knownFolderPath`. Most tests here are about the batch,
+    /// not the probe, and use that.
+    private func makeModel(_ convention: FolderConvention = .eventThenAthlete,
+                           knownFolder: [String]? = nil) throws -> UploadBatchModel {
         let destination = try UploadDestination.resolve(
             library: Library(name: "Club Drive", kind: .drive(rootID: "root-1"), convention: convention),
             indexConvention: nil)
         return UploadBatchModel(
             root: root,
-            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter()))
+            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter(),
+                                 knownFolderPath: knownFolder))
     }
 
     private func states(_ model: UploadBatchModel) -> [String: UploadBatchModel.ClipState] {
@@ -70,7 +76,8 @@ final class UploadBatchModelTests: XCTestCase {
             indexConvention: nil)
         return UploadBatchModel(
             source: .eventFolder(root.appendingPathComponent(event)),
-            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter()))
+            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter(),
+                                 knownFolderPath: nil))
     }
 
     /// The tray at the end of tagging is about this session. Last season's
@@ -117,7 +124,8 @@ final class UploadBatchModelTests: XCTestCase {
             indexConvention: nil)
         let model = UploadBatchModel(
             source: .outputRoot(notADirectory),
-            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter()))
+            target: UploadTarget(destination: destination, provider: drive, presenter: FakeOAuthPresenter(),
+                                 knownFolderPath: nil))
 
         await model.refresh().value
 
@@ -241,6 +249,79 @@ final class UploadBatchModelTests: XCTestCase {
         for name in ["IMG_1.mov", "IMG_2.mov", "IMG_3.mov"] {
             XCTAssertEqual(drive.fileCount(named: name), 1, "\(name) must be in Drive exactly once")
         }
+    }
+
+    // MARK: - Can the search see the Shared Drive at all?
+
+    /// The probe passes: the folder the library knows about is found, so the
+    /// search sees the drive and the batch goes ahead.
+    func testABatchWhoseSearchSeesAKnownFolderProceeds() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        drive.seedFile("old.mov", at: ["2025-12-20_Flumserberg", "Bo"])
+        let model = try makeModel(knownFolder: ["2025-12-20_Flumserberg", "Bo"])
+        await model.refresh().value
+        let lookupsBeforeTheBatch = drive.findFolderNames.count
+
+        await model.uploadWaiting().value
+
+        XCTAssertNil(model.stopReason)
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov"])
+        XCTAssertEqual(Array(drive.findFolderNames.dropFirst(lookupsBeforeTheBatch).prefix(2)),
+                       ["2025-12-20_Flumserberg", "Bo"], "the probe is the batch's first lookup")
+    }
+
+    /// `findFolder` searches with `corpora=allDrives`, verified only against
+    /// fakes. If the live search saw nothing on the real Shared Drive, every
+    /// "is it there?" would answer no, and the batch would create duplicate
+    /// folders and re-upload clips into the club's drive. A folder the open
+    /// library already lists that the search cannot find is that failure:
+    /// stop before creating anything.
+    func testABatchWhoseSearchCannotSeeAKnownFolderCreatesAndUploadsNothing() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        try sortedClip("IMG_2.mov", athlete: "Bo")
+        let model = try makeModel(knownFolder: ["2025-12-20_Flumserberg", "Bo"])
+        await model.refresh().value
+
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(drive.createdFolderNames, [])
+        XCTAssertEqual(drive.uploadedNames, [])
+        XCTAssertEqual(model.stopReason,
+                       "Can't see existing folders in Club Drive — nothing was uploaded. Try again later.")
+        XCTAssertEqual(states(model), ["IMG_1.mov": .waiting, "IMG_2.mov": .waiting])
+        XCTAssertFalse(model.isUploading)
+    }
+
+    /// A probe that cannot be answered (no signal, a 403 on the find path)
+    /// proves nothing either way, so it stops the batch too — nothing created.
+    func testAProbeThatFailsStopsTheBatchBeforeAnythingIsCreated() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        drive.seedFile("old.mov", at: ["2025-12-20_Flumserberg", "Bo"])
+        drive.failFindFolder(named: "2025-12-20_Flumserberg", with: RemoteLibraryError.api("offline"))
+        let model = try makeModel(knownFolder: ["2025-12-20_Flumserberg", "Bo"])
+        await model.refresh().value
+
+        await model.uploadWaiting().value
+
+        XCTAssertEqual(drive.createdFolderNames, [])
+        XCTAssertEqual(drive.uploadedNames, [])
+        XCTAssertEqual(states(model)["IMG_1.mov"], .waiting)
+        XCTAssertTrue(model.stopReason?.contains("Nothing was uploaded") == true, model.stopReason ?? "nil")
+    }
+
+    /// An empty library has no folder to look for, and nothing in it that a
+    /// blind search could duplicate, so the batch is allowed. (The residual
+    /// risk — a second batch into a library that was empty when opened — is
+    /// in `UploadTarget.knownFolderPath`.)
+    func testABatchIntoALibraryWithNoKnownFolderIsAllowed() async throws {
+        try sortedClip("IMG_1.mov", athlete: "Ada")
+        let model = try makeModel(knownFolder: nil)
+        await model.refresh().value
+
+        await model.uploadWaiting().value
+
+        XCTAssertNil(model.stopReason)
+        XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov"])
     }
 
     // MARK: - Same name, different clip
@@ -557,6 +638,8 @@ final class UploadBatchModelTests: XCTestCase {
         XCTAssertTrue((target.provider as AnyObject) === writer)
         XCTAssertEqual(target.destination.rootID, "drive-1")
         XCTAssertEqual(target.destination.convention, .eventThenAthlete)
+        XCTAssertEqual(target.knownFolderPath, ["2026-02-25_Hoch-Ybrig", "Anna"],
+                       "the batch's safety probe needs a folder the library knows is there")
     }
 
     func testAnOpenDriveWhoseProviderCannotWriteRefuses() async throws {

@@ -10,11 +10,26 @@ public struct UploadTarget {
     public let destination: UploadDestination
     public let provider: any ItemCreatable
     public let presenter: OAuthPresenter
+    /// Folder names, from `destination.rootID` down, of a folder the open
+    /// library's index says exists — the batch's safety probe looks for it
+    /// before creating anything (see `UploadBatchModel.searchSeesTheDrive`).
+    ///
+    /// Nil when the library lists no clip in any folder: there is nothing to
+    /// look for, and nothing in Drive that a blind search could duplicate, so
+    /// the batch is allowed. What that leaves open: a library empty when it
+    /// was opened, uploaded into twice without reopening, gets no probe the
+    /// second time either, because the index is not re-read between batches.
+    ///
+    /// Required, not defaulted, so a new caller has to decide rather than
+    /// silently opt out of the probe.
+    public let knownFolderPath: [String]?
 
-    public init(destination: UploadDestination, provider: any ItemCreatable, presenter: OAuthPresenter) {
+    public init(destination: UploadDestination, provider: any ItemCreatable, presenter: OAuthPresenter,
+                knownFolderPath: [String]?) {
         self.destination = destination
         self.provider = provider
         self.presenter = presenter
+        self.knownFolderPath = knownFolderPath
     }
 }
 
@@ -34,7 +49,11 @@ public struct UploadTarget {
 /// the check the "nothing uploads twice" rule rests on. The first is a
 /// courtesy and may fail (no signal); the second is not optional.
 ///
-/// Errors sort three ways, and the split is the coach's experience:
+/// Before anything is created, each batch checks that Drive's search can see a
+/// folder the library already lists (`searchSeesTheDrive`). If it cannot, or
+/// cannot be asked, the batch stops with nothing written.
+///
+/// After that, errors sort three ways, and the split is the coach's experience:
 ///  - `RemoteUploadError.stopBatch` and `RemoteLibraryError.notSignedIn` stop
 ///    the batch. Every further clip would fail the same way, so the rest stay
 ///    waiting and `stopReason` says why.
@@ -261,6 +280,21 @@ public final class UploadBatchModel: ObservableObject {
             return
         }
 
+        // Before the first create: if the search cannot see a folder the
+        // library already lists, it cannot see the clips either.
+        do {
+            guard try await searchSeesTheDrive() else {
+                stopReason = "Can't see existing folders in \(libraryName) — nothing was uploaded. Try again later."
+                return
+            }
+        } catch {
+            if !Self.isCancellation(error) {
+                stopReason = "Could not check \(libraryName) before uploading (\(error.localizedDescription)). "
+                    + "Nothing was uploaded."
+            }
+            return
+        }
+
         // Folder ids for this run only. The next run walks again, so a folder
         // someone deleted or renamed in between is found or recreated rather
         // than written into from memory.
@@ -299,6 +333,30 @@ public final class UploadBatchModel: ObservableObject {
             if let current = self.index(of: id) { entries[current].driveName = driveName }
             runDone += 1
         }
+    }
+
+    /// The safety probe: can `findFolder` see a folder the open library's
+    /// index says exists? True when it can, or when the library lists no
+    /// folder to look for (see `UploadTarget.knownFolderPath`).
+    ///
+    /// Why it exists. Every "is it there?" in this batch — folders and clips —
+    /// rests on Drive's search, which runs with `corpora=allDrives` and has
+    /// only ever been exercised against fakes. Should it see nothing of the
+    /// real Shared Drive, each lookup would answer "not there": the batch
+    /// would create a second copy of every event and athlete folder and
+    /// upload every clip again into the club's drive, all while reporting
+    /// success. A known folder it cannot find is that failure, caught before
+    /// anything is written. One lookup per path component, once per batch.
+    private func searchSeesTheDrive() async throws -> Bool {
+        guard let path = target.knownFolderPath, !path.isEmpty else { return true }
+        var parent = target.destination.rootID
+        for name in path {
+            guard let found = try await target.provider.findFolder(named: name, parent: parent) else {
+                return false
+            }
+            parent = found.id
+        }
+        return true
     }
 
     private func folderCreatingAsNeeded(for clip: SortedClip, memo: inout [[String]: String]) async throws -> String {

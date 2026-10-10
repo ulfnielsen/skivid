@@ -620,7 +620,17 @@ public final class ViewerModel: ObservableObject {
         guard let writer = remoteProvider as? ItemCreatable else {
             throw UploadRefusal.cannotWrite(libraryName: destination.libraryName)
         }
-        return UploadTarget(destination: destination, provider: writer, presenter: oauthPresenter)
+        return UploadTarget(destination: destination, provider: writer, presenter: oauthPresenter,
+                            knownFolderPath: knownFolderPath())
+    }
+
+    /// A folder the open drive's index lists a clip in, as folder names under
+    /// its root — the upload batch's safety probe looks for it. The
+    /// lexicographically smallest path, so the same library always offers the
+    /// same folder; nil when the index lists no clip inside a folder.
+    private func knownFolderPath() -> [String]? {
+        remoteIndex?.files.map(\.path).filter { !$0.isEmpty }
+            .min { $0.joined(separator: "/") < $1.joined(separator: "/") }
     }
 
     /// The name for the window. A library has a name now, so the window can use
