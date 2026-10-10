@@ -38,6 +38,28 @@ public enum SortingLibrary {
         return "\(formatter.string(from: date))_\(cleanedTitle)"
     }
 
+    /// The inverse of `eventFolder(date:title:)`, for pre-filling the rename
+    /// sheet: `2026-08-08_Wittenburg-GS` gives that day and `Wittenburg GS`,
+    /// which `eventFolder` joins back into the same name — so opening the
+    /// sheet and changing nothing proposes no rename. Hyphens become spaces
+    /// because `eventFolder` turned the title's spaces into hyphens.
+    ///
+    /// A name that does not start with a real `yyyy-MM-dd` before the first
+    /// underscore has no date, and all of it is the title; the sheet then
+    /// leaves the date picker on today, where the coach can see and change it.
+    public static func eventFolderParts(_ name: String) -> (date: Date?, title: String) {
+        let parts = name.split(separator: "_", maxSplits: 1, omittingEmptySubsequences: false)
+            .map(String.init)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let first = parts.first, let date = formatter.date(from: first) else {
+            return (nil, name)
+        }
+        let title = parts.count > 1 ? parts[1].replacingOccurrences(of: "-", with: " ") : ""
+        return (date, title)
+    }
+
     public static func suggestedEventDate(from video: URL) -> Date {
         let keys: Set<URLResourceKey> = [.creationDateKey, .contentModificationDateKey]
         let values = try? video.resourceValues(forKeys: keys)

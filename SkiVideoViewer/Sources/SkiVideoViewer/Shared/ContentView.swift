@@ -71,6 +71,11 @@ struct ContentView: View {
     }
     @State private var phonePath: [PhoneScreen] = []
 
+    /// The event whose rename sheet is up.
+    @State private var renamingEvent: String?
+    /// Why "Rename Event…" was refused, while that alert is up.
+    @State private var renameRefusal: String?
+
     var body: some View {
         Group {
             if isCompact {
@@ -194,6 +199,18 @@ struct ContentView: View {
         }
     }
 
+    /// Refused while a comparison or sorting window is open: each holds clip
+    /// paths that the rename would move out from under it. Asked here, when
+    /// the item is chosen, and not in `body` — `ContentView` does not observe
+    /// the presenter, so a `.disabled` computed there would never update.
+    private func requestRename(of name: String) {
+        if secondaryScreens.hasOpenWindow {
+            renameRefusal = "Close the comparison and sorting windows first."
+        } else {
+            renamingEvent = name
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         // Absent on a phone rather than present and broken. `ComparisonView`
@@ -264,6 +281,29 @@ struct ContentView: View {
                 Label("Find Athlete", systemImage: "magnifyingglass")
             }
             .keyboardShortcut("f", modifiers: .command)
+        }
+        ToolbarItem {
+            // Re-reads what is on disk or in Drive now: someone else may have
+            // sorted, uploaded or renamed since the library was opened. A
+            // failure is shown, not swallowed — `reloadOpenLibrary` throws
+            // when Drive is signed out or a local rescan fails, and a Refresh
+            // that silently did nothing would leave the coach trusting a
+            // stale sidebar.
+            Button {
+                Task {
+                    do {
+                        try await model.reloadOpenLibrary()
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            // A folder handed over on the command line has no `openLibrary`
+            // but can still be rescanned, so either one enables Refresh.
+            .disabled(model.openLibrary == nil && model.directory == nil)
+            .accessibilityIdentifier("library.refresh")
         }
         ToolbarItem(placement: .primaryAction) {
             Button("Add Folder…") {
@@ -369,12 +409,31 @@ struct ContentView: View {
                             .buttonStyle(.plain)
                             .padding(.top, 6)
                             .padding(.bottom, 2)
+                            // Only when sections are events: grouped by
+                            // athlete, this header is an athlete's name.
+                            .contextMenu {
+                                if model.sidebarGrouping == .event {
+                                    Button("Rename Event…") { requestRename(of: name) }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         .navigationTitle("Athletes")
+        .sheet(item: Binding(
+            get: { renamingEvent.map(IdentifiedName.init) },
+            set: { renamingEvent = $0?.id }
+        )) { event in
+            RenameEventSheet(viewerModel: model, eventName: event.id)
+        }
+        .alert(
+            renameRefusal ?? "",
+            isPresented: Binding(get: { renameRefusal != nil }, set: { if !$0 { renameRefusal = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        }
         .overlay {
             if model.athletes.isEmpty {
                 // The sidebar no longer tells the coach to go and open

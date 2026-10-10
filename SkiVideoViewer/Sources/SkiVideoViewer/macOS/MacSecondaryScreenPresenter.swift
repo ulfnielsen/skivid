@@ -13,6 +13,8 @@ final class MacSecondaryScreenPresenter: SecondaryScreenPresenter {
     /// Both screens are separate windows; the viewer stays on screen and
     /// keyboard-live beside them. See the protocol requirement.
     var screensCoverTheViewer: Bool { false }
+    /// Live, unlike the flags above; read only when an action needs it.
+    var hasOpenWindow: Bool { comparisonWindow.isOpen || sortingWindow.isOpen }
 
     private let comparisonWindow = ComparisonWindowController()
     private let sortingWindow = SortingWindowController()
