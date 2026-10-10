@@ -1,0 +1,194 @@
+import XCTest
+@testable import SkiVideoCore
+
+@MainActor
+final class EventRenameModelTests: XCTestCase {
+    private var root: URL!
+
+    override func setUp() async throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("Run-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: root) }
+
+    private func file(_ path: String) throws {
+        let url = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([1]).write(to: url)
+    }
+
+    private func exists(_ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path)
+    }
+
+    func testARenameMovesEveryAthletesClips() async throws {
+        try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
+        try file("Bo/2026-02-14_Hochybrig/IMG_2.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig",
+            eventFolders: [["Anna", "2026-02-14_Hochybrig"], ["Bo", "2026-02-14_Hochybrig"]],
+            folders: LocalEventFolders(root: root))
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertTrue(ok)
+        XCTAssertTrue(exists("Anna/2026-02-14_Hoch-Ybrig/IMG_1.mov"))
+        XCTAssertTrue(exists("Bo/2026-02-14_Hoch-Ybrig/IMG_2.mov"))
+        XCTAssertEqual(model.done, 2)
+        XCTAssertEqual(model.total, 2)
+    }
+
+    /// Review Focus 3: stop partway, then try again.
+    func testAStoppedRunFinishesOnTheSecondTryWithoutRepeatingWork() async throws {
+        try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
+        try file("Bo/2026-02-14_Hochybrig/IMG_2.mov")
+        let flaky = FlakyFolders(LocalEventFolders(root: root), failRenamesAfter: 1)
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig",
+            eventFolders: [["Anna", "2026-02-14_Hochybrig"], ["Bo", "2026-02-14_Hochybrig"]],
+            folders: flaky)
+
+        let first = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(first)
+        XCTAssertEqual(model.stopReason?.hasPrefix("Renamed 1 of 2"), true)
+        XCTAssertTrue(exists("Anna/2026-02-14_Hoch-Ybrig/IMG_1.mov"))
+        XCTAssertTrue(exists("Bo/2026-02-14_Hochybrig/IMG_2.mov"))
+
+        flaky.heal()
+        let second = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertTrue(second)
+        XCTAssertEqual(model.total, 1, "only the remaining athlete is renamed")
+        XCTAssertTrue(exists("Bo/2026-02-14_Hoch-Ybrig/IMG_2.mov"))
+        XCTAssertNil(model.stopReason)
+    }
+
+    func testNoEditAccessStopsAndSaysWhy() async throws {
+        try file("2026-02-14_Hochybrig/Anna/IMG_1.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["2026-02-14_Hochybrig"]],
+            folders: RefusingFolders())
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(model.stopReason, "You cannot edit this Drive.")
+    }
+
+    func testAMergeLeavesCollisionsAndBinsWhatEmptied() async throws {
+        try file("2026-02-14_Hochybrig/Anna/IMG_1.mov")
+        try file("2026-02-14_Hochybrig/Anna/IMG_2.mov")
+        try file("2026-02-14_Hoch-Ybrig/Anna/IMG_1.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["2026-02-14_Hochybrig"]],
+            folders: LocalEventFolders(root: root))
+        let merges = try await model.targetExists(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertTrue(merges)
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertTrue(ok)
+        XCTAssertTrue(exists("2026-02-14_Hoch-Ybrig/Anna/IMG_2.mov"))
+        XCTAssertTrue(exists("2026-02-14_Hochybrig/Anna/IMG_1.mov"), "the collision stays")
+        XCTAssertEqual(model.leftInPlace, [["2026-02-14_Hochybrig", "Anna", "IMG_1.mov"]])
+    }
+
+    func testNoWriteAccessStopsWithoutRetryWording() async throws {
+        try file("2026-02-14_Hochybrig/Anna/IMG_1.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["2026-02-14_Hochybrig"]],
+            folders: ThrowingFolders(RemoteUploadError.noWriteAccess))
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(model.stopReason, "You don't have permission to change folders in this library.")
+    }
+
+    /// Drive's rate limit surfaces as `.retryClip`; it must read as progress
+    /// plus a retry, not as a bare message.
+    func testARateLimitSaysHowFarItGotAndToTryAgain() async throws {
+        try file("Anna/2026-02-14_Hochybrig/IMG_1.mov")
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["Anna", "2026-02-14_Hochybrig"]],
+            folders: ThrowingFolders(RemoteUploadError.retryClip("Drive is busy")))
+        let ok = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(ok)
+        XCTAssertEqual(model.stopReason, "Renamed 0 of 1 \u{2014} Drive is busy. Try again.")
+    }
+
+    /// A file that lands in the target between planning and moving makes the
+    /// move stop rather than overwrite; the second run re-plans and leaves it.
+    func testACollisionAppearingAfterPlanningStopsThenIsLeftInPlace() async throws {
+        try file("2026-02-14_Hochybrig/Anna/IMG_1.mov")
+        try file("2026-02-14_Hochybrig/Anna/IMG_2.mov")
+        try file("2026-02-14_Hoch-Ybrig/Anna/IMG_1.mov")
+        let target = root.appendingPathComponent("2026-02-14_Hoch-Ybrig/Anna/IMG_2.mov")
+        let racing = CollidingFolders(LocalEventFolders(root: root)) {
+            try? Data([9]).write(to: target)
+        }
+        let model = EventRenameModel(
+            oldName: "2026-02-14_Hochybrig", eventFolders: [["2026-02-14_Hochybrig"]], folders: racing)
+
+        let first = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertFalse(first)
+        XCTAssertEqual(model.stopReason?.contains("already in the target"), true)
+        XCTAssertTrue(exists("2026-02-14_Hochybrig/Anna/IMG_2.mov"), "nothing was overwritten or lost")
+
+        let second = await model.run(newName: "2026-02-14_Hoch-Ybrig")
+        XCTAssertTrue(second)
+        XCTAssertNil(model.stopReason)
+        XCTAssertEqual(Set(model.leftInPlace), [
+            ["2026-02-14_Hochybrig", "Anna", "IMG_1.mov"],
+            ["2026-02-14_Hochybrig", "Anna", "IMG_2.mov"],
+        ])
+    }
+}
+
+/// Fails every rename after the first `n`, as a dropped signal would.
+private final class FlakyFolders: EventFolderWriting, @unchecked Sendable {
+    private let inner: LocalEventFolders
+    private var remaining: Int
+    init(_ inner: LocalEventFolders, failRenamesAfter n: Int) { self.inner = inner; remaining = n }
+    func heal() { remaining = .max }
+    func prepareToWrite() async throws {}
+    func children(of path: [String]) async throws -> [FolderEntry]? { try await inner.children(of: path) }
+    func rename(_ path: [String], to newName: String) async throws {
+        guard remaining > 0 else { throw URLError(.networkConnectionLost) }
+        remaining -= 1
+        try await inner.rename(path, to: newName)
+    }
+    func move(_ name: String, from source: [String], to destination: [String]) async throws {
+        try await inner.move(name, from: source, to: destination)
+    }
+    func removeIfEmpty(_ path: [String]) async throws -> Bool { try await inner.removeIfEmpty(path) }
+}
+
+private struct RefusingFolders: EventFolderWriting {
+    func prepareToWrite() async throws { throw RemoteUploadError.stopBatch("You cannot edit this Drive.") }
+    func children(of path: [String]) async throws -> [FolderEntry]? { [] }
+    func rename(_ path: [String], to newName: String) async throws {}
+    func move(_ name: String, from source: [String], to destination: [String]) async throws {}
+    func removeIfEmpty(_ path: [String]) async throws -> Bool { false }
+}
+
+/// Throws `error` from the first write, as Drive's 403 handling would.
+private struct ThrowingFolders: EventFolderWriting {
+    let error: Error
+    init(_ error: Error) { self.error = error }
+    func prepareToWrite() async throws {}
+    func children(of path: [String]) async throws -> [FolderEntry]? { [] }
+    func rename(_ path: [String], to newName: String) async throws { throw error }
+    func move(_ name: String, from source: [String], to destination: [String]) async throws { throw error }
+    func removeIfEmpty(_ path: [String]) async throws -> Bool { false }
+}
+
+/// Runs a closure once, just before the first move, so a collision can
+/// appear after the plan was made.
+private final class CollidingFolders: EventFolderWriting, @unchecked Sendable {
+    private let inner: LocalEventFolders
+    private var pending: (() -> Void)?
+    init(_ inner: LocalEventFolders, beforeFirstMove: @escaping () -> Void) {
+        self.inner = inner; pending = beforeFirstMove
+    }
+    func prepareToWrite() async throws {}
+    func children(of path: [String]) async throws -> [FolderEntry]? { try await inner.children(of: path) }
+    func rename(_ path: [String], to newName: String) async throws { try await inner.rename(path, to: newName) }
+    func move(_ name: String, from source: [String], to destination: [String]) async throws {
+        if let run = pending { pending = nil; run() }
+        try await inner.move(name, from: source, to: destination)
+    }
+    func removeIfEmpty(_ path: [String]) async throws -> Bool { try await inner.removeIfEmpty(path) }
+}
