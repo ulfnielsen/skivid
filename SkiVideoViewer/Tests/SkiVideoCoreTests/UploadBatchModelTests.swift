@@ -223,20 +223,19 @@ final class UploadBatchModelTests: XCTestCase {
 
         let batch = model.uploadWaiting()
         try await waitUntil { self.drive.uploadHasStarted("IMG_2.mov") }
-        // Bounded: without the guard, the second press starts a batch of its
-        // own that waits on the same hung clip, and an unbounded await would
-        // hang the suite instead of failing it.
-        let second = model.uploadWaiting()
-        var secondFinished = false
-        Task { await second.value; secondFinished = true }
-        try await waitUntil { secondFinished }
+        try await finish(model.uploadWaiting())
         XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov"], "a press during a batch must not start another")
         XCTAssertTrue(model.isUploading)
 
         model.cancel()
-        await batch.value
+        // Every wait below is bounded. Without the guard, the second press
+        // replaces the model's batch task, so `cancel()` reaches only that one
+        // and the first batch stays parked in the hung upload — measured: an
+        // unbounded `await batch.value` here hung the run for days instead of
+        // failing it.
+        try await finish(batch)
         drive.stopHanging()
-        await model.uploadWaiting().value
+        try await finish(model.uploadWaiting())
 
         XCTAssertEqual(drive.uploadedNames, ["IMG_1.mov", "IMG_2.mov", "IMG_3.mov"])
         for name in ["IMG_1.mov", "IMG_2.mov", "IMG_3.mov"] {
@@ -484,6 +483,15 @@ final class UploadBatchModelTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// Awaits `task` for at most `timeout`, failing instead of hanging. The
+    /// flag is only touched on the main actor: the test class is
+    /// `@MainActor`, and the unstructured `Task` inherits that isolation.
+    private func finish(_ task: Task<Void, Never>, timeout: TimeInterval = 5) async throws {
+        var finished = false
+        Task { await task.value; finished = true }
+        try await waitUntil(timeout: timeout) { finished }
+    }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
