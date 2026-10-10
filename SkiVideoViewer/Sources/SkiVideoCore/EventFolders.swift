@@ -65,13 +65,15 @@ public struct LocalEventFolders: EventFolderWriting {
         guard FileManager.default.fileExists(atPath: source.path) else { return }
         let destination = source.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: true)
         if source.lastPathComponent.caseInsensitiveCompare(newName) == .orderedSame {
-            // Review Focus 1: on a case-insensitive volume the destination
-            // "exists" because it is the source. Two moves, via a name no
-            // one else uses.
-            let step = source.deletingLastPathComponent()
-                .appendingPathComponent(".rename-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.moveItem(at: source, to: step)
-            try FileManager.default.moveItem(at: step, to: destination)
+            // On a case-insensitive volume the destination "exists" because it
+            // is the source, so the overwrite guard below would refuse a
+            // case-only rename. Measured on this Mac's APFS volume: a single
+            // moveItem(Hochybrig -> HochYbrig) succeeds. An earlier two-move
+            // route through a hidden temporary name could strand the event
+            // under that name if the second move failed or the app was
+            // killed, and hidden folders are skipped by `children` and the
+            // library scan, so the clips would vanish.
+            try FileManager.default.moveItem(at: source, to: destination)
             return
         }
         guard !FileManager.default.fileExists(atPath: destination.path) else {
@@ -90,9 +92,20 @@ public struct LocalEventFolders: EventFolderWriting {
         try FileManager.default.moveItem(at: from, to: to)
     }
 
+    /// Hidden entries are listed here (unlike `children`): `removeItem` is
+    /// recursive and permanent, so anything hidden that is not known clutter
+    /// (a user's dot-file, an iCloud `.name.icloud` placeholder for a clip
+    /// not yet downloaded) keeps the folder.
     public func removeIfEmpty(_ path: [String]) async throws -> Bool {
-        guard let children = try await children(of: path), children.isEmpty else { return false }
-        try FileManager.default.removeItem(at: url(path))
+        let folder = url(path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return false }
+        let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        let isClutter: (URL) -> Bool = { $0.lastPathComponent == ".DS_Store" || $0.lastPathComponent.hasPrefix("._") }
+        guard entries.allSatisfy(isClutter) else { return false }
+        for entry in entries { try FileManager.default.removeItem(at: entry) }
+        try FileManager.default.removeItem(at: folder)
         return true
     }
 }
@@ -131,6 +144,14 @@ public struct DriveEventFolders: EventFolderWriting {
 
     public func rename(_ path: [String], to newName: String) async throws {
         guard let id = try await folderID(path) else { return }
+        // Drive allows duplicate names, so without this a rename onto an
+        // existing name would create twin folders. The id test lets a
+        // case-only rename of the folder itself through.
+        if let parentID = try await folderID(Array(path.dropLast())),
+           let existing = try await writer.findFolder(named: newName, parent: parentID),
+           existing.id != id {
+            throw RemoteUploadError.stopBatch("“\(newName)” already exists, so nothing was overwritten.")
+        }
         try await writer.rename(itemID: id, to: newName)
     }
 

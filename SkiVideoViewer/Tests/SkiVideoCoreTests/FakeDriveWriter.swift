@@ -202,7 +202,7 @@ final class FakeDriveWriter: ItemUpdatable, @unchecked Sendable {
     }
 
     private func folderIDLocked(named name: String, parent: String) -> String? {
-        folders.filter { $0.value.name == name && $0.value.parent == parent }.keys.sorted().first
+        folders.filter { $0.value.name == name && $0.value.parent == parent && !_trashedIDs.contains($0.key) }.keys.sorted().first
     }
 
     private func createFolderLocked(named name: String, parent: String) -> String {

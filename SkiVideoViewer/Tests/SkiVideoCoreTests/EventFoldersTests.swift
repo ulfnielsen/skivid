@@ -69,6 +69,27 @@ final class EventFoldersTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Anna/IMG_1.mov").path))
     }
 
+    func testLocalRemovesAFolderHoldingOnlyClutter() async throws {
+        try file("2026-02-14_A/Bo/.DS_Store")
+        try file("2026-02-14_A/Bo/._IMG_1.mov")
+        let folders = LocalEventFolders(root: root)
+        let removed = try await folders.removeIfEmpty(["2026-02-14_A", "Bo"])
+        XCTAssertTrue(removed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Bo").path))
+    }
+
+    func testLocalKeepsAFolderHoldingOtherHiddenFiles() async throws {
+        try file("2026-02-14_A/Bo/.keep")
+        try file("2026-02-14_A/Cy/.IMG_2.mov.icloud")
+        let folders = LocalEventFolders(root: root)
+        let keptDot = try await folders.removeIfEmpty(["2026-02-14_A", "Bo"])
+        let keptCloud = try await folders.removeIfEmpty(["2026-02-14_A", "Cy"])
+        XCTAssertFalse(keptDot)
+        XCTAssertFalse(keptCloud)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Bo/.keep").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("2026-02-14_A/Cy/.IMG_2.mov.icloud").path))
+    }
+
     // MARK: Drive
     // `FakeOAuthPresenter` is main-actor isolated, so these run there.
 
@@ -99,6 +120,41 @@ final class EventFoldersTests: XCTestCase {
         let binned = try await folders.removeIfEmpty(["2026-02-14_A"])
         XCTAssertFalse(binned)
         XCTAssertEqual(drive.trashedIDs, [])
+    }
+
+    @MainActor
+    func testDriveRenameOntoAnExistingNameStops() async throws {
+        let drive = FakeDriveWriter()
+        drive.seedFile("IMG_1.mov", at: ["2026-02-14_A", "Anna"])
+        drive.seedFile("IMG_2.mov", at: ["2026-02-14_B", "Bo"])
+        let folders = DriveEventFolders(writer: drive, rootID: "root-1", presenter: FakeOAuthPresenter())
+        do {
+            try await folders.rename(["2026-02-14_A"], to: "2026-02-14_B")
+            XCTFail("renaming onto an existing folder must throw")
+        } catch {}
+        XCTAssertEqual(drive.path(ofFile: "IMG_1.mov"), ["2026-02-14_A", "Anna"])
+    }
+
+    @MainActor
+    func testDriveCaseOnlyRenameStillWorks() async throws {
+        let drive = FakeDriveWriter()
+        drive.seedFile("IMG_1.mov", at: ["2026-02-14_Hochybrig", "Anna"])
+        let folders = DriveEventFolders(writer: drive, rootID: "root-1", presenter: FakeOAuthPresenter())
+        try await folders.rename(["2026-02-14_Hochybrig"], to: "2026-02-14_HochYbrig")
+        XCTAssertEqual(drive.path(ofFile: "IMG_1.mov"), ["2026-02-14_HochYbrig", "Anna"])
+    }
+
+    @MainActor
+    func testDriveBinsAnEmptyFolderAndItThenReadsAsGone() async throws {
+        let drive = FakeDriveWriter()
+        drive.seedFile("IMG_1.mov", at: ["2026-02-14_A", "Anna"])
+        let folders = DriveEventFolders(writer: drive, rootID: "root-1", presenter: FakeOAuthPresenter())
+        try await folders.move("IMG_1.mov", from: ["2026-02-14_A", "Anna"], to: ["2026-02-14_A"])
+        let binned = try await folders.removeIfEmpty(["2026-02-14_A", "Anna"])
+        XCTAssertTrue(binned)
+        XCTAssertEqual(drive.trashedIDs.count, 1)
+        let after = try await folders.children(of: ["2026-02-14_A", "Anna"])
+        XCTAssertNil(after)
     }
 
     @MainActor
