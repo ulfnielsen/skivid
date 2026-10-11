@@ -120,6 +120,62 @@ final class ViewerCaptionLayoutTests: XCTestCase {
         )
     }
 
+    /// **The test that would have caught the white-on-white report.** The
+    /// caption was white text on `.thinMaterial`, which follows the colour
+    /// scheme: in light mode it is a light blur, so over snow (a white backdrop
+    /// here) the capsule stayed near-white and the text vanished — the user's
+    /// 2026-10-11 screenshot. This renders the shipped `caption` in LIGHT
+    /// appearance over white and reads the capsule's own pixels, in the left
+    /// padding where no glyph is drawn.
+    ///
+    /// Read back with `CGWindowListCreateImage` from a briefly ordered-in
+    /// window (the same capture `ZoomWiringTests` uses), because the blur is
+    /// composited by the window server: `cacheDisplay` on the hosting view
+    /// returned a pure white capsule (luminance 1.00) even after the fix.
+    func testTheCaptionCapsuleIsDarkInLightAppearanceOverASnowyBackdrop() throws {
+        let model = try makeLoadedModel(athlete: "Ada Lovelace", event: nil, file: "run3.mov")
+        let view = ZStack {
+            Color.white
+            ViewerPane(model: model, athleteName: "Ada Lovelace").caption
+        }
+        .frame(width: 400, height: 120)
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 120)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: 100, y: 100))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        // The blur is composited by the window server, so give it a few frames.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        let shot = try XCTUnwrap(CGWindowListCreateImage(
+            .null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+            [.boundsIgnoreFraming, .nominalResolution]
+        ))
+        let rep = NSBitmapImageRep(cgImage: shot)
+
+        // The caption is centred, 12pt outside padding, then a 14pt left inset
+        // inside the capsule before the text: sample the middle of that inset.
+        let captionWidth = captionWidth(model: model, athleteName: "Ada Lovelace")
+        let capsuleLeft = (400 - captionWidth) / 2 + 12
+        var total: CGFloat = 0
+        var count: CGFloat = 0
+        for x in Int(capsuleLeft) + 6..<Int(capsuleLeft) + 12 {
+            for y in 56..<64 {
+                let color = try XCTUnwrap(rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                total += 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent
+                count += 1
+            }
+        }
+        let luminance = total / count
+        print("CAPSULE mean luminance=\(luminance)")
+        XCTAssertLessThan(
+            luminance, 0.5,
+            "white caption text needs a dark capsule behind it even in light appearance over snow"
+        )
+    }
+
     // MARK: - helpers
 
     private func captionWidth(model: ViewerModel, athleteName: String) -> CGFloat {
