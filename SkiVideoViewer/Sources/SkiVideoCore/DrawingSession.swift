@@ -172,6 +172,12 @@ public final class DrawingSession: ObservableObject {
         if let existing { drawings.drawings[existing] = mark } else { drawings.drawings.append(mark) }
     }
 
+    /// A scrub in drawing mode moves to a frame where the selected mark may
+    /// not be; dropping the selection keeps Delete from removing it unseen.
+    public func clearSelection() {
+        selection = nil
+    }
+
     public func deleteSelection() {
         guard let selection, let i = drawings.drawings.firstIndex(where: { $0.id == selection }) else { return }
         record()

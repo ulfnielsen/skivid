@@ -39,11 +39,36 @@ extension XCTestCase {
             in: directory,
             name: name,
             seconds: seconds,
-            fps: fps,
+            frameDuration: CMTime(value: 1, timescale: fps),
             width: width,
             height: height,
             transform: .identity,
             audio: audio
+        )
+    }
+
+    /// A fixture at a rational rate, e.g. `CMTime(value: 1001, timescale:
+    /// 60000)` for 59.94 fps. The `Int32` overload cannot express NTSC rates,
+    /// and they are the ones where a frame's presentation time is not a whole
+    /// number of 1/600 s ticks — which is what made frame steps land one frame
+    /// short there and nowhere else.
+    func makeRealVideoFile(
+        in directory: URL,
+        name: String,
+        seconds: Double,
+        frameDuration: CMTime,
+        width: Int = 160,
+        height: Int = 90
+    ) throws -> URL {
+        try writeVideoFixture(
+            in: directory,
+            name: name,
+            seconds: seconds,
+            frameDuration: frameDuration,
+            width: width,
+            height: height,
+            transform: .identity,
+            audio: nil
         )
     }
 
@@ -71,7 +96,7 @@ extension XCTestCase {
             in: directory,
             name: name,
             seconds: seconds,
-            fps: fps,
+            frameDuration: CMTime(value: 1, timescale: fps),
             width: width,
             height: height,
             transform: CGAffineTransform(rotationAngle: degrees * .pi / 180),
@@ -83,7 +108,7 @@ extension XCTestCase {
         in directory: URL,
         name: String,
         seconds: Double,
-        fps: Int32,
+        frameDuration: CMTime,
         width: Int,
         height: Int,
         transform: CGAffineTransform,
@@ -125,7 +150,8 @@ extension XCTestCase {
         XCTAssertTrue(writer.startWriting(), "could not start writing the fixture: \(String(describing: writer.error))")
         writer.startSession(atSourceTime: .zero)
 
-        let frames = Int(seconds * Double(fps))
+        // The epsilon keeps 2 s / (1/25 s) at 50 frames, not 49.
+        let frames = Int((seconds / frameDuration.seconds + 1e-9).rounded(.down))
         // Audio goes in 0.1s chunks so the two tracks can be interleaved by
         // presentation time. Writing every video frame and only then every
         // audio chunk is what deadlocks a multi-track writer: it withholds
@@ -136,10 +162,10 @@ extension XCTestCase {
         var frame = 0
         var chunk = 0
         while frame < frames || chunk < chunks {
-            let videoTime = Double(frame) / Double(fps)
+            let videoTime = Double(frame) * frameDuration.seconds
             let audioTime = Double(chunk) * chunkSeconds
             if frame < frames, chunk >= chunks || videoTime <= audioTime {
-                try appendVideoFrame(frame, to: input, via: adaptor, fps: fps)
+                try appendVideoFrame(frame, to: input, via: adaptor, frameDuration: frameDuration)
                 frame += 1
             } else {
                 try appendAudioChunk(
@@ -153,7 +179,7 @@ extension XCTestCase {
         }
         input.markAsFinished()
         audioInput?.markAsFinished()
-        writer.endSession(atSourceTime: CMTime(value: CMTimeValue(frames), timescale: fps))
+        writer.endSession(atSourceTime: CMTimeMultiply(frameDuration, multiplier: Int32(frames)))
 
         let written = expectation(description: "fixture written")
         writer.finishWriting { written.fulfill() }
@@ -166,7 +192,7 @@ extension XCTestCase {
         _ frame: Int,
         to input: AVAssetWriterInput,
         via adaptor: AVAssetWriterInputPixelBufferAdaptor,
-        fps: Int32
+        frameDuration: CMTime
     ) throws {
         try waitForReadiness(of: input)
         let pool = try XCTUnwrap(adaptor.pixelBufferPool, "the writer gave no pixel buffer pool")
@@ -178,7 +204,7 @@ extension XCTestCase {
             memset(base, Int32(frame % 251), CVPixelBufferGetBytesPerRow(pixels) * CVPixelBufferGetHeight(pixels))
         }
         CVPixelBufferUnlockBaseAddress(pixels, [])
-        XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps)))
+        XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTimeMultiply(frameDuration, multiplier: Int32(frame))))
     }
 
     /// A chunk of a sine tone as 16-bit interleaved LPCM, wrapped in a

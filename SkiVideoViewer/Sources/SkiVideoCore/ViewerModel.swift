@@ -1433,12 +1433,17 @@ public final class ViewerModel: ObservableObject {
         currentPlaybackURL != nil && pictureSize != .zero && drawing.session != nil
     }
 
+    /// Entering re-seeks to the nearest whole frame: a scrub or a pause can
+    /// leave `currentTime` anywhere inside a frame, the picture shows the frame
+    /// at or before it, and marks are stamped with `currentTime` rounded — so
+    /// without this, roughly half of all marks would be stored one frame later
+    /// than the picture they were drawn on.
     public func setDrawing(_ on: Bool) {
         if on {
             guard canDraw, !drawing.isDrawing else { return }
-            endSlowMotion()
-            player.pause()
+            let position = pauseWherePictureIs()
             drawing.enter()
+            showFrame(at: nearestFrameTime(to: position))
             status = "Drawing"
         } else {
             guard drawing.isDrawing else { return }
@@ -1514,39 +1519,44 @@ public final class ViewerModel: ObservableObject {
         currentTime = 0
     }
 
-    /// Exactly one frame, as an exact seek to the neighbouring frame boundary.
-    /// Not `AVPlayerItem.step(byCount:)`: drawing mode stretches marks from
-    /// one frame to the next, and `step` reports neither time.
+    /// One frame, by seeking to the neighbouring frame rather than
+    /// `AVPlayerItem.step(byCount:)`: drawing mode stretches marks from one
+    /// frame to the next, and `step` reports neither time. The seek goes
+    /// through `showFrame(at:)`, which is what makes the picture really be the
+    /// neighbouring frame at 29.97 and 59.94 fps — see there.
     public func stepFrame(_ direction: ScrubDirection) {
         guard player.currentItem != nil, duration > 0 else { return }
-        let wasPlaying = player.rate != 0
-        if wasPlaying { player.pause() }
-        // The player's own clock, read after the pause: during playback
-        // `currentTime` is written only by the 0.1 s periodic observer, so it
-        // can trail the picture by 2-3 frames (measured: 0.4 s published
-        // against 0.5 s on screen) and the step would land relative to a
-        // position the picture has already left. Only when it was playing:
-        // when paused, `scrub` sets `currentTime` synchronously while the
-        // player's clock lags the seek, so back-to-back steps would read the
-        // old frame from the player (measured: repeated steps stalled).
-        let playerSeconds = player.currentTime().seconds
-        let position = wasPlaying && playerSeconds.isFinite ? playerSeconds : currentTime
+        let position = pauseWherePictureIs()
         let from = ClipDrawings.snap(position, frameDuration: frameDuration)
         let lastFrame = ClipDrawings.snap(max(0, duration - frameDuration), frameDuration: frameDuration)
-        let to = min(max(0, from + Double(direction.rawValue) * frameDuration), lastFrame)
+        // By index, not `from + frameDuration`: that sum carries rounding
+        // (6 × 0.02 + 0.02 is 0.13999…, not 0.14), and the stored mark times
+        // should be the same doubles every route to a frame produces.
+        let index = Int((from / frameDuration).rounded()) + direction.rawValue
+        let to = min(max(0, Double(index) * frameDuration), lastFrame)
         // In the step's own direction only: scrubbed to the very end, `from`
         // can sit past `lastFrame`, and clamping would otherwise turn a step
         // forward into a step back.
         guard (to - from) * Double(direction.rawValue) > frameDuration / 2 else { return }
-        scrub(to: to)
+        showFrame(at: to)
         status = "Frame \(Int((to / frameDuration).rounded()) + 1)"
         onFrameStep?(from, to)
     }
 
     /// Absolute seek, for the scrubber. `cancelPendingSeeks` first so a drag
     /// coalesces instead of queueing one seek per pixel.
+    ///
+    /// While drawing, the target is snapped to a whole frame and shown with
+    /// `showFrame(at:)`, so the picture and the time marks are stamped with
+    /// agree; and the selection is dropped, so Delete cannot remove a mark
+    /// that is no longer on screen.
     public func scrub(to seconds: Double) {
         guard player.currentItem != nil else { return }
+        if drawing.isDrawing {
+            drawing.session?.clearSelection()
+            showFrame(at: nearestFrameTime(to: seconds))
+            return
+        }
         endSlowMotion()
         player.currentItem?.cancelPendingSeeks()
         var target = max(0, seconds)
@@ -1557,6 +1567,75 @@ public final class ViewerModel: ObservableObject {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
+    }
+
+    // MARK: - Landing on a frame
+
+    /// How far into a frame a frame-landing seek aims, as a fraction of it.
+    ///
+    /// A paused player shows the frame at or before the seek time. Aiming at
+    /// exactly k·frameDuration put the picture on frame k−1 at 59.94 fps:
+    /// frame k's presentation time, k·1001/60000 s, is not a whole number of
+    /// the seek's 1/600 s ticks, and rounded to them the target fell just
+    /// before it. Measured in the final review with `AVAssetImageGenerator` at
+    /// zero tolerance on a 60000/1001 clip, 148 of 150 frames came back as
+    /// k−1, against 0 of 150 at 50 fps; a 90000 timescale still gave 75 of 150,
+    /// and `toleranceAfter` did not help. Aiming a quarter of a frame in gave
+    /// 0 of 150 at both rates. Even at 50 fps an exact target was not safe
+    /// here: `from + frameDuration` rounded 0.14 down to 0.13999…, which became
+    /// 83/600 s — frame 6 instead of 7 (measured by
+    /// `ViewerFrameStepTests.testEveryStepAt50ShowsTheFrameItReports`).
+    ///
+    /// A quarter rather than a half: `frameDuration` comes from the track's
+    /// `nominalFrameRate`, which is frames over a duration rounded to the
+    /// container's timescale (59.9496 for a 59.94 fixture, measured), so the
+    /// aim drifts slightly across a clip and needs room on both sides.
+    static let frameSeekBias = 0.25
+
+    /// Shows the frame that starts at `snappedTime`, a whole multiple of
+    /// `frameDuration`. Every seek that lands a frame — a step, entering
+    /// drawing mode, a scrub while drawing — comes through here, so the bias
+    /// lives in one place. `currentTime` (and so every mark time) is the
+    /// snapped frame time; only the player is aimed inside the frame.
+    ///
+    /// Timescale 90000 rather than the 600 used elsewhere: a 1/600 s tick is
+    /// 1.7 ms, which would eat most of a quarter frame at 120 fps.
+    private func showFrame(at snappedTime: Double) {
+        endSlowMotion()
+        player.currentItem?.cancelPendingSeeks()
+        currentTime = snappedTime
+        player.seek(
+            to: CMTime(seconds: snappedTime + frameDuration * Self.frameSeekBias, preferredTimescale: 90000),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
+    /// The whole-frame time nearest `seconds`, kept within the clip's frames.
+    private func nearestFrameTime(to seconds: Double) -> Double {
+        var snapped = ClipDrawings.snap(max(0, seconds), frameDuration: frameDuration)
+        if duration > 0 {
+            snapped = min(snapped, ClipDrawings.snap(max(0, duration - frameDuration), frameDuration: frameDuration))
+        }
+        return snapped
+    }
+
+    /// Pauses, and returns where the picture is.
+    ///
+    /// The player's own clock when it was moving: during playback `currentTime`
+    /// is written only by the 0.1 s periodic observer, so it can trail the
+    /// picture by 2-3 frames (measured: 0.4 s published against 0.5 s on
+    /// screen), and a hold's reverse fallback moves the playhead without
+    /// writing it at all. `currentTime` when it was paused: then `scrub` sets
+    /// it synchronously while the player's clock lags the seek, so back-to-back
+    /// steps would read the old frame from the player (measured: repeated
+    /// steps stalled).
+    private func pauseWherePictureIs() -> Double {
+        let wasMoving = player.rate != 0 || hold.isActive
+        endSlowMotion()
+        player.pause()
+        let playerSeconds = player.currentTime().seconds
+        return wasMoving && playerSeconds.isFinite ? playerSeconds : currentTime
     }
 
     // MARK: - Zoom
@@ -1619,7 +1698,15 @@ public final class ViewerModel: ObservableObject {
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
-                self.currentTime = time.seconds.isFinite ? time.seconds : 0
+                let seconds = time.seconds.isFinite ? time.seconds : 0
+                // While drawing, the player sits a quarter frame into the
+                // frame `showFrame` aimed it at; publishing that raw would undo
+                // the snapped time `showFrame` wrote, and Clear frame would cut
+                // marks to a time between frames. Drawing mode is paused and
+                // only ever lands on whole frames, so snapping is exact here.
+                self.currentTime = self.drawing.isDrawing
+                    ? ClipDrawings.snap(seconds, frameDuration: self.frameDuration)
+                    : seconds
             }
         }
     }
