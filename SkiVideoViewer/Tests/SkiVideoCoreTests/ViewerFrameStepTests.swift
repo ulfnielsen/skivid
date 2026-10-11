@@ -210,8 +210,18 @@ final class ViewerFrameStepTests: XCTestCase {
     /// identified the same way as `framesShownWrong` does.
     private func shownFrame(_ model: ViewerModel) throws -> Int {
         let frameDuration = model.frameDuration
+        // One-sided on purpose: every frame-landing seek aims `frameSeekBias`
+        // (a quarter) *into* the frame, so the player ends up in
+        // [0, frameDuration/2) after `currentTime`. A previous seek's landing
+        // just *before* the frame must not satisfy the wait: measured under
+        // load (3 busy loops, 25 runs), 2 of 25 exits had the player 0.417
+        // frames before `currentTime` (the unbiased scrub to 5.6 frames, still
+        // in place while the drawing-mode re-seek had not landed), and a
+        // `abs(...) < frameDuration / 2` wait accepted it and decoded frame 5.
+        // The epsilon covers the 1/90000 s timescale rounding of the seek.
         waitUntil("the seek must land") {
-            abs(model.player.currentTime().seconds - model.currentTime) < frameDuration / 2
+            let ahead = model.player.currentTime().seconds - model.currentTime
+            return ahead >= -1e-4 && ahead < frameDuration / 2
         }
         let generator = AVAssetImageGenerator(asset: try XCTUnwrap(model.player.currentItem).asset)
         generator.requestedTimeToleranceBefore = .zero
