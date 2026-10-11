@@ -27,9 +27,20 @@ final class DrawingGeometryTests: XCTestCase {
         let pane = CGSize(width: 800, height: 600)
         var zoom = VideoZoom()
         zoom.setScale(3, in: pane, videoSize: video)
+        zoom.pan(by: CGSize(width: 300, height: -200), in: pane, videoSize: video)
         let g = DrawingGeometry(zoom: zoom, paneSize: pane, videoSize: video)
-        XCTAssertEqual(g.pictureFrame, zoom.layerFrame(in: pane, videoSize: video))
-        XCTAssertEqual(g.toPane(CGPoint(x: 0, y: 0)), g.pictureFrame.origin)
+        let layerFrame = zoom.layerFrame(in: pane, videoSize: video)
+        XCTAssertEqual(g.pictureFrame, layerFrame)
+        let origin = g.toPane(CGPoint(x: 0, y: 0))
+        XCTAssertEqual(origin.x, layerFrame.minX, accuracy: 1e-9)
+        XCTAssertEqual(origin.y, layerFrame.minY, accuracy: 1e-9)
+        let corner = g.toPane(CGPoint(x: 1, y: 1))
+        XCTAssertEqual(corner.x, layerFrame.maxX, accuracy: 1e-9)
+        XCTAssertEqual(corner.y, layerFrame.maxY, accuracy: 1e-9)
+        // Verify pan actually happened by comparing to unpanned frame
+        var unPannedZoom = VideoZoom()
+        unPannedZoom.setScale(3, in: pane, videoSize: video)
+        XCTAssertNotEqual(g.pictureFrame, unPannedZoom.layerFrame(in: pane, videoSize: video))
     }
 
     func testARightAngle() {
@@ -40,7 +51,7 @@ final class DrawingGeometryTests: XCTestCase {
 
     /// 45° in pixels on a 16:9 picture is NOT 45° in normalized space: equal
     /// pixel offsets are (0.1, 0.1·16/9) in fractions. A normalized-space
-    /// computation reads ~29.4° here.
+    /// computation reads ~60.6° here.
     func testAnAngleIsMeasuredInPixelsNotFractions() {
         let corner = CGPoint(x: 0.5, y: 0.5)
         let a = CGPoint(x: 0.6, y: 0.5)

@@ -55,7 +55,8 @@ public struct DrawingGeometry: Equatable, Sendable {
     /// none: reshaping a stroke is out of scope.
     public func handle(_ q: CGPoint, of drawing: Drawing, tolerance: CGFloat = touchTolerance) -> Int? {
         guard drawing.kind == .line || drawing.kind == .angle else { return nil }
-        let distances = drawing.points.map { hypot(toPane($0).x - q.x, toPane($0).y - q.y) }
+        let panePoints = drawing.points.map(toPane)
+        let distances = panePoints.map { hypot($0.x - q.x, $0.y - q.y) }
         guard let best = distances.indices.min(by: { distances[$0] < distances[$1] }),
               distances[best] <= tolerance else { return nil }
         return best
