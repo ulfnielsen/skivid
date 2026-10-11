@@ -141,9 +141,11 @@ final class DrawingUITests: XCTestCase {
         }
         app.buttons["Next clip"].tap()
         XCTAssertTrue(caption("Clip 2 of 3").waitForExistence(timeout: 10), "Next clip must reach clip 2")
-        // Drawing mode may still be up on clip 2; its overlay must be empty.
+        // Drawing mode stays up across the clip change; clip 2's overlay must be empty.
         let overlay2 = app.otherElements["drawing.overlay"]
-        if overlay2.exists { XCTAssertEqual(overlay2.value as? String, "0 on this frame", "clip 2 has no marks") }
+        XCTAssertTrue(overlay2.waitForExistence(timeout: 10), "drawing mode must still be up on clip 2")
+        expectation(for: NSPredicate(format: "value == '0 on this frame'"), evaluatedWith: overlay2)
+        waitForExpectations(timeout: 10)   // clip 2's empty state proves the session reloaded
         app.buttons["Previous clip"].tap()
         XCTAssertTrue(caption("Clip 1 of 3").waitForExistence(timeout: 10), "Previous clip must return to clip 1")
         // Back on the first clip at 0 s: the line's first frame.
