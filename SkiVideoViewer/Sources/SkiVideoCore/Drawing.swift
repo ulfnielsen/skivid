@@ -13,8 +13,11 @@ public enum DrawingColor: String, Codable, CaseIterable, Sendable {
 
 /// One mark on a clip, over a span of its frames.
 ///
-/// Points are fractions of the video *picture* (0…1, origin top-left), never
+/// Points are fractions of the video *picture* (origin top-left), never
 /// screen points, so a mark stays on the snow at any zoom, pan or pane size.
+/// Usually within 0…1, but a mark drawn over the letterbox lands outside it,
+/// and is deliberately not clamped: pulling one arm of an angle back to the
+/// picture's edge would change the angle that was measured.
 /// pen: the stroke; line: `[from, to]`; angle: `[corner, armA, armB]`;
 /// text: `[anchor]`.
 public struct Drawing: Codable, Equatable, Identifiable, Sendable {

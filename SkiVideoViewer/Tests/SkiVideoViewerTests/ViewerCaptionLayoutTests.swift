@@ -169,10 +169,9 @@ final class ViewerCaptionLayoutTests: XCTestCase {
             }
         }
         let luminance = total / count
-        print("CAPSULE mean luminance=\(luminance)")
         XCTAssertLessThan(
             luminance, 0.5,
-            "white caption text needs a dark capsule behind it even in light appearance over snow"
+            "white caption text needs a dark capsule behind it even in light appearance over snow (mean luminance \(luminance))"
         )
     }
 

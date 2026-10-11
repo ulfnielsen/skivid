@@ -66,8 +66,12 @@ public struct DrawingGeometry: Equatable, Sendable {
         let points = drawing.points.map(toPane)
         switch drawing.kind {
         case .text:
-            // Text is drawn centred on its anchor; about 5pt per character
-            // either side is the half-width at the overlay's font size.
+            // Text is drawn centred on its anchor. 5pt per character either
+            // side is deliberately generous, so a tap near either end still
+            // selects: measured in Task 7, the overlay's `.headline` runs
+            // 6.1-7.3pt per character of full width on macOS, so the true
+            // half-width is about 3-3.6pt per character. iOS's 17pt
+            // `.headline` is wider still (not measured).
             guard let anchor = points.first else { return .infinity }
             let halfWidth = max(Self.touchTolerance, CGFloat(drawing.text.count) * 5)
             return abs(q.x - anchor.x) <= halfWidth ? abs(q.y - anchor.y) : .infinity

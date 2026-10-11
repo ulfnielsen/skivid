@@ -157,7 +157,9 @@ a new mark is stored on.
 
 - **File:** `<stem>.skidrawings.json`, JSON, with a `version` field (1).
   Each drawing: `id` (UUID), `kind` (`pen`/`line`/`angle`/`text`), `color`,
-  `points` as fractions of the picture (0…1 on each axis), `arrow` (line
+  `points` as fractions of the picture (0…1 on each axis over the picture;
+  outside that range for a point drawn over the letterbox — deliberately not
+  clamped, because clamping would distort a measured angle), `arrow` (line
   only), `text` (text only), `start` and `end` in clip seconds.
 - **Where:** beside a local clip; under `ClipIdentity.keyedStoreRoot` by
   `pairKey` for a Drive clip — the same rule as `ClipAnalysisStore`.
