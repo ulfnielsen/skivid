@@ -1,3 +1,4 @@
+import Combine
 import SkiVideoCore
 import SwiftUI
 
@@ -151,30 +152,31 @@ struct DrawingAwareScrubber: View {
     }
 
     var body: some View {
-        if let session = drawing.session {
-            Inner(model: model, session: session)
-        } else {
-            TimelineScrubber(
-                time: model.currentTime,
-                duration: model.duration,
-                onScrub: { model.scrub(to: $0) }
-            )
-        }
+        Inner(model: model, session: drawing.session)
     }
 
     /// `DrawingSession` is itself an `ObservableObject`: observing only the
     /// controller would leave the bars stale when a mark is added or removed.
+    /// The session is optional, so it cannot be an `@ObservedObject`; and a
+    /// nil/non-nil branch would swap the `TimelineScrubber`'s identity and drop
+    /// its mid-drag state. Instead one scrubber is always rendered, and the
+    /// session's change signal bumps a counter to re-render it. `objectWillChange`
+    /// fires before the mutation, but the `@State` write re-renders afterwards,
+    /// so `spans` is read post-change.
     private struct Inner: View {
         @ObservedObject var model: ViewerModel
-        @ObservedObject var session: DrawingSession
+        let session: DrawingSession?
+        @State private var changes = 0
 
         var body: some View {
+            let _ = changes
             TimelineScrubber(
-                time: model.currentTime,
-                duration: model.duration,
-                marks: session.drawings.spans,
+                time: model.currentTime, duration: model.duration,
+                marks: session?.drawings.spans ?? [],
                 onScrub: { model.scrub(to: $0) }
             )
+            .onReceive(session?.objectWillChange.eraseToAnyPublisher()
+                       ?? Empty<Void, Never>().eraseToAnyPublisher()) { changes &+= 1 }
         }
     }
 }

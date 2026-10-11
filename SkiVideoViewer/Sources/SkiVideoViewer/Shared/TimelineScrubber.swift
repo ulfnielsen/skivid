@@ -51,19 +51,6 @@ struct TimelineScrubber: View {
             }
         )
         .disabled(duration <= 0)
-        .overlay(alignment: .bottom) {
-            GeometryReader { proxy in
-                ForEach(Array(marks.enumerated()), id: \.offset) { _, span in
-                    let x = proxy.size.width * span.lowerBound / max(duration, 0.0001)
-                    let width = max(4, proxy.size.width * (span.upperBound - span.lowerBound) / max(duration, 0.0001))
-                    Capsule().fill(Color.orange)
-                        .frame(width: width, height: 4)
-                        .position(x: x + width / 2, y: proxy.size.height - 4)
-                        .onTapGesture { onScrub(span.lowerBound) }
-                        .accessibilityLabel("Drawing at \(Timecode.string(span.lowerBound))")
-                }
-            }
-        }
         // Reserves a 44pt row, matching the control bars'. It does not make the
         // slider 44pt: measured, a `Slider` draws over 16pt on macOS whether
         // framed at `height: 44` or left unframed — the frame centres it rather
@@ -76,6 +63,26 @@ struct TimelineScrubber: View {
         // 44 is a comfortable touch row and, sideways on a phone, a twentieth
         // of the screen spent on a control the thumb is already resting on.
         .frame(height: isShortOnHeight ? 30 : 44)
+        // Display-only, and after the row's frame so the bars sit in the
+        // reserved space below the slider's ~16pt track. Attached to the
+        // slider itself they overlapped its hit area, and their tap gesture
+        // took presses meant for it; at 4pt they were also too small to tap on
+        // iPad, so "tap a bar to jump" was dropped rather than fixed. Hidden
+        // from accessibility so they do not become children of the "Viewer
+        // timeline" element that UI tests look the slider up by.
+        .overlay(alignment: .bottom) {
+            GeometryReader { proxy in
+                ForEach(Array(marks.enumerated()), id: \.offset) { _, span in
+                    let x = proxy.size.width * span.lowerBound / max(duration, 0.0001)
+                    let width = max(4, proxy.size.width * (span.upperBound - span.lowerBound) / max(duration, 0.0001))
+                    Capsule().fill(Color.orange)
+                        .frame(width: width, height: 4)
+                        .position(x: x + width / 2, y: proxy.size.height - 4)
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .accessibilityLabel("Timeline")
         .accessibilityValue(Timecode.string(displayedTime))
     }
