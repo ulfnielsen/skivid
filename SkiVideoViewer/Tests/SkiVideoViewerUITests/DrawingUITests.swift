@@ -128,20 +128,35 @@ final class DrawingUITests: XCTestCase {
         XCTAssertEqual(overlay.value as? String, "1 on this frame")
         screenshot("01-line-drawn")
 
+        let pill = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Status: Frame '")).firstMatch
         for _ in 0..<3 { app.buttons["drawing.stepForward"].tap() }
+        XCTAssertTrue(pill.waitForExistence(timeout: 5), "stepping must show a frame number in the status pill")
+        XCTAssertEqual(pill.label, "Status: Frame 4", "three steps from frame 0 must land on frame 4 (1-based)")
         XCTAssertEqual(overlay.value as? String, "1 on this frame", "stepping must carry the line along")
         screenshot("02-after-three-steps")
 
         app.buttons["drawing.done"].tap()
+        func caption(_ text: String) -> XCUIElement {
+            app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", text)).firstMatch
+        }
         app.buttons["Next clip"].tap()
+        XCTAssertTrue(caption("Clip 2 of 3").waitForExistence(timeout: 10), "Next clip must reach clip 2")
+        // Drawing mode may still be up on clip 2; its overlay must be empty.
+        let overlay2 = app.otherElements["drawing.overlay"]
+        if overlay2.exists { XCTAssertEqual(overlay2.value as? String, "0 on this frame", "clip 2 has no marks") }
         app.buttons["Previous clip"].tap()
-        app.buttons["drawing.done"].waitForNonExistence(timeout: 5)
+        XCTAssertTrue(caption("Clip 1 of 3").waitForExistence(timeout: 10), "Previous clip must return to clip 1")
         // Back on the first clip at 0 s: the line's first frame.
-        XCTAssertEqual(app.otherElements["drawing.overlay"].value as? String, "1 on this frame",
+        let back = app.otherElements["drawing.overlay"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertEqual(back.value as? String, "1 on this frame",
                        "reopening the clip must bring the line back")
     }
 
-    func testTheLineStaysOnThePictureWhenZoomed() throws {
+    /// Proves the overlay's 3x mapping about the picture centre, not alignment
+    /// with video content: the fixture is flat grey. Layer placement is covered
+    /// by DrawingGeometryTests against VideoZoom.layerFrame.
+    func testMarksScaleAboutThePictureCentreWhenZoomed() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "this walk is the phone's")
         let app = walkToAClip()
         let overlay = enterDrawing(app)
@@ -164,6 +179,8 @@ final class DrawingUITests: XCTestCase {
         let zoomIn = app.buttons["Zoom in"]
         XCTAssertTrue(zoomIn.waitForExistence(timeout: 5), "the zoom chip's plus button")
         for _ in 0..<4 { zoomIn.tap() }   // 1× → 3× in 0.5 steps
+        let chip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reset zoom'")).firstMatch
+        XCTAssertTrue(chip.label.contains("3.0×"), "the zoom chip must read 3.0× but reads \(chip.label)")
         XCTAssertTrue(label.waitForExistence(timeout: 5), "the angle label must stay on screen at 3×")
         screenshot("04-at-3x")
         let after = cornerOffset()
@@ -188,13 +205,37 @@ final class DrawingUITests: XCTestCase {
         screenshot("05-right-angle")
     }
 
+    func testAFortyFiveDegreeAngleReadsFortyFive() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "this walk is the phone's")
+        let app = walkToAClip()
+        let overlay = enterDrawing(app)
+        app.buttons["drawing.tool.angle"].tap()
+        if app.buttons["OK"].waitForExistence(timeout: 2) { app.buttons["OK"].tap() }
+        // Points, not normalised offsets, so the pane's aspect ratio cannot skew
+        // the angle. All inside the picture band (0.4-0.6 of the overlay height).
+        let origin = overlay.coordinate(withNormalizedOffset: .zero)
+        let h = overlay.frame.height, w = overlay.frame.width
+        let corner = CGVector(dx: w * 0.3, dy: h * 0.55)
+        origin.withOffset(corner).press(forDuration: 0.1,
+            thenDragTo: origin.withOffset(CGVector(dx: corner.dx + 100, dy: corner.dy)))
+        origin.withOffset(CGVector(dx: corner.dx + 100, dy: corner.dy - 100)).tap()
+        let value = app.staticTexts["drawing.angleValue.0"]
+        XCTAssertTrue(value.waitForExistence(timeout: 5))
+        XCTAssertEqual(value.label, "45°")
+        screenshot("06-forty-five")
+    }
+
     func testTappingWhileDrawingDoesNotPlay() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "this walk is the phone's")
         let app = walkToAClip()
         let overlay = enterDrawing(app)
+        let timeline = app.sliders["Viewer timeline"]
+        let before = timeline.value as? String
         app.buttons["drawing.tool.pen"].tap()
         overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        sleep(1)
-        XCTAssertTrue(app.buttons["drawing.done"].exists, "a tap in drawing mode must not leave it or play")
+        sleep(2)   // deliberate negative wait: playback, if it started, would move the playhead by now
+        XCTAssertTrue(app.buttons["drawing.done"].exists, "a tap in drawing mode must not leave it")
+        XCTAssertEqual(timeline.value as? String, before, "the playhead must not have moved: nothing played")
+        XCTAssertEqual(overlay.value as? String, "0 on this frame", "pen plus a tap must not make a mark")
     }
 }
