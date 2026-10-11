@@ -67,6 +67,7 @@ struct ViewerPane: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let area = Self.videoArea(in: proxy.size, picture: model.pictureSize)
             SinglePlayerView(player: model.player, zoom: model.zoom)
                 // Tap to play/pause: the one universal video gesture, and
                 // without it the video is inert to touch. Still the only
@@ -115,18 +116,21 @@ struct ViewerPane: View {
                 // While drawing, only the Move tool pans: the other tools use
                 // the same drag to make marks.
                 .gesture(model.zoom.isZoomed && (!drawing.isDrawing || drawing.session?.tool == .move)
-                         ? panGesture(in: proxy.size) : nil)
+                         ? panGesture(in: area) : nil)
                 // Above the video and its gestures, below the zoom chip.
                 .overlay {
                     if let session = drawing.session, drawing.isDrawing || drawing.showsDrawings {
                         DrawingOverlay(model: model, session: session,
-                                       isDrawing: drawing.isDrawing, paneSize: proxy.size)
+                                       isDrawing: drawing.isDrawing, paneSize: area)
                     }
                 }
+                .frame(width: area.width, height: area.height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 // After the gestures, so the chip is layered above them and
                 // takes its own clicks rather than the video's play/pause —
-                // measured in `ZoomWiringTests`, both directions.
-                .overlay(alignment: .bottomTrailing) { zoomChip(in: proxy.size) }
+                // measured in `ZoomWiringTests`, both directions. On the
+                // pane, not the picture, so it stays in the band below it.
+                .overlay(alignment: .bottomTrailing) { zoomChip(in: area) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottomLeading) { caption }
@@ -251,6 +255,30 @@ struct ViewerPane: View {
         .padding(.horizontal, isShortOnHeight ? 4 : 8)
         .darkFrostedBacking(in: Capsule())
         .padding(isShortOnHeight ? 6 : 12)
+    }
+
+    /// The part of the pane the player occupies: the full width, and only as
+    /// much height as the picture needs at that width, pinned to the top.
+    ///
+    /// **Centred, half the spare height sat between the title bar and the
+    /// picture** as an empty grey band, so the video's top edge stood ~30pt
+    /// below the sidebar's content beside it — the operator's 2026-10-11
+    /// screenshot of a misaligned header. Pinned to the top, all of it goes to
+    /// the band below the picture, which the caption and zoom chip already sit
+    /// in. When the pane is wider than the picture (bars at the sides) there
+    /// is no spare height and this is the whole pane, unchanged.
+    ///
+    /// The player, its gestures, the drawing overlay and the zoom all take this
+    /// size, so `VideoZoom` and `DrawingGeometry` see a pane with no vertical
+    /// letterbox and nothing in either needs to know the picture was moved.
+    /// The cost: zoomed in, the picture fills this area rather than spilling
+    /// into the band below. Before the clip's size is known it is the whole
+    /// pane, as `VideoZoom.layerFrame` treats an unknown size.
+    static func videoArea(in pane: CGSize, picture: CGSize) -> CGSize {
+        guard picture.width > 0, picture.height > 0, pane.width > 0,
+              picture.width.isFinite, picture.height.isFinite else { return pane }
+        let fittedHeight = pane.width * picture.height / picture.width
+        return CGSize(width: pane.width, height: min(pane.height, fittedHeight))
     }
 
     /// A drag pans, and each step is relative to the previous one — SwiftUI
