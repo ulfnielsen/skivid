@@ -9,7 +9,7 @@ final class DrawingSessionTests: XCTestCase {
                                     videoSize: CGSize(width: 1000, height: 1000))
 
     private func drag(_ s: DrawingSession, _ from: CGPoint, _ to: CGPoint, time: Double = 1) {
-        s.dragBegan(at: from, geometry: g, time: time)
+        s.dragBegan(at: from, geometry: g, time: time, frameDuration: frame)
         s.dragChanged(to: CGPoint(x: (from.x + to.x) / 2, y: (from.y + to.y) / 2), geometry: g)
         s.dragEnded(at: to, geometry: g)
     }
@@ -37,7 +37,7 @@ final class DrawingSessionTests: XCTestCase {
     func testPenPointsCloserThanTwoScreenPointsAreDropped() {
         let s = DrawingSession()
         s.tool = .pen
-        s.dragBegan(at: CGPoint(x: 100, y: 100), geometry: g, time: 0)
+        s.dragBegan(at: CGPoint(x: 100, y: 100), geometry: g, time: 0, frameDuration: frame)
         s.dragChanged(to: CGPoint(x: 101, y: 100), geometry: g)   // dropped
         s.dragChanged(to: CGPoint(x: 110, y: 100), geometry: g)
         s.dragEnded(at: CGPoint(x: 110, y: 100), geometry: g)      // same point: dropped
@@ -167,5 +167,78 @@ final class DrawingSessionTests: XCTestCase {
         s.tool = .move
         drag(s, CGPoint(x: 100, y: 100), CGPoint(x: 600, y: 600))
         XCTAssertTrue(s.drawings.isEmpty)
+    }
+
+    func testAHiddenMarksHandlesCannotBeGrabbed() {
+        let s = DrawingSession()
+        s.tool = .line
+        drag(s, CGPoint(x: 100, y: 500), CGPoint(x: 900, y: 500), time: 1)
+        s.tapped(at: CGPoint(x: 500, y: 500), geometry: g, time: 1, frameDuration: frame)
+        XCTAssertNotNil(s.selection)
+        drag(s, CGPoint(x: 900, y: 500), CGPoint(x: 900, y: 200), time: 5)
+        XCTAssertEqual(s.drawings.drawings.count, 2, "a new line starts instead")
+        XCTAssertEqual(s.drawings.drawings[0].points[1], CGPoint(x: 0.9, y: 0.5))
+    }
+
+    func testASecondArmTapTooCloseToTheCornerIsIgnored() {
+        let s = DrawingSession()
+        s.tool = .angle
+        drag(s, CGPoint(x: 500, y: 500), CGPoint(x: 800, y: 500))
+        s.tapped(at: CGPoint(x: 503, y: 500), geometry: g, time: 1, frameDuration: frame)
+        XCTAssertTrue(s.awaitingSecondArm)
+        XCTAssertEqual(s.inProgress?.points.count, 2)
+        XCTAssertTrue(s.drawings.isEmpty)
+    }
+
+    func testASecondArmDragTooCloseToTheCornerIsIgnored() {
+        let s = DrawingSession()
+        s.tool = .angle
+        drag(s, CGPoint(x: 500, y: 500), CGPoint(x: 800, y: 500))
+        drag(s, CGPoint(x: 500, y: 450), CGPoint(x: 503, y: 500))
+        XCTAssertTrue(s.awaitingSecondArm)
+        XCTAssertEqual(s.inProgress?.points.count, 2)
+        XCTAssertTrue(s.drawings.isEmpty)
+    }
+
+    func testAHandlePressWithoutMovementIsNotAnUndoStep() {
+        let s = DrawingSession()
+        s.tool = .line
+        drag(s, CGPoint(x: 100, y: 500), CGPoint(x: 900, y: 500))
+        s.tapped(at: CGPoint(x: 500, y: 500), geometry: g, time: 1, frameDuration: frame)
+        s.undo()  // placeholder to reset below
+        s.redo()
+        s.tapped(at: CGPoint(x: 500, y: 500), geometry: g, time: 1, frameDuration: frame)
+        let before = s.drawings
+        s.dragBegan(at: CGPoint(x: 900, y: 500), geometry: g, time: 1, frameDuration: frame)
+        s.dragEnded(at: CGPoint(x: 900, y: 500), geometry: g)
+        XCTAssertEqual(s.drawings, before)
+        s.undo()
+        XCTAssertTrue(s.drawings.isEmpty, "the only undo step is the line itself")
+    }
+
+    func testAHandleDragIsExactlyOneUndoStep() {
+        let s = DrawingSession()
+        s.tool = .line
+        drag(s, CGPoint(x: 100, y: 500), CGPoint(x: 900, y: 500))
+        s.tapped(at: CGPoint(x: 500, y: 500), geometry: g, time: 1, frameDuration: frame)
+        drag(s, CGPoint(x: 900, y: 500), CGPoint(x: 900, y: 200))
+        s.undo()
+        XCTAssertEqual(s.drawings.drawings[0].points[1], CGPoint(x: 0.9, y: 0.5))
+        s.undo()
+        XCTAssertTrue(s.drawings.isEmpty)
+        XCTAssertFalse(s.canUndo)
+    }
+
+    func testFinishingUnchangedTextIsNotAnUndoStep() {
+        let s = DrawingSession()
+        s.tool = .text
+        s.tapped(at: CGPoint(x: 300, y: 300), geometry: g, time: 1, frameDuration: frame)
+        s.finishText("Edge")
+        s.undo(); s.redo()
+        s.tapped(at: CGPoint(x: 300, y: 300), geometry: g, time: 1, frameDuration: frame)
+        s.finishText("Edge")
+        s.undo()
+        XCTAssertTrue(s.drawings.isEmpty, "unchanged text added no step beyond the original")
+        XCTAssertFalse(s.canUndo)
     }
 }

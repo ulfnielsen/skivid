@@ -32,7 +32,9 @@ public final class DrawingSession: ObservableObject {
 
     private var undoStack: [ClipDrawings] = []
     private var redoStack: [ClipDrawings] = []
-    private var draggedHandle: (id: UUID, index: Int)?
+    /// `recorded` flips on the first real move, so a press-and-release on a
+    /// handle leaves no undo step behind.
+    private var draggedHandle: (id: UUID, index: Int, recorded: Bool)?
     private var lastPenPoint: CGPoint?
 
     public var canUndo: Bool { !undoStack.isEmpty }
@@ -44,11 +46,14 @@ public final class DrawingSession: ObservableObject {
 
     // MARK: Gestures
 
-    public func dragBegan(at q: CGPoint, geometry: DrawingGeometry, time: Double) {
+    public func dragBegan(at q: CGPoint, geometry: DrawingGeometry, time: Double, frameDuration: Double) {
         let p = geometry.toPicture(q)
-        if let selection, let selected = drawing(selection), let index = geometry.handle(q, of: selected) {
-            record()
-            draggedHandle = (selection, index)
+        // A selection can outlive a frame step; its handles must not grab
+        // from a frame where the mark is not even on screen.
+        if let selection, let selected = drawing(selection),
+           selected.isVisible(at: time, frameDuration: frameDuration),
+           let index = geometry.handle(q, of: selected) {
+            draggedHandle = (selection, index, false)
             return
         }
         switch tool {
@@ -72,6 +77,11 @@ public final class DrawingSession: ObservableObject {
     public func dragChanged(to q: CGPoint, geometry: DrawingGeometry) {
         let p = geometry.toPicture(q)
         if let handle = draggedHandle, let i = drawings.drawings.firstIndex(where: { $0.id == handle.id }) {
+            guard drawings.drawings[i].points[handle.index] != p else { return }
+            if !handle.recorded {
+                record()
+                draggedHandle?.recorded = true
+            }
             drawings.drawings[i].points[handle.index] = p
             return
         }
@@ -107,8 +117,15 @@ public final class DrawingSession: ObservableObject {
         case .angle where mark.points.count == 2:
             if lastArmIsLongEnough { awaitingSecondArm = true } else { inProgress = nil }
         case .angle:
-            awaitingSecondArm = false
-            commit(mark)
+            if lastArmIsLongEnough {
+                awaitingSecondArm = false
+                commit(mark)
+            } else {
+                // A slip: drop the third point and keep waiting for a real arm.
+                var pending = mark
+                pending.points.removeLast()
+                inProgress = pending
+            }
         case .text:
             inProgress = nil
         }
@@ -117,6 +134,7 @@ public final class DrawingSession: ObservableObject {
     public func tapped(at q: CGPoint, geometry: DrawingGeometry, time: Double, frameDuration: Double) {
         let p = geometry.toPicture(q)
         if awaitingSecondArm, var angle = inProgress {
+            guard paneLength(angle.points[0], p, geometry) >= Self.minimumStrokeLength else { return }
             angle.points.append(p)
             awaitingSecondArm = false
             commit(angle)
@@ -142,6 +160,7 @@ public final class DrawingSession: ObservableObject {
         editingText = nil
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let existing = drawings.drawings.firstIndex { $0.id == mark.id }
+        if let existing, drawings.drawings[existing].text == trimmed { return }
         if trimmed.isEmpty {
             guard let existing else { return }
             record()
@@ -182,6 +201,7 @@ public final class DrawingSession: ObservableObject {
         awaitingSecondArm = false
         draggedHandle = nil
         editingText = nil
+        selection = nil
     }
 
     public func undo() {
