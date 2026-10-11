@@ -55,6 +55,20 @@ public final class ViewerModel: ObservableObject {
     /// corner says nothing about another's.
     @Published public private(set) var zoom = VideoZoom()
 
+    /// One frame of the current clip, from its video track's nominal rate;
+    /// `ClipDrawings.fallbackFrameDuration` until that is read or when the
+    /// track reports none. Drives frame stepping and drawing visibility.
+    @Published public private(set) var frameDuration = ClipDrawings.fallbackFrameDuration
+
+    /// The current clip's `presentationSize`, published because the drawing
+    /// overlay needs it to place marks and `AVPlayerItem` reports it only by
+    /// KVO. `.zero` until the item has loaded — drawing is refused until then.
+    @Published public private(set) var pictureSize: CGSize = .zero
+
+    /// Called after every frame step with the frame-snapped times it moved
+    /// from and to. The drawing controller stretches marks from here.
+    var onFrameStep: ((Double, Double) -> Void)?
+
     public let player = AVPlayer()
 
     /// The cloud library, when one is open. Nil for a local folder.
@@ -125,6 +139,7 @@ public final class ViewerModel: ObservableObject {
     private var lastTapTime = Date.distantPast
     private var timeObserver: Any?
     private var durationObserver: NSKeyValueObservation?
+    private var presentationSizeObserver: NSKeyValueObservation?
     private var rateObserver: NSKeyValueObservation?
 
     private let input: PlaybackInputSource
@@ -1449,6 +1464,24 @@ public final class ViewerModel: ObservableObject {
         currentTime = 0
     }
 
+    /// Exactly one frame, as an exact seek to the neighbouring frame boundary.
+    /// Not `AVPlayerItem.step(byCount:)`: drawing mode stretches marks from
+    /// one frame to the next, and `step` reports neither time.
+    public func stepFrame(_ direction: ScrubDirection) {
+        guard player.currentItem != nil, duration > 0 else { return }
+        if player.rate != 0 { player.pause() }
+        let from = ClipDrawings.snap(currentTime, frameDuration: frameDuration)
+        let lastFrame = ClipDrawings.snap(max(0, duration - frameDuration), frameDuration: frameDuration)
+        let to = min(max(0, from + Double(direction.rawValue) * frameDuration), lastFrame)
+        // In the step's own direction only: scrubbed to the very end, `from`
+        // can sit past `lastFrame`, and clamping would otherwise turn a step
+        // forward into a step back.
+        guard (to - from) * Double(direction.rawValue) > frameDuration / 2 else { return }
+        scrub(to: to)
+        status = "Frame \(Int((to / frameDuration).rounded()) + 1)"
+        onFrameStep?(from, to)
+    }
+
     /// Absolute seek, for the scrubber. `cancelPendingSeeks` first so a drag
     /// coalesces instead of queueing one seek per pixel.
     public func scrub(to seconds: Double) {
@@ -1570,6 +1603,28 @@ public final class ViewerModel: ObservableObject {
         }
     }
 
+    private func observePresentationSize(of item: AVPlayerItem) {
+        presentationSizeObserver = item.observe(\.presentationSize, options: [.initial, .new]) { [weak self, weak item] _, _ in
+            Task { @MainActor in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.pictureSize = item.presentationSize
+            }
+        }
+    }
+
+    /// Asynchronous like `checkPlayability`, and guarded the same way: the
+    /// coach may have moved on before the track loads.
+    private func loadFrameDuration(of url: URL) {
+        Task { [weak self] in
+            let asset = AVURLAsset(url: url)
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let rate = try? await track.load(.nominalFrameRate), rate > 0
+            else { return }
+            guard let self, self.currentPlaybackURL == url else { return }
+            self.frameDuration = 1 / Double(rate)
+        }
+    }
+
     /// Loads whatever `currentPlaybackURL` resolves to. For a local library
     /// that is always the current clip's own file; for a cloud library it is
     /// nil until `prepareCurrentClip` lands the bytes, and calling this again
@@ -1582,6 +1637,8 @@ public final class ViewerModel: ObservableObject {
         // on disk" branch below, which has no clip to report a duration for.
         currentTime = 0
         duration = 0
+        pictureSize = .zero
+        frameDuration = ClipDrawings.fallbackFrameDuration
         guard let playbackURL = currentPlaybackURL else {
             // Cloud clip not yet on disk — reachable only for a remote
             // library, since `currentPlaybackURL` always resolves for a
@@ -1602,6 +1659,8 @@ public final class ViewerModel: ObservableObject {
         let item = AVPlayerItem(url: playbackURL)
         player.replaceCurrentItem(with: item)
         observeDuration(of: item)
+        observePresentationSize(of: item)
+        loadFrameDuration(of: playbackURL)
         player.pause()
         status = "Paused"
         checkPlayability(of: playbackURL)
