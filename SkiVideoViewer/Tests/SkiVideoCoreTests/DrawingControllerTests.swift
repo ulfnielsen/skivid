@@ -125,6 +125,35 @@ final class DrawingControllerTests: XCTestCase {
         XCTAssertEqual(ClipDrawingsStore.load(for: ClipIdentity(clip("run2.mov"))), .none)
     }
 
+    /// The hook is what lets the view layer keep a label being typed: once
+    /// `load` has run, `cancelInProgress` has already dropped it.
+    func testTheClipChangeHookFiresWhileTheOldSessionIsStillLive() throws {
+        let model = try makeModel()
+        model.setDrawing(true)
+        let oldSession = try XCTUnwrap(model.drawing.session)
+        oldSession.tool = .text
+        oldSession.tapped(at: CGPoint(x: 500, y: 500), geometry: g, time: 0, frameDuration: 0.04)
+        XCTAssertNotNil(oldSession.editingText, "precondition: a label is open")
+
+        var fired = 0
+        var sessionWhenFired: DrawingSession?
+        var editingWhenFired: Drawing?
+        model.willChangeClip = {
+            fired += 1
+            sessionWhenFired = model.drawing.session
+            editingWhenFired = model.drawing.session?.editingText
+            model.drawing.session?.finishText("Knee")
+        }
+        model.changeVideo(by: 1)
+
+        XCTAssertEqual(fired, 1)
+        XCTAssertTrue(sessionWhenFired === oldSession, "the old session must still be live when the hook runs")
+        XCTAssertNotNil(editingWhenFired, "the open label must still be there to commit")
+        XCTAssertFalse(model.drawing.session === oldSession, "the session is replaced after the hook")
+        XCTAssertEqual(ClipDrawingsStore.load(for: ClipIdentity(clip("run1.mov"))).drawingCount, 1,
+                       "the label committed in the hook is saved with the clip it was typed on")
+    }
+
     func testReopeningAClipBringsItsDrawingsBack() throws {
         let model = try makeModel()
         model.setDrawing(true)

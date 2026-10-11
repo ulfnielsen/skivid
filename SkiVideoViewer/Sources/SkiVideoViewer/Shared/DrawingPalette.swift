@@ -15,6 +15,13 @@ struct DrawingPalette: View {
                 HStack(spacing: 4) { tools; colours }
                 HStack(spacing: 4) { actions }
             }
+            // A phone in portrait: the row above measures about 420pt against
+            // a 393pt screen, so tools, colours and actions each get a row.
+            VStack(spacing: 4) {
+                HStack(spacing: 4) { tools }
+                HStack(spacing: 4) { colours }
+                HStack(spacing: 4) { actions }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)

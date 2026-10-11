@@ -23,7 +23,9 @@ public final class DrawingController: ObservableObject {
 
     private let defaults: UserDefaults
     private let saveDelay: TimeInterval
-    private var identity: ClipIdentity?
+    /// The clip whose session is live; `ViewerModel` compares against it to
+    /// tell a real clip change from a reload of the same clip.
+    public private(set) var identity: ClipIdentity?
     private var isDirty = false
     /// Drawings whose save failed, by clip. A failed save must not lose the
     /// marks when the coach moves on (read-only or ejected volume, or an event

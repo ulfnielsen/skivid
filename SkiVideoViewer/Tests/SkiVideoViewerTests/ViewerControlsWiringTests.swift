@@ -213,6 +213,7 @@ final class ViewerControlsWiringTests: XCTestCase {
             "precondition: six transport buttons, Draw, Show drawings and Previous/Next clip"
         )
 
+        XCTAssertFalse(buttons[Self.drawIndex].isEnabled, "Draw needs a clip, so it is disabled with none loaded")
         for (index, button) in buttons.enumerated() {
             // Show drawings is a preference, not an action on a clip, so it
             // stays enabled; Draw needs a clip and must be disabled.

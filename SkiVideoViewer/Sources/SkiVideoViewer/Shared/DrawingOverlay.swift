@@ -161,6 +161,9 @@ struct DrawingOverlay: View {
     @ViewBuilder
     private func labels(for mark: Drawing, index: Int) -> some View {
         let points = mark.points.map(geometry.toPane)
+        // Angles only, so `angleValue.0` is the first angle on the frame
+        // whatever marks were drawn before it.
+        let angleNumber = visible.prefix(index).filter { $0.kind == .angle }.count
         switch mark.kind {
         case .angle where points.count == 3:
             let degrees = DrawingGeometry.angle(corner: mark.points[0], a: mark.points[1], b: mark.points[2],
@@ -172,7 +175,7 @@ struct DrawingOverlay: View {
                 .foregroundStyle(mark.color == .yellow ? .black : .white)
                 .position(x: points[0].x, y: points[0].y - 22)
                 .allowsHitTesting(false)
-                .accessibilityIdentifier("drawing.angleValue.\(index)")
+                .accessibilityIdentifier("drawing.angleValue.\(angleNumber)")
         case .text where mark.id != session.editingText?.id:
             Text(mark.text)
                 .font(.headline)
@@ -231,12 +234,18 @@ private struct DrawingTextField: View {
     @ObservedObject var typing: DrawingTyping
     let initial: String
     let onSubmit: () -> Void
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         TextField("Note", text: $typing.text)
+            .focused($isFocused)
             .textFieldStyle(.roundedBorder)
             .frame(width: 220)
-            .onAppear { typing.text = initial }
+            .onAppear {
+                typing.text = initial
+                // So the coach can type straight away rather than tap the field.
+                isFocused = true
+            }
             .onSubmit(onSubmit)
             .accessibilityIdentifier("drawing.textField")
     }

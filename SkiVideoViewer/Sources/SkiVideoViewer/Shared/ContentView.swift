@@ -79,6 +79,12 @@ struct ContentView: View {
     /// Why "Rename Event…" was refused, while that alert is up.
     @State private var renameRefusal: String?
 
+    /// Commits a label being typed. The text lives in the field, not the
+    /// session, so anything that ends the edit from outside it must come here.
+    private func keepTypedLabel() {
+        if let session = model.drawing.session { drawingTyping.commit(into: session) }
+    }
+
     var body: some View {
         Group {
             if isCompact {
@@ -88,12 +94,18 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            // Set before `start`, which may load the first clip.
+            model.willChangeClip = { keepTypedLabel() }
             model.start(initialDirectory: initialDirectory)
         }
         // Saving on every change is debounced by a second; leaving the
         // foreground must not wait for it, or a swipe-away loses the last mark.
         .onChange(of: scenePhase) { phase in
-            if phase != .active { model.drawing.saveNow() }
+            if phase != .active {
+                // The open label first, or the save below would miss it.
+                keepTypedLabel()
+                model.drawing.saveNow()
+            }
         }
         .onChange(of: model.selectedAthleteID) { newValue in
             model.selectAthlete(newValue)

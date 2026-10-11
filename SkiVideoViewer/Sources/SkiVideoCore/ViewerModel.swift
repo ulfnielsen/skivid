@@ -69,6 +69,12 @@ public final class ViewerModel: ObservableObject {
     /// from and to. The drawing controller stretches marks from here.
     var onFrameStep: ((Double, Double) -> Void)?
 
+    /// Called just before the drawings for a different clip replace the
+    /// current ones, while the old session is still live. The view layer sets
+    /// it to keep any label being typed; nothing after the change could,
+    /// because `cancelInProgress` has already discarded it by then.
+    public var willChangeClip: (() -> Void)?
+
     /// The current clip's drawings. Public so the views observe it directly.
     public let drawing: DrawingController
 
@@ -1685,6 +1691,11 @@ public final class ViewerModel: ObservableObject {
     /// nil until `prepareCurrentClip` lands the bytes, and calling this again
     /// once it has is what puts the downloaded clip on screen.
     private func loadCurrentVideo() {
+        // `drawing.load` cancels an open text edit without keeping it, so the
+        // view layer gets its chance to commit first. Only for a different
+        // clip: a Drive clip loads twice (selected, then bytes landed), and
+        // the second, same-clip call must not close an edit in progress.
+        if currentClipIdentity != drawing.identity { willChangeClip?() }
         // Before the guard, so closing a library saves and clears the drawings.
         drawing.load(for: currentClipIdentity)
         guard currentVideo != nil else { return }
