@@ -69,6 +69,9 @@ public final class ViewerModel: ObservableObject {
     /// from and to. The drawing controller stretches marks from here.
     var onFrameStep: ((Double, Double) -> Void)?
 
+    /// The current clip's drawings. Public so the views observe it directly.
+    public let drawing: DrawingController
+
     public let player = AVPlayer()
 
     /// The cloud library, when one is open. Nil for a local folder.
@@ -195,18 +198,25 @@ public final class ViewerModel: ObservableObject {
         folderPicker: FolderPicker,
         oauthPresenter: OAuthPresenter,
         mediaPipeline: MediaPipeline = AVFoundationMediaPipeline(),
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        drawing: DrawingController? = nil
     ) {
         self.input = input
         self.folderPicker = folderPicker
         self.oauthPresenter = oauthPresenter
         self.mediaPipeline = mediaPipeline
         self.now = now
+        self.drawing = drawing ?? DrawingController()
         self.input.onIntent = { [weak self] intent in
             self?.handle(intent)
         }
         startObservingTime()
         startObservingRate()
+        onFrameStep = { [weak self] from, to in
+            guard let self, self.drawing.isDrawing else { return }
+            self.drawing.session?.cancelInProgress()
+            self.drawing.session?.stretch(from: from, to: to, frameDuration: self.frameDuration)
+        }
     }
 
     /// `ViewerModel` has no `close()` the way `ComparisonModel` does — it is
@@ -224,12 +234,17 @@ public final class ViewerModel: ObservableObject {
     func handle(_ intent: PlaybackIntent) {
         switch intent {
         case .togglePlayback:
+            setDrawing(false)
             togglePlayback()
         case let .clip(step):
             changeVideo(by: step.offset)
         case let .athlete(step):
             changeAthlete(by: step.offset)
         case let .seek(direction):
+            if drawing.isDrawing {
+                stepFrame(direction)
+                return
+            }
             hold.end()
             performArrowTap(direction)
         case let .slowMotionBegan(direction):
@@ -250,12 +265,20 @@ public final class ViewerModel: ObservableObject {
             // written out a second time; `ComparisonModel` wrote it out a third
             // time and got it wrong. Short-circuiting matters: `begin` is not
             // reached, and so cannot start a hold, when there is no clip.
+            //
+            // Not while drawing: a hold's reverse fallback moves the playhead
+            // without updating `currentTime`, so a frame step during it would
+            // stretch the drawings from a stale frame. Drawing mode is paused,
+            // frame-by-frame work; a hold has no place in it.
             guard currentVideo != nil,
+                  !drawing.isDrawing,
                   hold.begin(direction, players: [player])
             else { return }
             status = direction == .forward ? "Slow forward" : "Slow backward"
         case .slowMotionEnded:
             endSlowMotion()
+        case .toggleDrawing:
+            setDrawing(!drawing.isDrawing)
         case .focusAthleteSearch, .openFolder:
             // Handled by the view layer, which owns focus and the picker.
             break
@@ -1398,6 +1421,26 @@ public final class ViewerModel: ObservableObject {
         selectAthlete(athlete.id)
     }
 
+    /// Drawing needs a loaded picture (to place marks) and a readable
+    /// drawings file (so a newer app's file is never replaced).
+    public var canDraw: Bool {
+        currentPlaybackURL != nil && pictureSize != .zero && drawing.session != nil
+    }
+
+    public func setDrawing(_ on: Bool) {
+        if on {
+            guard canDraw, !drawing.isDrawing else { return }
+            endSlowMotion()
+            player.pause()
+            drawing.enter()
+            status = "Drawing"
+        } else {
+            guard drawing.isDrawing else { return }
+            drawing.leave()
+            status = "Paused"
+        }
+    }
+
     public func togglePlayback() {
         guard currentVideo != nil else { return }
         endSlowMotion()
@@ -1415,6 +1458,7 @@ public final class ViewerModel: ObservableObject {
     /// `ComparisonModel.applyTransport`. One shape across both screens means
     /// one shared `TransportControls` view can drive either.
     public func applyTransport(_ action: TransportAction) {
+        if action == .playPause || action == .slow { setDrawing(false) }
         // Any in-flight slow-motion hold ends first. Without this the hold's
         // state survives the press — `SlowMotionHold.isActive` stays true, and
         // its `begin` refuses every later hold.
@@ -1641,6 +1685,8 @@ public final class ViewerModel: ObservableObject {
     /// nil until `prepareCurrentClip` lands the bytes, and calling this again
     /// once it has is what puts the downloaded clip on screen.
     private func loadCurrentVideo() {
+        // Before the guard, so closing a library saves and clears the drawings.
+        drawing.load(for: currentClipIdentity)
         guard currentVideo != nil else { return }
         // Reset before observing: the previous clip's figures would otherwise
         // drive the scrubber until the new duration arrives, which for a remote

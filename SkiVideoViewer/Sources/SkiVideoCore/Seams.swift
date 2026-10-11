@@ -40,6 +40,8 @@ public enum PlaybackIntent: Sendable {
     case slowMotionEnded
     case focusAthleteSearch
     case openFolder
+    /// Into or out of drawing mode — **D** on macOS.
+    case toggleDrawing
 }
 
 /// Produces user intents from whatever input the platform offers: an `NSEvent`

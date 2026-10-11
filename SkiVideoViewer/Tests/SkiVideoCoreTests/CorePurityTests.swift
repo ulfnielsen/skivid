@@ -47,8 +47,9 @@ final class CorePurityTests: XCTestCase {
             .slowMotionEnded,
             .focusAthleteSearch,
             .openFolder,
+            .toggleDrawing,
         ]
-        XCTAssertEqual(intents.count, 8)
+        XCTAssertEqual(intents.count, 9)
         XCTAssertEqual(ScrubDirection.backward.rawValue, -1)
         XCTAssertEqual(ScrubDirection.forward.rawValue, 1)
     }
