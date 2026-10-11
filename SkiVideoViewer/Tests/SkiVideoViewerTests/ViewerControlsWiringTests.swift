@@ -56,8 +56,13 @@ final class ViewerControlsWiringTests: XCTestCase {
     /// groups, which broke every index here. The zoom control now lives on the
     /// video instead of in the bar, so the counts are back to what they were —
     /// but the naming survived that round and is kept.
-    private static let barButtonCount = TransportAction.allCases.count + 2
-    private static let previousClipIndex = TransportAction.allCases.count
+    ///
+    /// Draw and Show drawings sit between the transport and clip stepping, so
+    /// they add two buttons and push Previous/Next clip two places along.
+    private static let barButtonCount = TransportAction.allCases.count + 4
+    private static let drawIndex = TransportAction.allCases.count
+    private static let showDrawingsIndex = TransportAction.allCases.count + 1
+    private static let previousClipIndex = TransportAction.allCases.count + 2
 
     /// Kills the mutation of replacing `model.applyTransport(action)` with
     /// `_ = action` inside `ViewerControlBar.transport`. An empty fixture is
@@ -75,7 +80,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons plus Previous/Next clip"
+            "precondition: six transport buttons, Draw, Show drawings and Previous/Next clip"
         )
 
         let playPauseIndex = try XCTUnwrap(TransportAction.allCases.firstIndex(of: .playPause))
@@ -136,7 +141,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons plus Previous/Next clip"
+            "precondition: six transport buttons, Draw, Show drawings and Previous/Next clip"
         )
 
         buttons[Self.previousClipIndex + 1].performClick(nil)
@@ -162,7 +167,7 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons plus Previous/Next clip"
+            "precondition: six transport buttons, Draw, Show drawings and Previous/Next clip"
         )
 
         buttons[Self.previousClipIndex].performClick(nil)
@@ -205,17 +210,22 @@ final class ViewerControlsWiringTests: XCTestCase {
         let buttons = transportButtons(in: host)
         XCTAssertEqual(
             buttons.count, Self.barButtonCount,
-            "precondition: six transport buttons plus Previous/Next clip"
+            "precondition: six transport buttons, Draw, Show drawings and Previous/Next clip"
         )
 
         for (index, button) in buttons.enumerated() {
+            // Show drawings is a preference, not an action on a clip, so it
+            // stays enabled; Draw needs a clip and must be disabled.
+            if index == Self.showDrawingsIndex { continue }
             XCTAssertFalse(button.isEnabled, "button at index \(index) must read as disabled with nothing loaded")
         }
 
         // Belt and suspenders: also confirm a click through a disabled
         // button genuinely does nothing, now that `isEnabled` itself is
         // pinned above.
-        for button in buttons {
+        // Not Show drawings: it is enabled, and clicking it would flip the
+        // real `ShowDrawings` default for whoever runs the tests.
+        for (index, button) in buttons.enumerated() where index != Self.showDrawingsIndex {
             button.performClick(nil)
         }
         XCTAssertEqual(model.player.rate, 0, "a disabled transport must not invoke perform")

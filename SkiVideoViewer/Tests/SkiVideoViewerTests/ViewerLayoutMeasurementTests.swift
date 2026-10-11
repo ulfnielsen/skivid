@@ -23,14 +23,17 @@ import XCTest
 @MainActor
 final class ViewerControlBarLayoutTests: XCTestCase {
     /// **Measured**, by binary search over this harness to 0.05pt: the bar's
-    /// ideal width is 557.0pt. 556pt wraps, 558pt does not.
+    /// ideal width is 665.0pt (665.04). 664pt wraps, 666pt does not. It was
+    /// 557.0pt before the Draw and Show drawings buttons: two 44pt buttons, a
+    /// 4pt gap between them and one more 16pt row spacing, 108pt in all. That
+    /// leaves 79pt below the 744pt iPad mini portrait width on macOS metrics.
     ///
     /// Recorded as a constant because it is the number the whole one-row claim
     /// rests on. The comparison screen's equivalent is 880.5pt, which is
     /// *above* every iPad portrait width and is why that bar is always wrapped
     /// there; this one is 323.5pt narrower, which is roughly the two segmented
     /// pickers the viewer does not carry.
-    private static let idealWidth: CGFloat = 557.0
+    private static let idealWidth: CGFloat = 665.0
 
     /// **Measured**: one row of 44pt controls plus the bar's 2×8pt vertical
     /// padding.
@@ -57,7 +60,7 @@ final class ViewerControlBarLayoutTests: XCTestCase {
     /// this file could not tell "the bar fits one row at 744pt" from "the bar
     /// has no wrapped layout at all" — deleting the `ViewThatFits` fallback
     /// leaves every width one row tall, and every other assertion here green.
-    func testTheBarsIdealWidthIs557Points() {
+    func testTheBarsIdealWidthIs665Points() {
         let model = makeModel()
 
         XCTAssertEqual(

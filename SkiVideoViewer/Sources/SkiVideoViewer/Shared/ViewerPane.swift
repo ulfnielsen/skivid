@@ -12,6 +12,16 @@ import SwiftUI
 struct ViewerPane: View {
     @ObservedObject var model: ViewerModel
     let athleteName: String
+    /// Observed here because `model` only republishes its own properties:
+    /// entering drawing mode changes `drawing.isDrawing`, not anything on
+    /// `model`, and the tap and pan arbitration below depends on it.
+    @ObservedObject private var drawing: DrawingController
+
+    init(model: ViewerModel, athleteName: String) {
+        self.model = model
+        self.athleteName = athleteName
+        _drawing = ObservedObject(wrappedValue: model.drawing)
+    }
 
     /// Where the current drag had reached at its previous change.
     ///
@@ -64,7 +74,9 @@ struct ViewerPane: View {
                 // edge-hold-to-shuttle would duplicate controls the bar already
                 // carries.
                 .contentShape(Rectangle())
-                .onTapGesture { model.applyTransport(.playPause) }
+                // Not while drawing: a tap there places or selects a mark, and the
+                // overlay's own gesture handles it.
+                .onTapGesture { if !drawing.isDrawing { model.applyTransport(.playPause) } }
                 // **There is deliberately no `.onTapGesture(count: 2)` reset
                 // here, and the absence is the measurement's, not an
                 // oversight — `ComparisonPane` has one. Do not add it back
@@ -100,7 +112,17 @@ struct ViewerPane: View {
 
                 // Only installed while zoomed, so at 1x it cannot swallow
                 // anything meant for the tap above.
-                .gesture(model.zoom.isZoomed ? panGesture(in: proxy.size) : nil)
+                // While drawing, only the Move tool pans: the other tools use
+                // the same drag to make marks.
+                .gesture(model.zoom.isZoomed && (!drawing.isDrawing || drawing.session?.tool == .move)
+                         ? panGesture(in: proxy.size) : nil)
+                // Above the video and its gestures, below the zoom chip.
+                .overlay {
+                    if let session = drawing.session, drawing.isDrawing || drawing.showsDrawings {
+                        DrawingOverlay(model: model, session: session,
+                                       isDrawing: drawing.isDrawing, paneSize: proxy.size)
+                    }
+                }
                 // After the gestures, so the chip is layered above them and
                 // takes its own clicks rather than the video's play/pause —
                 // measured in `ZoomWiringTests`, both directions.
@@ -110,6 +132,14 @@ struct ViewerPane: View {
         .overlay(alignment: .bottomLeading) { caption }
         .overlay(alignment: .topTrailing) { statusChip }
         .overlay(alignment: .top) { unsupportedFormatBanner }
+        .overlay(alignment: .bottom) {
+            if let notice = drawing.notice {
+                Text(notice).font(.caption).padding(6)
+                    .background(.thinMaterial, in: Capsule()).padding(.bottom, 56)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("drawing.notice")
+            }
+        }
     }
 
     /// Shown when this device cannot decode the current clip's video.

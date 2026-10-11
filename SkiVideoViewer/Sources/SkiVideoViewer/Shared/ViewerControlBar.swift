@@ -10,7 +10,15 @@ import SwiftUI
 /// measurement, and Task 4 measures it.
 struct ViewerControlBar: View {
     @ObservedObject var model: ViewerModel
+    /// `canDraw` reads `pictureSize` (published on `model`) and
+    /// `drawing.session` (published on `drawing`), so both are observed.
+    @ObservedObject var drawing: DrawingController
     @Environment(\.isShortOnHeight) private var isShortOnHeight
+
+    init(model: ViewerModel) {
+        self.model = model
+        _drawing = ObservedObject(wrappedValue: model.drawing)
+    }
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -18,6 +26,7 @@ struct ViewerControlBar: View {
                 transport
                 Spacer(minLength: 8)
                 timeLabel
+                drawingButtons
                 clipStepping
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -28,6 +37,7 @@ struct ViewerControlBar: View {
                 HStack(spacing: 16) {
                     Spacer(minLength: 8)
                     timeLabel
+                    drawingButtons
                     clipStepping
                 }
             }
@@ -39,6 +49,29 @@ struct ViewerControlBar: View {
     private var transport: some View {
         TransportControls(isEnabled: model.currentPlaybackURL != nil) { action in
             model.applyTransport(action)
+        }
+    }
+
+    private var drawingButtons: some View {
+        HStack(spacing: 4) {
+            Button { model.setDrawing(true) } label: {
+                Image(systemName: "pencil.tip.crop.circle").frame(width: 44, height: isShortOnHeight ? 34 : 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help("Draw (D)")
+            .accessibilityLabel("Draw")
+            .accessibilityIdentifier("viewer.draw")
+            .disabled(!model.canDraw)
+
+            Button { drawing.showsDrawings.toggle() } label: {
+                Image(systemName: drawing.showsDrawings ? "eye" : "eye.slash")
+                    .frame(width: 44, height: isShortOnHeight ? 34 : 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(drawing.showsDrawings ? "Hide drawings" : "Show drawings")
+            .accessibilityLabel("Show drawings")
+            .accessibilityValue(drawing.showsDrawings ? "On" : "Off")
+            .accessibilityIdentifier("viewer.showDrawings")
         }
     }
 

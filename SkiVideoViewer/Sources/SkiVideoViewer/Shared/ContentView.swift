@@ -6,6 +6,9 @@ struct ContentView: View {
     let initialDirectory: URL?
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
+    @Environment(\.scenePhase) private var scenePhase
+    /// Shared by the drawing overlay and palette; see `DrawingTyping`.
+    @StateObject private var drawingTyping = DrawingTyping()
 
     /// Which sidebar sections the coach has folded away.
     ///
@@ -86,6 +89,11 @@ struct ContentView: View {
         }
         .onAppear {
             model.start(initialDirectory: initialDirectory)
+        }
+        // Saving on every change is debounced by a second; leaving the
+        // foreground must not wait for it, or a swipe-away loses the last mark.
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { model.drawing.saveNow() }
         }
         .onChange(of: model.selectedAthleteID) { newValue in
             model.selectAthlete(newValue)
@@ -569,7 +577,7 @@ struct ContentView: View {
                     .accessibilityIdentifier("Viewer timeline")
                     .padding(.horizontal, 12)
 
-                    ViewerControlBar(model: model)
+                    DrawingAwareControlBar(model: model)
                 }
                 .background(.bar)
             } else {
@@ -586,6 +594,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .environment(\.drawingTyping, drawingTyping)
         .navigationTitle(model.libraryTitle)
         #if os(macOS)
         // Which drive, and how much of it — the title alone says "Videos", and
