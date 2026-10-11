@@ -8,8 +8,14 @@ public enum ClipDrawingsLoad: Equatable, Sendable {
     case unreadable
 }
 
-public enum ClipDrawingsStoreError: Error, Equatable {
+public enum ClipDrawingsStoreError: Error, Equatable, LocalizedError {
     case wouldOverwriteUnreadable
+
+    /// Shown after "Couldn't save drawings:"; without it the notice would read
+    /// the generic "The operation couldn't be completed".
+    public var errorDescription: String? {
+        "this clip's drawings file was written by a newer version or is damaged, so it was left untouched."
+    }
 }
 
 /// Reads and writes `<stem>.skidrawings.json`, shaped like

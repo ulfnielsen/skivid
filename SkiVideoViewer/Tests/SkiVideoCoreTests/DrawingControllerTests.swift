@@ -168,6 +168,45 @@ final class DrawingControllerTests: XCTestCase {
         XCTAssertTrue(model.drawing.isDrawing)
     }
 
+    /// A failed save must neither lose the marks nor hide the error: the
+    /// drawings stay in memory across the clip change, and the notice stays.
+    /// A directory where the file belongs makes the write fail reliably.
+    func testAFailedSaveSurvivesAClipChangeAndIsRetried() throws {
+        let model = try makeModel()
+        let blocker = clip("run1.skidrawings.json")
+        try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
+        model.setDrawing(true)
+        drawALine(model)
+        model.changeVideo(by: 1)
+        XCTAssertTrue(model.drawing.notice?.hasPrefix("Couldn't save drawings") == true, model.drawing.notice ?? "nil")
+        try FileManager.default.removeItem(at: blocker)
+        model.changeVideo(by: -1)
+        XCTAssertEqual(model.drawing.session?.drawings.drawings.count, 1)
+        model.drawing.saveNow()
+        XCTAssertEqual(ClipDrawingsStore.load(for: ClipIdentity(clip("run1.mov"))).drawingCount, 1)
+        XCTAssertNil(model.drawing.notice)
+    }
+
+    /// The same, when the old clip's file is still blocked on return: the
+    /// session is rebuilt from memory, not from the (unreadable) disk.
+    func testUnsavedDrawingsComeBackWhileTheFileIsStillBlocked() throws {
+        let model = try makeModel()
+        let blocker = clip("run1.skidrawings.json")
+        try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
+        model.setDrawing(true)
+        drawALine(model)
+        model.changeVideo(by: 1)
+        model.changeVideo(by: -1)
+        XCTAssertEqual(model.drawing.session?.drawings.drawings.count, 1)
+        XCTAssertTrue(model.drawing.notice?.hasPrefix("Couldn't save drawings") == true)
+    }
+
+    func testTheUnreadableErrorHasAPlainDescription() {
+        let text = ClipDrawingsStoreError.wouldOverwriteUnreadable.localizedDescription
+        XCTAssertFalse(text.contains("couldn\u{2019}t be completed") || text.contains("couldn't be completed"), text)
+        XCTAssertTrue(text.contains("left untouched"), text)
+    }
+
     func testShowDrawingsIsRememberedAndOnByDefault() {
         let first = DrawingController(defaults: defaults)
         XCTAssertTrue(first.showsDrawings)
