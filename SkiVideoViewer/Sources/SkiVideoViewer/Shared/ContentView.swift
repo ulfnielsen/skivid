@@ -7,8 +7,9 @@ struct ContentView: View {
     @FocusState private var athleteSearchIsFocused: Bool
     @State private var isShowingGoogleDriveSheet = false
     @Environment(\.scenePhase) private var scenePhase
-    /// Shared by the drawing overlay and palette; see `DrawingTyping`.
-    @StateObject private var drawingTyping = DrawingTyping()
+    /// Shared by the drawing overlay and palette; see `DrawingTyping`. The
+    /// macOS app passes its own so its delegate can keep a label on quit.
+    @StateObject private var drawingTyping: DrawingTyping
 
     /// Which sidebar sections the coach has folded away.
     ///
@@ -41,9 +42,11 @@ struct ContentView: View {
     init(
         model: ViewerModel,
         initialDirectory: URL?,
-        secondaryScreens: SecondaryScreenPresenter
+        secondaryScreens: SecondaryScreenPresenter,
+        drawingTyping: DrawingTyping = DrawingTyping()
     ) {
         _model = ObservedObject(wrappedValue: model)
+        _drawingTyping = StateObject(wrappedValue: drawingTyping)
         self.initialDirectory = initialDirectory
         self.secondaryScreens = secondaryScreens
     }
@@ -101,11 +104,7 @@ struct ContentView: View {
         // Saving on every change is debounced by a second; leaving the
         // foreground must not wait for it, or a swipe-away loses the last mark.
         .onChange(of: scenePhase) { phase in
-            if phase != .active {
-                // The open label first, or the save below would miss it.
-                keepTypedLabel()
-                model.drawing.saveNow()
-            }
+            if phase != .active { drawingTyping.keepAndSave(model.drawing) }
         }
         .onChange(of: model.selectedAthleteID) { newValue in
             model.selectAthlete(newValue)

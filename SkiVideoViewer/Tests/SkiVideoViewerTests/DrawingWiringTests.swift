@@ -148,4 +148,32 @@ final class DrawingWiringTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(top, Double(slider.maxY),
                                     "the bar's top (\(top)) is inside the slider's extent \(slider)")
     }
+
+    // MARK: - Quitting on macOS
+
+    /// What the app delegate runs on quit: the label still being typed is
+    /// kept, and the drawings reach disk now rather than after the debounce
+    /// (60 s here, so only an immediate write can pass).
+    func testQuittingKeepsTheOpenLabelAndWritesTheDrawings() throws {
+        let model = try makeLoadedModel()
+        model.setDrawing(true)
+        let session = try XCTUnwrap(model.drawing.session)
+        let identity = try XCTUnwrap(model.drawing.identity)
+        session.tool = .text
+        let geometry = DrawingGeometry(pictureFrame: CGRect(x: 0, y: 0, width: 400, height: 300),
+                                       videoSize: model.pictureSize)
+        session.tapped(at: CGPoint(x: 200, y: 150), geometry: geometry, time: 0, frameDuration: model.frameDuration)
+        XCTAssertNotNil(session.editingText, "precondition: a label is open")
+        let typing = DrawingTyping()
+        typing.text = "Hips forward"
+
+        let delegate = ApplicationDelegate()
+        delegate.beforeQuit = { typing.keepAndSave(model.drawing) }
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        guard case let .drawings(saved) = ClipDrawingsStore.load(for: identity) else {
+            return XCTFail("the drawings must be on disk at quit")
+        }
+        XCTAssertEqual(saved.drawings.map(\.text), ["Hips forward"])
+    }
 }

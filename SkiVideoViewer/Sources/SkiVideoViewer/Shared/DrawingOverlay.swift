@@ -16,6 +16,14 @@ final class DrawingTyping: ObservableObject {
     @MainActor func commit(into session: DrawingSession) {
         if session.editingText != nil { session.finishText(text) }
     }
+
+    /// For the app going away — to the background, or quitting on macOS:
+    /// keeps the open label, then writes now rather than after the debounce,
+    /// which would never run. The label first, or the save would miss it.
+    @MainActor func keepAndSave(_ drawing: DrawingController) {
+        if let session = drawing.session { commit(into: session) }
+        drawing.saveNow()
+    }
 }
 
 private struct DrawingTypingKey: EnvironmentKey {
