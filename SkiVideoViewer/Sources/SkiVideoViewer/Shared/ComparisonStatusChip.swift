@@ -78,7 +78,7 @@ struct ComparisonStatusChip: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.thinMaterial, in: Capsule())
+            .darkFrostedBacking(in: Capsule())
             .allowsHitTesting(false)
             .accessibilityLabel(
                 alignmentNote.map { "Status: \(status). \($0)" } ?? "Status: \(status)"

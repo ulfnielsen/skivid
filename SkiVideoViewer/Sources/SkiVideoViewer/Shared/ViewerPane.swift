@@ -200,7 +200,7 @@ struct ViewerPane: View {
     /// deleted, and spent on the smallest screen, where video area is
     /// scarcest. Over the letterbox it costs no layout height at all. Same
     /// reasoning as `ClipSourceMenu`'s chip on the comparison panes. The
-    /// backing is `darkFrostedCapsule`, shared with the caption, and the chip
+    /// backing is `darkFrostedBacking`, shared with the caption, which also
     /// forces the dark scheme so its glyphs and slider turn light on it (the
     /// light-mode `.thinMaterial` it had was white-on-white over snow).
     ///
@@ -249,8 +249,7 @@ struct ViewerPane: View {
         )
         .frame(maxWidth: isShortOnHeight ? 160 : 220)
         .padding(.horizontal, isShortOnHeight ? 4 : 8)
-        .background { Self.darkFrostedCapsule }
-        .environment(\.colorScheme, .dark)
+        .darkFrostedBacking(in: Capsule())
         .padding(isShortOnHeight ? 6 : 12)
     }
 
@@ -289,19 +288,13 @@ struct ViewerPane: View {
     /// nothing to work with when the backdrop is snow, which is most of what
     /// this app ever shows.
     ///
-    /// **A frosted capsule, but a dark one in every appearance.** The first
-    /// version used a plain `.thinMaterial`, which follows the colour scheme: in
-    /// light mode it is a LIGHT blur, so white text over snow was white on
-    /// near-white again (the operator's 2026-10-11 screenshot, reproduced by
-    /// `ViewerCaptionLayoutTests`: mean capsule luminance 0.94 in light
-    /// appearance over a white backdrop). `darkFrostedCapsule` renders the
-    /// material under a forced dark scheme, so white text reads on snow and on
-    /// dark footage alike. **The dark scheme alone is not dark enough:** a
-    /// dark `.thinMaterial` over white measured 0.63 luminance (`.regular`
-    /// 0.56, `.thick` 0.48, `.ultraThick` 0.40), mid-grey under white text, so
-    /// a 50% black tint goes on top of it (0.35). It stays a frosted capsule,
-    /// not a solid pill, and the zoom chip in the opposite corner shares it. The shadow stays gone: the capsule is the separation, and a
-    /// shadow under a blurred capsule only muddies its edge.
+    /// **A frosted capsule, but a dark one in every appearance** —
+    /// `darkFrostedBacking`, which carries the measurements. A plain
+    /// `.thinMaterial` is a light blur in light mode, and white text over snow
+    /// was white on near-white again. The zoom chip in the opposite corner and
+    /// the comparison screen's chips share it. The shadow stays gone: the
+    /// capsule is the separation, and a shadow under a blurred capsule only
+    /// muddies its edge.
     ///
     /// The type steps up with it — `.title3` semibold for the athlete, who is
     /// the thing a coach scanning a wall of runs is looking for, and
@@ -330,17 +323,9 @@ struct ViewerPane: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background { Self.darkFrostedCapsule }
+        .darkFrostedBacking(in: Capsule())
         .padding(12)
         .allowsHitTesting(false)
-    }
-
-    /// The one backing the caption and the zoom chip share. See `caption`.
-    private static var darkFrostedCapsule: some View {
-        Capsule()
-            .fill(.thinMaterial)
-            .overlay(Capsule().fill(Color.black.opacity(0.5)))
-            .environment(\.colorScheme, .dark)
     }
 
     /// Capped and non-hit-testable for the same two reasons the comparison

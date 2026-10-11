@@ -738,7 +738,7 @@ struct ComparisonView: View {
         } label: {
             Image(systemName: "xmark")
                 .frame(width: 44, height: 44)
-                .background(.thinMaterial, in: Circle())
+                .darkFrostedBacking(in: Circle())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1024,7 +1024,7 @@ struct ComparisonVideos: View {
             )
             .frame(maxWidth: 220)
             .padding(.horizontal, 8)
-            .background(.thinMaterial, in: Capsule())
+            .darkFrostedBacking(in: Capsule())
         }
         .padding(8)
     }

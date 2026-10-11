@@ -171,7 +171,7 @@ struct ComparisonPane: View {
     /// acceptable.
     ///
     /// The covered strip is genuinely dead rather than merely obscured — the
-    /// `.thinMaterial` capsule takes hits across its whole extent, not only
+    /// frosted capsule takes hits across its whole extent, not only
     /// where its controls are. Measured: a click 4pt inside the capsule's
     /// leading edge, in its padding and clear of every button and the slider,
     /// reached the menu 0 times; the same click at x = 20 reached it once.
@@ -200,7 +200,7 @@ struct ComparisonPane: View {
         )
         .frame(maxWidth: 220)
         .padding(.horizontal, 8)
-        .background(.thinMaterial, in: Capsule())
+        .darkFrostedBacking(in: Capsule())
         .padding(8)
     }
 

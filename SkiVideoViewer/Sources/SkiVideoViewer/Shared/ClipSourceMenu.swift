@@ -114,7 +114,7 @@ struct ClipSourceMenu: View {
     /// so the fix for "the operator cannot find it" is to make this look like a
     /// control, not to move it somewhere roomier.
     ///
-    /// What makes it one: a `.thinMaterial` capsule, the same treatment
+    /// What makes it one: a dark frosted capsule (`darkFrostedBacking`), the same treatment
     /// `ComparisonStatusChip` uses to float over video, so the control has an
     /// edge instead of being loose text on black; a chevron that is always
     /// visible rather than appearing on hover, because a control nobody hovers
@@ -137,7 +137,7 @@ struct ClipSourceMenu: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .frame(minHeight: 44)
-            .background(.thinMaterial, in: Capsule())
+            .darkFrostedBacking(in: Capsule())
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
