@@ -94,7 +94,17 @@ final class DrawingUITests: XCTestCase {
         draw.tap()
         let overlay = app.otherElements["drawing.overlay"]
         XCTAssertTrue(overlay.waitForExistence(timeout: 10))
+        clearLeftovers(app, overlay)
         return overlay
+    }
+
+    /// Drawings persist in the app container, and every test's marks start at
+    /// frame 0 of clip 1, where Clear frame deletes a mark on its first frame.
+    private func clearLeftovers(_ app: XCUIApplication, _ overlay: XCUIElement) {
+        for _ in 0..<10 where overlay.value as? String != "0 on this frame" {
+            app.buttons["drawing.clearFrame"].tap()
+        }
+        XCTAssertEqual(overlay.value as? String, "0 on this frame", "leftover drawings must clear")
     }
 
     private func drawLine(on overlay: XCUIElement, app: XCUIApplication) {
@@ -135,12 +145,32 @@ final class DrawingUITests: XCTestCase {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "this walk is the phone's")
         let app = walkToAClip()
         let overlay = enterDrawing(app)
-        drawLine(on: overlay, app: app)
+        app.buttons["drawing.tool.angle"].tap()
+        if app.buttons["OK"].waitForExistence(timeout: 2) { app.buttons["OK"].tap() }
+        // Corner off-centre at (0.6, 0.6); arms as in the angle test.
+        overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.6))
+            .press(forDuration: 0.1, thenDragTo: overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.6)))
+        overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.35)).tap()
+        let label = app.staticTexts["drawing.angleValue.0"]
+        XCTAssertTrue(label.waitForExistence(timeout: 5))
+        // The label sits 22pt above the corner and does not scale; add that back
+        // so the offset measured is the corner's, which is what zoom scales.
+        func cornerOffset() -> CGVector {
+            let l = label.frame, o = overlay.frame
+            return CGVector(dx: l.midX - o.midX, dy: (l.midY + 22) - o.midY)
+        }
+        let before = cornerOffset()
         screenshot("03-before-zoom")
         let zoomIn = app.buttons["Zoom in"]
         XCTAssertTrue(zoomIn.waitForExistence(timeout: 5), "the zoom chip's plus button")
         for _ in 0..<4 { zoomIn.tap() }   // 1× → 3× in 0.5 steps
+        XCTAssertTrue(label.waitForExistence(timeout: 5), "the angle label must stay on screen at 3×")
         screenshot("04-at-3x")
+        let after = cornerOffset()
+        for (b, a, axis) in [(before.dx, after.dx, "x"), (before.dy, after.dy, "y")] where abs(b) > 10 {
+            XCTAssertEqual(a, 3 * b, accuracy: abs(3 * b) * 0.15,
+                           "corner offset on \(axis) must triple: before \(b), after \(a)")
+        }
     }
 
     func testARightAngleReadsNinetyDegrees() throws {
