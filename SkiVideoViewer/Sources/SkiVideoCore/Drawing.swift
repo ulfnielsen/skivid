@@ -64,94 +64,76 @@ public struct Drawing: Codable, Equatable, Identifiable, Sendable {
         start = try container.decode(Double.self, forKey: .start)
         end = try container.decode(Double.self, forKey: .end)
 
-        // Validate that start and end are finite
-        guard start.isFinite else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: decoder.codingPath + [CodingKeys.start],
-                    debugDescription: "start time must be finite"
-                )
-            )
-        }
-        guard end.isFinite else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: decoder.codingPath + [CodingKeys.end],
-                    debugDescription: "end time must be finite"
-                )
-            )
-        }
+        // Validate times
+        try validateFinite(start, fieldKey: .start, decoder: decoder)
+        try validateFinite(end, fieldKey: .end, decoder: decoder)
 
-        // Validate that end >= start
         guard end >= start else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: decoder.codingPath + [CodingKeys.end],
-                    debugDescription: "end time must be >= start time"
-                )
+            try throwDataCorrupted(
+                at: decoder.codingPath + [CodingKeys.end],
+                message: "end time must be >= start time"
             )
         }
 
         // Validate point count matches kind
         let pointCount = points.count
+        let requiredCount: (Int) -> Bool
+        let expectedDescription: String
+
         switch kind {
         case .pen:
-            guard pointCount >= 2 else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath + [CodingKeys.points],
-                        debugDescription: "pen drawing must have at least 2 points, got \(pointCount)"
-                    )
-                )
-            }
+            requiredCount = { $0 >= 2 }
+            expectedDescription = "at least 2"
         case .line:
-            guard pointCount == 2 else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath + [CodingKeys.points],
-                        debugDescription: "line drawing must have exactly 2 points, got \(pointCount)"
-                    )
-                )
-            }
+            requiredCount = { $0 == 2 }
+            expectedDescription = "exactly 2"
         case .angle:
-            guard pointCount == 3 else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath + [CodingKeys.points],
-                        debugDescription: "angle drawing must have exactly 3 points, got \(pointCount)"
-                    )
-                )
-            }
+            requiredCount = { $0 == 3 }
+            expectedDescription = "exactly 3"
         case .text:
-            guard pointCount == 1 else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath + [CodingKeys.points],
-                        debugDescription: "text drawing must have exactly 1 point, got \(pointCount)"
-                    )
-                )
-            }
+            requiredCount = { $0 == 1 }
+            expectedDescription = "exactly 1"
+        }
+
+        guard requiredCount(pointCount) else {
+            try throwDataCorrupted(
+                at: decoder.codingPath + [CodingKeys.points],
+                message: "\(kind.rawValue) drawing must have \(expectedDescription) points, got \(pointCount)"
+            )
         }
 
         // Validate that all point coordinates are finite
         for (i, point) in points.enumerated() {
-            guard point.x.isFinite else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath + [CodingKeys.points, IndexKey(intValue: i)!],
-                        debugDescription: "point [\(i)].x must be finite"
-                    )
-                )
-            }
-            guard point.y.isFinite else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath + [CodingKeys.points, IndexKey(intValue: i)!],
-                        debugDescription: "point [\(i)].y must be finite"
-                    )
-                )
-            }
+            try validateFinite(point.x, fieldKey: .points, decoder: decoder, indexPath: i)
+            try validateFinite(point.y, fieldKey: .points, decoder: decoder, indexPath: i)
         }
+    }
+
+    private func validateFinite(
+        _ value: Double,
+        fieldKey: CodingKeys,
+        decoder: Decoder,
+        indexPath: Int? = nil
+    ) throws {
+        guard value.isFinite else {
+            var path = decoder.codingPath + [fieldKey]
+            if let index = indexPath {
+                path.append(IndexKey(intValue: index)!)
+            }
+            try throwDataCorrupted(
+                at: path,
+                message: "must be finite"
+            )
+        }
+    }
+
+    private func throwDataCorrupted(at path: [CodingKey], message: String) throws -> Never {
+        throw DecodingError.dataCorrupted(
+            DecodingError.Context(
+                codingPath: path,
+                debugDescription: message
+            )
+        )
     }
 
     enum CodingKeys: String, CodingKey {
