@@ -1553,8 +1553,7 @@ public final class ViewerModel: ObservableObject {
     public func scrub(to seconds: Double) {
         guard player.currentItem != nil else { return }
         if drawing.isDrawing {
-            drawing.session?.clearSelection()
-            showFrame(at: nearestFrameTime(to: seconds))
+            scrub(toFrameAt: seconds)
             return
         }
         endSlowMotion()
@@ -1567,6 +1566,17 @@ public final class ViewerModel: ObservableObject {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
+    }
+
+    /// A scrub that lands on the whole frame nearest `seconds` and shows it
+    /// with `showFrame(at:)`. What `scrub(to:)` does while drawing, and what
+    /// the viewer's timeline uses when it pulls a scrub onto a drawing's span
+    /// (`ClipDrawings.scrubLanding`) — a plain seek to a 59.94 fps span start
+    /// would show the frame before the one the mark is on.
+    public func scrub(toFrameAt seconds: Double) {
+        guard player.currentItem != nil else { return }
+        if drawing.isDrawing { drawing.session?.clearSelection() }
+        showFrame(at: nearestFrameTime(to: seconds))
     }
 
     // MARK: - Landing on a frame

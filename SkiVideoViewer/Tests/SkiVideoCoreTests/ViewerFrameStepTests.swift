@@ -294,4 +294,19 @@ final class ViewerFrameStepTests: XCTestCase {
         model.scrub(to: 10 * frame)
         XCTAssertNil(session.selection, "Delete must not reach a mark that is no longer on screen")
     }
+
+    /// What the timeline uses when it pulls a scrub onto a drawing: the
+    /// mark's start is a whole frame time, and at 59.94 fps a plain seek there
+    /// can show the frame before it, under a mark the overlay still draws.
+    func testLandingOnADrawingsFrameAt5994ShowsThatFrame() throws {
+        let model = try makeLoadedModel(seconds: 2, frameDuration: CMTime(value: 1001, timescale: 60000))
+        waitUntil("the frame rate must be read") { abs(model.frameDuration - 1001.0 / 60000) < 1e-5 }
+        var wrong: [String] = []
+        for k in stride(from: 40, to: 100, by: 3) {
+            model.scrub(toFrameAt: Double(k) * model.frameDuration)
+            let shown = try shownFrame(model)
+            if shown != k { wrong.append("asked \(k), shown \(shown)") }
+        }
+        XCTAssertEqual(wrong, [])
+    }
 }

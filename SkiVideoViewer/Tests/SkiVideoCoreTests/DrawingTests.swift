@@ -225,7 +225,48 @@ final class DrawingTests: XCTestCase {
             }
         }
     }
+
+    // MARK: Pulling a scrub onto a drawing
+
+    /// 10 s on a 600pt timeline: 6pt of reach is 0.1 s.
+    private func landing(_ time: Double, _ spans: [ClosedRange<Double>]) -> Double? {
+        ClipDrawings.scrubLanding(for: time, spans: spans, duration: 10, width: 600)
+    }
+
+    func testAScrubWithinReachOfAOneFrameMarkLandsOnIt() {
+        XCTAssertEqual(landing(4.91, [5...5]), 5, "from before")
+        XCTAssertEqual(landing(5.09, [5...5]), 5, "from after")
+    }
+
+    func testAScrubBeyondReachLandsWhereItWasAsked() {
+        XCTAssertNil(landing(4.89, [5...5]))
+        XCTAssertNil(landing(5.11, [5...5]))
+    }
+
+    /// Reach is in points, so a narrower timeline reaches further in time.
+    func testReachScalesWithTheTimelinesWidth() {
+        XCTAssertNil(ClipDrawings.scrubLanding(for: 4.85, spans: [5...5], duration: 10, width: 600))
+        XCTAssertEqual(ClipDrawings.scrubLanding(for: 4.85, spans: [5...5], duration: 10, width: 300), 5)
+    }
+
+    func testALongSpanPullsToItsNearerEndAndLeavesItsInsideAlone() {
+        XCTAssertEqual(landing(1.95, [2...4]), 2)
+        XCTAssertEqual(landing(4.05, [2...4]), 4, "not back across the whole span to its start")
+        XCTAssertNil(landing(3, [2...4]), "the mark is already on screen")
+    }
+
+    func testTheNearerOfTwoSpansWins() {
+        XCTAssertEqual(landing(5.04, [5...5, 5.1...5.1]), 5)
+        XCTAssertEqual(landing(5.06, [5...5, 5.1...5.1]), 5.1)
+    }
+
+    func testNothingToMeasureAgainstMeansNoPull() {
+        XCTAssertNil(ClipDrawings.scrubLanding(for: 4.95, spans: [5...5], duration: 10, width: 0))
+        XCTAssertNil(ClipDrawings.scrubLanding(for: 4.95, spans: [5...5], duration: 0, width: 600))
+        XCTAssertNil(landing(4.95, []))
+    }
 }
+
 
 private extension ClipDrawings {
     /// Equality across two values built separately needs the same ids.

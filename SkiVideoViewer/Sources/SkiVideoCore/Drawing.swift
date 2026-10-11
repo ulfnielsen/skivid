@@ -174,6 +174,38 @@ public struct ClipDrawings: Codable, Equatable, Sendable {
     /// For the timeline's span bars.
     public var spans: [ClosedRange<Double>] { drawings.map { $0.start...$0.end } }
 
+    /// How near a span, in points along the timeline, a scrub must land to
+    /// be pulled onto it.
+    public static let scrubSnapReach = 6.0
+
+    /// Where a timeline scrub to `time` should land instead, or nil to land
+    /// where it was asked.
+    ///
+    /// The span bars are display-only (they took presses meant for the slider,
+    /// and at 4pt were too small to tap), and a one-frame mark is on screen for
+    /// only ±half a frame — a few hundredths of a pixel on a phone's timeline —
+    /// so without this there is no practical way to land on one. A scrub within
+    /// `reach` points of a span is pulled onto its nearest end: its start from
+    /// before it, its end from after it, which for a one-frame mark is the
+    /// same frame. Inside a span nothing moves: the mark is already on screen.
+    ///
+    /// `width` is the timeline's width in points; `reach · duration / width`
+    /// is the reach in seconds.
+    public static func scrubLanding(
+        for time: Double, spans: [ClosedRange<Double>], duration: Double, width: Double,
+        reach: Double = scrubSnapReach
+    ) -> Double? {
+        guard duration > 0, width > 0, !spans.contains(where: { $0.contains(time) }) else { return nil }
+        let tolerance = reach * duration / width
+        var best: (distance: Double, time: Double)?
+        for span in spans {
+            let edge = time < span.lowerBound ? span.lowerBound : span.upperBound
+            let distance = abs(time - edge)
+            if distance <= tolerance, distance < best?.distance ?? .infinity { best = (distance, edge) }
+        }
+        return best?.time
+    }
+
     public static func snap(_ time: Double, frameDuration: Double) -> Double {
         guard frameDuration > 0 else { return time }
         return (time / frameDuration).rounded() * frameDuration

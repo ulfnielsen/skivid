@@ -167,14 +167,34 @@ struct DrawingAwareScrubber: View {
         @ObservedObject var model: ViewerModel
         let session: DrawingSession?
         @State private var changes = 0
+        /// The row's width, for turning `ClipDrawings.scrubSnapReach` points
+        /// into seconds. Read from a background so measuring cannot change
+        /// the row's height the way a `GeometryReader` around it would.
+        @State private var width = 0.0
 
         var body: some View {
             let _ = changes
+            let spans = session?.drawings.spans ?? []
             TimelineScrubber(
                 time: model.currentTime, duration: model.duration,
-                marks: session?.drawings.spans ?? [],
-                onScrub: { model.scrub(to: $0) }
+                marks: spans,
+                onScrub: { time in
+                    // Pulled onto a drawing within reach: the bars cannot be
+                    // tapped, so this is how a coach lands on a one-frame mark.
+                    if let landing = ClipDrawings.scrubLanding(
+                        for: time, spans: spans, duration: model.duration, width: width
+                    ) {
+                        model.scrub(toFrameAt: landing)
+                    } else {
+                        model.scrub(to: time)
+                    }
+                }
             )
+            .background(GeometryReader { proxy in
+                Color.clear
+                    .onAppear { width = proxy.size.width }
+                    .onChange(of: proxy.size.width) { width = $0 }
+            })
             .onReceive(session?.objectWillChange.eraseToAnyPublisher()
                        ?? Empty<Void, Never>().eraseToAnyPublisher()) { changes &+= 1 }
         }

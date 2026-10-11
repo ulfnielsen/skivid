@@ -122,8 +122,18 @@ the camera is roughly square-on to it.
 
 - With **Show drawings** on, each drawing shows across its whole span during
   playback, scrubbing and stepping. The switch is remembered per device.
-- The timeline shows each drawing's span as a short bar; tapping one jumps to
-  its start.
+- The timeline shows each drawing's span as a short bar. The bars are
+  **display-only**: attached to the slider they overlapped its hit area and
+  their tap gesture took presses meant for it, and at 4pt they were too small
+  to tap on iPad, so "tap a bar to jump to its start" was dropped rather than
+  fixed. They sit below the slider's track and do not take hits.
+- Instead, a scrub on the viewer's timeline that lands within ~6pt of a span
+  is pulled onto it: onto its start from before it, onto its end from after
+  it (the same frame for a one-frame mark), and not at all inside it, where
+  the drawing is already on screen. Without this a one-frame mark — visible
+  only within half a frame either side — is near impossible to scrub onto.
+  The pull lands with the same frame-accurate seek as a frame step. The
+  comparison screen's timeline has no drawings and does not pull.
 
 ### Which frames a drawing is on
 
@@ -133,6 +143,15 @@ frame duration (1 / `nominalFrameRate` of the video track; 1/30 s if
 unknown). Stepping lands on frame boundaries and stored times carry
 rounding, so without the half-frame margin a drawing would flicker off on its
 own last frame.
+
+Every seek that lands a frame — a step, entering drawing mode, a scrub while
+drawing, a pull onto a span — aims the player a quarter of a frame into the
+frame while the stored and published time stays on the frame boundary. A
+paused player shows the frame at or before the seek time, and at 29.97/59.94
+fps a boundary rounded to 1/600 s falls just before its frame: aimed exactly,
+148 of 150 steps showed the previous frame. Entering drawing mode and
+scrubbing in it snap to the nearest frame, so the picture is always the frame
+a new mark is stored on.
 
 ## Saving
 
@@ -174,7 +193,9 @@ own last frame.
 - `ViewerPane` / `ViewerModel` — the drawing-mode switch, gesture routing,
   frame step, stretch-on-step, loading/saving per clip, the Show drawings
   switch.
-- `TimelineScrubber` — the span bars.
+- `TimelineScrubber` — the span bars (display-only).
+- `DrawingAwareScrubber` — the viewer's timeline: pulls a scrub onto a nearby
+  span (`ClipDrawings.scrubLanding`).
 - `AppKitInputSource` — **D**, and ←/→ as frame steps while drawing.
 
 ## Error handling
