@@ -71,8 +71,12 @@ struct DrawingPalette: View {
 
     private var actions: some View {
         HStack(spacing: 2) {
-            action("backward.frame", "Previous frame", "drawing.stepBack") { model.stepFrame(.backward) }
-            action("forward.frame", "Next frame", "drawing.stepForward") { model.stepFrame(.forward) }
+            HoldToRepeatButton(symbol: "backward.frame", label: "Previous frame", id: "drawing.stepBack") {
+                keepingText { model.stepFrame(.backward) }
+            }
+            HoldToRepeatButton(symbol: "forward.frame", label: "Next frame", id: "drawing.stepForward") {
+                keepingText { model.stepFrame(.forward) }
+            }
             action("eraser", "Clear frame", "drawing.clearFrame") {
                 session.clear(at: model.currentTime, frameDuration: model.frameDuration)
             }
@@ -116,6 +120,78 @@ struct DrawingPalette: View {
         .help(label)
         .accessibilityLabel(label)
         .accessibilityIdentifier(id)
+    }
+}
+
+/// A palette button that steps once when pressed and keeps stepping while
+/// held: 0.4 s before the first repeat, so a click is still exactly one frame,
+/// then every 0.1 s — ten frames a second, a third of real time at 30 fps,
+/// slow enough to watch the marks stretch frame by frame.
+///
+/// **The first step happens on press, not on release**, because the repeat
+/// has to start from the press; a step on release as well would make every
+/// click two frames. So the press marks `latch`, and the button's own action —
+/// which fires on release — only steps when no press did. That is the path
+/// VoiceOver and keyboard activation take: they call the action without ever
+/// setting `isPressed`. The press is seen in `onChange`, synchronously, so it
+/// is always recorded before the release can ask.
+struct HoldToRepeatButton: View {
+    let symbol: String
+    let label: String
+    let id: String
+    let step: () -> Void
+
+    private final class Latch { var pressed = false }
+    @State private var latch = Latch()
+
+    var body: some View {
+        Button {
+            if latch.pressed { latch.pressed = false } else { step() }
+        } label: {
+            Image(systemName: symbol).frame(width: 40, height: 40).contentShape(Rectangle())
+        }
+        .buttonStyle(RepeatingStyle(latch: latch, step: step))
+        .help(label)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(id)
+    }
+
+    private struct RepeatingStyle: ButtonStyle {
+        let latch: Latch
+        let step: () -> Void
+
+        func makeBody(configuration: Configuration) -> some View {
+            PressWatcher(configuration: configuration, latch: latch, step: step)
+        }
+
+        private struct PressWatcher: View {
+            let configuration: Configuration
+            let latch: Latch
+            let step: () -> Void
+            @State private var repeating: Task<Void, Never>?
+
+            var body: some View {
+                configuration.label
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(configuration.isPressed ? 0.5 : 1)
+                    .onChange(of: configuration.isPressed) { pressed in
+                        repeating?.cancel()
+                        repeating = nil
+                        guard pressed else { return }
+                        latch.pressed = true
+                        step()
+                        repeating = Task { @MainActor in
+                            var delay: UInt64 = 400_000_000
+                            while true {
+                                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                                step()
+                                delay = 100_000_000
+                            }
+                        }
+                    }
+                    .onDisappear { repeating?.cancel() }
+            }
+        }
     }
 }
 

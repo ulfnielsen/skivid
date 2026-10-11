@@ -156,6 +156,30 @@ final class DrawingUITests: XCTestCase {
                        "reopening the clip must bring the line back")
     }
 
+    /// Holding Next frame keeps stepping — and stretching — until released,
+    /// then stops. The tap test above pins the other half: a tap is exactly
+    /// one frame, not one on press and another on release.
+    func testHoldingNextFrameKeepsSteppingUntilReleased() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "this walk is the phone's")
+        let app = walkToAClip()
+        let overlay = enterDrawing(app)
+        drawLine(on: overlay, app: app)
+        XCTAssertEqual(overlay.value as? String, "1 on this frame")
+
+        let pill = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Status: Frame '")).firstMatch
+        app.buttons["drawing.stepForward"].press(forDuration: 1.5)
+        XCTAssertTrue(pill.waitForExistence(timeout: 5), "stepping must show a frame number in the status pill")
+        func frame() -> Int { Int(pill.label.replacingOccurrences(of: "Status: Frame ", with: "")) ?? -1 }
+        let released = frame()
+        // 1 on press, then one every 0.1 s after 0.4 s: about 12 in 1.5 s.
+        // Half that is the bar, so a loaded simulator cannot fail it.
+        XCTAssertGreaterThanOrEqual(released, 7, "a 1.5 s hold must step several frames, reached \(released)")
+        XCTAssertEqual(overlay.value as? String, "1 on this frame", "the held steps must carry the line along")
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(frame(), released, "stepping must stop when the button is released")
+        screenshot("07-after-hold")
+    }
+
     /// Proves the overlay's 3x mapping about the picture centre, not alignment
     /// with video content: the fixture is flat grey. Layer placement is covered
     /// by DrawingGeometryTests against VideoZoom.layerFrame.
