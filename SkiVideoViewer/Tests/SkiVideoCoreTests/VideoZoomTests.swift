@@ -558,4 +558,58 @@ final class VideoZoomTests: XCTestCase {
         XCTAssertLessThanOrEqual(frame.minX, 1e-6)
         XCTAssertGreaterThanOrEqual(frame.maxX, resizedPane.width - 1e-6)
     }
+
+    // MARK: - Zooming about a point (pinch)
+
+    /// Where on the pane a picture point is drawn, from the rendered frame.
+    private func panePoint(of picturePoint: CGPoint, _ zoom: VideoZoom, video: CGSize) -> CGPoint {
+        let frame = zoom.layerFrame(in: pane, videoSize: video)
+        return CGPoint(x: frame.minX + picturePoint.x * frame.width, y: frame.minY + picturePoint.y * frame.height)
+    }
+
+    /// The point under the fingers stays under them, from 1x and again from
+    /// an already zoomed, panned state — with a letterboxed clip, so the
+    /// fitted size and the pane differ.
+    func testPinchingKeepsThePointUnderTheAnchorInPlace() {
+        let video = CGSize(width: 1920, height: 800)
+        var zoom = VideoZoom()
+        let anchor = CGPoint(x: 600, y: 200)
+        let before = zoom.layerFrame(in: pane, videoSize: video)
+        let under = CGPoint(x: (anchor.x - before.minX) / before.width, y: (anchor.y - before.minY) / before.height)
+
+        zoom.setScale(2, in: pane, videoSize: video, keeping: anchor)
+        XCTAssertEqual(zoom.scale, 2)
+        XCTAssertEqual(panePoint(of: under, zoom, video: video).x, anchor.x, accuracy: 1e-9)
+        XCTAssertEqual(panePoint(of: under, zoom, video: video).y, anchor.y, accuracy: 1e-9)
+
+        zoom.setScale(3, in: pane, videoSize: video, keeping: anchor)
+        XCTAssertEqual(panePoint(of: under, zoom, video: video).x, anchor.x, accuracy: 1e-9)
+        XCTAssertEqual(panePoint(of: under, zoom, video: video).y, anchor.y, accuracy: 1e-9)
+    }
+
+    /// The pane's own centre as anchor is exactly the chip's centred zoom.
+    func testPinchingAboutThePaneCentreMatchesTheCentredZoom() {
+        var anchored = VideoZoom()
+        var centred = VideoZoom()
+        anchored.setScale(2.5, in: pane, videoSize: pane, keeping: CGPoint(x: 400, y: 225))
+        centred.setScale(2.5, in: pane, videoSize: pane)
+        XCTAssertEqual(anchored, centred)
+    }
+
+    /// Near a corner the anchor gives way: the picture still covers the pane.
+    func testPinchingAtACornerStillCoversThePane() {
+        var zoom = VideoZoom()
+        zoom.setScale(4, in: pane, videoSize: pane, keeping: CGPoint(x: 0, y: 0))
+        let frame = zoom.layerFrame(in: pane, videoSize: pane)
+        XCTAssertLessThanOrEqual(frame.minX, 0)
+        XCTAssertLessThanOrEqual(frame.minY, 0)
+        XCTAssertGreaterThanOrEqual(frame.maxX, pane.width)
+        XCTAssertGreaterThanOrEqual(frame.maxY, pane.height)
+    }
+
+    func testAPinchWithANonFiniteMagnitudeChangesNothing() {
+        var zoom = VideoZoom()
+        zoom.setScale(.nan, in: pane, videoSize: pane, keeping: CGPoint(x: 10, y: 10))
+        XCTAssertEqual(zoom, VideoZoom())
+    }
 }

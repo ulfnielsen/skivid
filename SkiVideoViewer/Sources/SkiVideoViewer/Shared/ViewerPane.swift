@@ -56,6 +56,13 @@ struct ViewerPane: View {
     /// is what pins it.
     @GestureState private var lastDrag: CGSize = .zero
 
+    /// The zoom when the current pinch began, so the pinch's magnification —
+    /// which is relative to its own start — scales from there. `@GestureState`
+    /// for the same reason as `lastDrag`: a cancelled pinch must not leave a
+    /// stale base for the next one. Non-nil exactly while a pinch is live,
+    /// which is how the drawing overlay knows to let go of a drag.
+    @GestureState private var pinchBase: Double?
+
     /// **One `GeometryReader`, three consumers.** The drag, the zoom chip's
     /// slider and the model call underneath both of them all need the pane's
     /// size — `VideoZoom` clamps the pan against it — and reading it in one
@@ -121,10 +128,15 @@ struct ViewerPane: View {
                 .overlay {
                     if let session = drawing.session, drawing.isDrawing || drawing.showsDrawings {
                         DrawingOverlay(model: model, session: session,
-                                       isDrawing: drawing.isDrawing, paneSize: area)
+                                       isDrawing: drawing.isDrawing, paneSize: area,
+                                       isPinching: pinchBase != nil)
                     }
                 }
                 .frame(width: area.width, height: area.height)
+                // On the player *and* the drawing overlay, so a pinch zooms in
+                // drawing mode too; simultaneous, so it never waits on, or
+                // starves, the tap, the pan or a mark being drawn.
+                .simultaneousGesture(pinch(in: area))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 // After the gestures, so the chip is layered above them and
                 // takes its own clicks rather than the video's play/pause —
@@ -281,6 +293,39 @@ struct ViewerPane: View {
         return CGSize(width: pane.width, height: min(pane.height, fittedHeight))
     }
 
+    /// Whichever pinch the OS can anchor, type-erased because the anchored
+    /// one's type does not exist before macOS 14.
+    private func pinch(in area: CGSize) -> AnyGesture<Void> {
+        if #available(macOS 14, *) {
+            return AnyGesture(anchoredPinch(in: area).map { _ in })
+        }
+        return AnyGesture(centredPinch(in: area).map { _ in })
+    }
+
+    /// A trackpad or touch pinch, zooming about the point the pinch started
+    /// on. `MagnifyGesture` is what reports that point, and it is macOS 14 —
+    /// see `centredPinch` for 13.
+    @available(macOS 14, iOS 17, *)
+    private func anchoredPinch(in area: CGSize) -> some Gesture {
+        MagnifyGesture()
+            .updating($pinchBase) { value, base, _ in
+                let start = base ?? model.zoom.scale
+                base = start
+                model.setZoomScale(start * value.magnification, in: area, keeping: value.startLocation)
+            }
+    }
+
+    /// macOS 13's pinch: `MagnificationGesture` has no location, so this zooms
+    /// about the current centre, as the zoom chip does.
+    private func centredPinch(in area: CGSize) -> some Gesture {
+        MagnificationGesture()
+            .updating($pinchBase) { value, base, _ in
+                let start = base ?? model.zoom.scale
+                base = start
+                model.setZoomScale(start * value, in: area)
+            }
+    }
+
     /// A drag pans, and each step is relative to the previous one — SwiftUI
     /// reports the translation from where the drag *began*, so feeding it
     /// straight to `panZoom` would re-apply the whole distance on every change
@@ -384,3 +429,4 @@ struct ViewerPane: View {
             .accessibilityLabel("Status: \(model.status)")
     }
 }
+

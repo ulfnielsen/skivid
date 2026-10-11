@@ -1664,6 +1664,11 @@ public final class ViewerModel: ObservableObject {
         zoom.setScale(scale, in: paneSize, videoSize: videoSize)
     }
 
+    /// A pinch: zooms about `anchor`, in pane points. See `VideoZoom.setScale(_:in:videoSize:keeping:)`.
+    public func setZoomScale(_ scale: Double, in paneSize: CGSize, keeping anchor: CGPoint) {
+        zoom.setScale(scale, in: paneSize, videoSize: videoSize, keeping: anchor)
+    }
+
     public func panZoom(by translation: CGSize, in paneSize: CGSize) {
         zoom.pan(by: translation, in: paneSize, videoSize: videoSize)
     }

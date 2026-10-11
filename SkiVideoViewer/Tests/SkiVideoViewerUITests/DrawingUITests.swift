@@ -180,6 +180,31 @@ final class DrawingUITests: XCTestCase {
         screenshot("07-after-hold")
     }
 
+    /// A two-finger pinch zooms, in drawing mode too, with the line tool
+    /// chosen, and leaves no mark. **It does not reach the staggered case**:
+    /// XCUITest's pinch lands both fingers at once and moves them
+    /// symmetrically, and measured, it leaves no line even with the overlay's
+    /// yield to the pinch switched off. A real first finger that travels 4pt
+    /// before the second lands is what `DrawingOverlay.isPinching` and
+    /// `DrawingSession.abandonDrag` handle; the latter's tests pin the undo.
+    func testPinchingZoomsWithoutDrawing() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "this walk is the phone's")
+        let app = walkToAClip()
+        let overlay = enterDrawing(app)
+        clearLeftovers(app, overlay)
+        app.buttons["drawing.tool.line"].tap()
+        let chip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reset zoom'")).firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+        XCTAssertTrue(chip.label.contains("1.0×"), "precondition: unzoomed, reads \(chip.label)")
+
+        overlay.pinch(withScale: 2.5, velocity: 2)
+        let zoomed = Double(chip.label.components(separatedBy: "currently ").last?
+            .replacingOccurrences(of: "×", with: "") ?? "") ?? 0
+        XCTAssertGreaterThan(zoomed, 1.5, "a pinch must zoom in, chip reads \(chip.label)")
+        XCTAssertEqual(overlay.value as? String, "0 on this frame", "a pinch must not leave a line behind")
+        screenshot("08-after-pinch")
+    }
+
     /// Proves the overlay's 3x mapping about the picture centre, not alignment
     /// with video content: the fixture is flat grey. Layer placement is covered
     /// by DrawingGeometryTests against VideoZoom.layerFrame.

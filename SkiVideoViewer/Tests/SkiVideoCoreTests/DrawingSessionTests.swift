@@ -241,4 +241,44 @@ final class DrawingSessionTests: XCTestCase {
         XCTAssertTrue(s.drawings.isEmpty, "unchanged text added no step beyond the original")
         XCTAssertFalse(s.canUndo)
     }
+
+    // MARK: - A drag that becomes a pinch
+
+    func testAbandoningADragDropsAHalfDrawnLine() {
+        let s = DrawingSession()
+        s.tool = .line
+        s.dragBegan(at: CGPoint(x: 100, y: 100), geometry: g, time: 1, frameDuration: frame)
+        s.dragChanged(to: CGPoint(x: 300, y: 100), geometry: g)
+        s.abandonDrag()
+        XCTAssertNil(s.inProgress)
+        XCTAssertTrue(s.drawings.isEmpty)
+        XCTAssertFalse(s.canUndo)
+    }
+
+    func testAbandoningASecondArmKeepsTheFirstArmWaiting() {
+        let s = DrawingSession()
+        s.tool = .angle
+        drag(s, CGPoint(x: 500, y: 500), CGPoint(x: 800, y: 500))
+        s.dragBegan(at: CGPoint(x: 500, y: 450), geometry: g, time: 1, frameDuration: frame)
+        s.dragChanged(to: CGPoint(x: 500, y: 300), geometry: g)
+        s.abandonDrag()
+        XCTAssertTrue(s.awaitingSecondArm, "zooming between the arms must not lose the first one")
+        XCTAssertEqual(s.inProgress?.points.count, 2)
+        XCTAssertTrue(s.drawings.isEmpty)
+    }
+
+    func testAbandoningAHandleDragPutsThePointBackAndKeepsTheSelection() {
+        let s = DrawingSession()
+        s.tool = .line
+        drag(s, CGPoint(x: 100, y: 500), CGPoint(x: 900, y: 500))
+        s.tapped(at: CGPoint(x: 500, y: 500), geometry: g, time: 1, frameDuration: frame)
+        let selected = s.selection
+        s.dragBegan(at: CGPoint(x: 900, y: 500), geometry: g, time: 1, frameDuration: frame)
+        s.dragChanged(to: CGPoint(x: 900, y: 200), geometry: g)
+        s.abandonDrag()
+        XCTAssertEqual(s.drawings.drawings[0].points[1], CGPoint(x: 0.9, y: 0.5))
+        XCTAssertEqual(s.selection, selected)
+        s.undo()
+        XCTAssertTrue(s.drawings.isEmpty, "the abandoned move must leave no undo step of its own")
+    }
 }

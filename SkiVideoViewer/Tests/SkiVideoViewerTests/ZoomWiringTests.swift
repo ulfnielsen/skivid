@@ -587,6 +587,14 @@ final class ZoomWiringTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertFalse(model.zoom.isZoomed, "precondition: 1x, so the pan gesture is no longer installed")
+        // The press ends only now, after the recognizer is gone — as a real
+        // mouse or finger always eventually does, and too late for `onEnded`.
+        // Never releasing at all is not something hardware can do, and since
+        // the pinch gesture sits on the same view it is not a state this test
+        // can use: with the press still open, SwiftUI treats the next
+        // mouse-down as part of it and the second drag pans nothing (measured:
+        // `center.x` stays 0.5).
+        window.sendEvent(Self.mouseEvent(.leftMouseUp, at: CGPoint(x: 240, y: 250), windowNumber: window.windowNumber))
 
         model.setZoomScale(4, in: pane)
         host.layoutSubtreeIfNeeded()

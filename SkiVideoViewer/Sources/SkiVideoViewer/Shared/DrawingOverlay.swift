@@ -46,8 +46,13 @@ struct DrawingOverlay: View {
     @ObservedObject var session: DrawingSession
     let isDrawing: Bool
     let paneSize: CGSize
+    /// A pinch is zooming. A touch pinch's first finger also reaches the draw
+    /// gesture below, so once a pinch is live that drag is abandoned and the
+    /// rest of the touch ignored, instead of leaving a stroke or a tap behind.
+    var isPinching = false
 
     @State private var isDragging = false
+    @State private var yieldedToPinch = false
     @Environment(\.drawingTyping) private var typing
     @AppStorage("drawing.angleNoteShown") private var angleNoteShown = false
 
@@ -107,6 +112,12 @@ struct DrawingOverlay: View {
     private var drawGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                if isPinching || yieldedToPinch {
+                    if isDragging { session.abandonDrag() }
+                    isDragging = false
+                    yieldedToPinch = true
+                    return
+                }
                 if !isDragging, hypot(value.translation.width, value.translation.height) >= 4 {
                     typing.commit(into: session)
                     session.dragBegan(at: value.startLocation, geometry: geometry, time: time,
@@ -116,6 +127,10 @@ struct DrawingOverlay: View {
                 if isDragging { session.dragChanged(to: value.location, geometry: geometry) }
             }
             .onEnded { value in
+                if yieldedToPinch {
+                    yieldedToPinch = false
+                    return
+                }
                 if isDragging {
                     session.dragEnded(at: value.location, geometry: geometry)
                 } else {

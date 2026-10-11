@@ -93,6 +93,28 @@ public struct VideoZoom: Equatable, Sendable {
         center = Self.clamped(center, bounds: bounds, videoSize: videoSize, scale: scale)
     }
 
+    /// `setScale`, keeping the picture point under `anchor` (pane points)
+    /// where it is — a pinch zooms into what is under the fingers, not into
+    /// the middle. The point is read off the frame actually on screen
+    /// (`layerFrame`), the new centre is solved so that point lands back under
+    /// `anchor` at the new size, and the result is clamped like any other
+    /// centre, so near an edge the anchor gives way to keeping the pane
+    /// covered.
+    public mutating func setScale(_ newScale: Double, in bounds: CGSize, videoSize: CGSize, keeping anchor: CGPoint) {
+        guard newScale.isFinite, anchor.x.isFinite, anchor.y.isFinite,
+              bounds.width.isFinite, bounds.height.isFinite, bounds.width > 0, bounds.height > 0
+        else { return setScale(newScale, in: bounds, videoSize: videoSize) }
+        let before = layerFrame(in: bounds, videoSize: videoSize)
+        let picturePoint = CGPoint(x: (anchor.x - before.minX) / before.width,
+                                   y: (anchor.y - before.minY) / before.height)
+        scale = min(max(newScale, Self.range.lowerBound), Self.range.upperBound)
+        let base = Self.fitted(videoSize, in: bounds)
+        let size = CGSize(width: base.width * scale, height: base.height * scale)
+        let solved = CGPoint(x: (bounds.width * 0.5 - anchor.x) / size.width + picturePoint.x,
+                             y: (bounds.height * 0.5 - anchor.y) / size.height + picturePoint.y)
+        center = Self.clamped(solved, bounds: bounds, videoSize: videoSize, scale: scale)
+    }
+
     /// `translation` and `paneSize` are both in points.
     ///
     /// The centre moves by `translation / (paneSize * scale)`: the scale

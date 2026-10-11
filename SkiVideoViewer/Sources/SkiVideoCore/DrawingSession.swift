@@ -210,6 +210,27 @@ public final class DrawingSession: ObservableObject {
         selection = nil
     }
 
+    /// A drag that turned out to be the first finger of a pinch: undoes only
+    /// what that drag did. A moved handle goes back; an angle's second arm
+    /// being placed is dropped but the first arm stays, still waiting; any
+    /// other half-drawn mark is dropped. Unlike `cancelInProgress`, a
+    /// selection and an angle waiting for its second arm survive the zoom.
+    public func abandonDrag() {
+        if let handle = draggedHandle {
+            if handle.recorded, let previous = undoStack.popLast() { drawings = previous }
+            draggedHandle = nil
+            return
+        }
+        guard var mark = inProgress else { return }
+        if mark.kind == .angle, awaitingSecondArm {
+            if mark.points.count == 3 { mark.points.removeLast() }
+            inProgress = mark
+        } else {
+            inProgress = nil
+        }
+        lastPenPoint = nil
+    }
+
     public func undo() {
         guard let previous = undoStack.popLast() else { return }
         redoStack.append(drawings)
