@@ -49,6 +49,128 @@ public struct Drawing: Codable, Equatable, Identifiable, Sendable {
         let margin = frameDuration / 2
         return time >= start - margin && time <= end + margin
     }
+
+    // MARK: Codable
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decode(UUID.self, forKey: .id)
+        kind = try container.decode(DrawingKind.self, forKey: .kind)
+        color = try container.decode(DrawingColor.self, forKey: .color)
+        points = try container.decode([CGPoint].self, forKey: .points)
+        arrow = try container.decode(Bool.self, forKey: .arrow)
+        text = try container.decode(String.self, forKey: .text)
+        start = try container.decode(Double.self, forKey: .start)
+        end = try container.decode(Double.self, forKey: .end)
+
+        // Validate that start and end are finite
+        guard start.isFinite else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath + [CodingKeys.start],
+                    debugDescription: "start time must be finite"
+                )
+            )
+        }
+        guard end.isFinite else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath + [CodingKeys.end],
+                    debugDescription: "end time must be finite"
+                )
+            )
+        }
+
+        // Validate that end >= start
+        guard end >= start else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath + [CodingKeys.end],
+                    debugDescription: "end time must be >= start time"
+                )
+            )
+        }
+
+        // Validate point count matches kind
+        let pointCount = points.count
+        switch kind {
+        case .pen:
+            guard pointCount >= 2 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath + [CodingKeys.points],
+                        debugDescription: "pen drawing must have at least 2 points, got \(pointCount)"
+                    )
+                )
+            }
+        case .line:
+            guard pointCount == 2 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath + [CodingKeys.points],
+                        debugDescription: "line drawing must have exactly 2 points, got \(pointCount)"
+                    )
+                )
+            }
+        case .angle:
+            guard pointCount == 3 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath + [CodingKeys.points],
+                        debugDescription: "angle drawing must have exactly 3 points, got \(pointCount)"
+                    )
+                )
+            }
+        case .text:
+            guard pointCount == 1 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath + [CodingKeys.points],
+                        debugDescription: "text drawing must have exactly 1 point, got \(pointCount)"
+                    )
+                )
+            }
+        }
+
+        // Validate that all point coordinates are finite
+        for (i, point) in points.enumerated() {
+            guard point.x.isFinite else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath + [CodingKeys.points, IndexKey(intValue: i)!],
+                        debugDescription: "point [\(i)].x must be finite"
+                    )
+                )
+            }
+            guard point.y.isFinite else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath + [CodingKeys.points, IndexKey(intValue: i)!],
+                        debugDescription: "point [\(i)].y must be finite"
+                    )
+                )
+            }
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, color, points, arrow, text, start, end
+    }
+
+    private struct IndexKey: CodingKey {
+        let intValue: Int?
+        let stringValue: String
+
+        init?(intValue: Int) {
+            self.intValue = intValue
+            self.stringValue = "[" + String(intValue) + "]"
+        }
+
+        init?(stringValue: String) {
+            return nil
+        }
+    }
 }
 
 /// Every mark on one clip — the content of its `.skidrawings.json`.
