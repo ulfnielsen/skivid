@@ -73,4 +73,46 @@ final class ViewerFrameStepTests: XCTestCase {
         }
         XCTAssertEqual(steps.first?.0, 0)
     }
+
+    /// During playback `currentTime` is written only by the 0.1 s periodic
+    /// observer, so after a pause it can trail the picture by 2-3 frames.
+    func testAStepDuringPlaybackStartsFromWhereThePictureIs() throws {
+        let model = try makeLoadedModel(seconds: 2, fps: 25)
+        waitUntil("the frame rate must be read") { abs(model.frameDuration - 1.0 / 25) < 1e-6 }
+        model.applyTransport(.playPause)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        var from: Double?
+        model.onFrameStep = { f, _ in from = f }
+        let actual = model.player.currentTime().seconds
+        model.stepFrame(.forward)
+        let reported = try XCTUnwrap(from, "the step must be reported")
+        XCTAssertEqual(reported, actual, accuracy: 0.5 / 25 + 0.01,
+                       "from must follow the picture, not the last periodic playhead")
+    }
+
+    /// Two clips at different rates and sizes: the second must replace the
+    /// first's values, not inherit them.
+    func testChangingClipReplacesFrameDurationAndPictureSize() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        temporaryDirectory = root
+        let athlete = root.appendingPathComponent("Athlete", isDirectory: true)
+        _ = try makeRealVideoFile(in: athlete, name: "run1.mov", seconds: 2, fps: 25, width: 160, height: 90)
+        _ = try makeRealVideoFile(in: athlete, name: "run2.mov", seconds: 2, fps: 10, width: 120, height: 80)
+        let model = ViewerModel(input: FakeInputSource(), folderPicker: FakeFolderPicker(),
+                                oauthPresenter: FakeOAuthPresenter())
+        model.openDirectory(root)
+        waitUntil("clip A must load") {
+            model.pictureSize == CGSize(width: 160, height: 90) && abs(model.frameDuration - 1.0 / 25) < 1e-6
+        }
+        XCTAssertTrue(model.changeVideo(by: 1))
+        XCTAssertEqual(model.pictureSize, .zero, "A's size must not linger")
+        XCTAssertEqual(model.frameDuration, ClipDrawings.fallbackFrameDuration)
+        waitUntil("clip B's values must arrive") {
+            model.pictureSize == CGSize(width: 120, height: 80) && abs(model.frameDuration - 1.0 / 10) < 1e-6
+        }
+        // A late answer for A must not overwrite B's values.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(model.pictureSize, CGSize(width: 120, height: 80))
+        XCTAssertEqual(model.frameDuration, 1.0 / 10, accuracy: 1e-6)
+    }
 }

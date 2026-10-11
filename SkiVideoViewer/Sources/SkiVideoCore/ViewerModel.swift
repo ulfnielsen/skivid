@@ -1469,8 +1469,19 @@ public final class ViewerModel: ObservableObject {
     /// one frame to the next, and `step` reports neither time.
     public func stepFrame(_ direction: ScrubDirection) {
         guard player.currentItem != nil, duration > 0 else { return }
-        if player.rate != 0 { player.pause() }
-        let from = ClipDrawings.snap(currentTime, frameDuration: frameDuration)
+        let wasPlaying = player.rate != 0
+        if wasPlaying { player.pause() }
+        // The player's own clock, read after the pause: during playback
+        // `currentTime` is written only by the 0.1 s periodic observer, so it
+        // can trail the picture by 2-3 frames (measured: 0.4 s published
+        // against 0.5 s on screen) and the step would land relative to a
+        // position the picture has already left. Only when it was playing:
+        // when paused, `scrub` sets `currentTime` synchronously while the
+        // player's clock lags the seek, so back-to-back steps would read the
+        // old frame from the player (measured: repeated steps stalled).
+        let playerSeconds = player.currentTime().seconds
+        let position = wasPlaying && playerSeconds.isFinite ? playerSeconds : currentTime
+        let from = ClipDrawings.snap(position, frameDuration: frameDuration)
         let lastFrame = ClipDrawings.snap(max(0, duration - frameDuration), frameDuration: frameDuration)
         let to = min(max(0, from + Double(direction.rawValue) * frameDuration), lastFrame)
         // In the step's own direction only: scrubbed to the very end, `from`
