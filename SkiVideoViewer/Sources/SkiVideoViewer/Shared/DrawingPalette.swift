@@ -137,3 +137,44 @@ struct DrawingAwareControlBar: View {
         }
     }
 }
+
+/// The viewer's timeline with the drawn spans marked. Its own view for the same
+/// reason as `DrawingAwareControlBar`: `ContentView` does not observe the
+/// drawing controller.
+struct DrawingAwareScrubber: View {
+    @ObservedObject var model: ViewerModel
+    @ObservedObject var drawing: DrawingController
+
+    init(model: ViewerModel) {
+        self.model = model
+        _drawing = ObservedObject(wrappedValue: model.drawing)
+    }
+
+    var body: some View {
+        if let session = drawing.session {
+            Inner(model: model, session: session)
+        } else {
+            TimelineScrubber(
+                time: model.currentTime,
+                duration: model.duration,
+                onScrub: { model.scrub(to: $0) }
+            )
+        }
+    }
+
+    /// `DrawingSession` is itself an `ObservableObject`: observing only the
+    /// controller would leave the bars stale when a mark is added or removed.
+    private struct Inner: View {
+        @ObservedObject var model: ViewerModel
+        @ObservedObject var session: DrawingSession
+
+        var body: some View {
+            TimelineScrubber(
+                time: model.currentTime,
+                duration: model.duration,
+                marks: session.drawings.spans,
+                onScrub: { model.scrub(to: $0) }
+            )
+        }
+    }
+}

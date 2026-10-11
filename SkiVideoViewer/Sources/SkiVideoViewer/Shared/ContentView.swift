@@ -581,11 +581,7 @@ struct ContentView: View {
                 ViewerPane(model: model, athleteName: athlete.name)
 
                 VStack(spacing: 0) {
-                    TimelineScrubber(
-                        time: model.currentTime,
-                        duration: model.duration,
-                        onScrub: { model.scrub(to: $0) }
-                    )
+                    DrawingAwareScrubber(model: model)
                     .accessibilityIdentifier("Viewer timeline")
                     .padding(.horizontal, 12)
 

@@ -240,6 +240,9 @@ final class AppKitInputSource: PlaybackInputSource {
             if !event.isARepeat { emit(.athlete(.previous)) }
         case 121: // Page Down
             if !event.isARepeat { emit(.athlete(.next)) }
+        case 2: // D — drawing mode. Below the text-field check, so typing a
+                // note's "d" never toggles the mode out from under it.
+            if !event.isARepeat { emit(.toggleDrawing) }
         // A repeat under Command is the same physical press, so it must not
         // re-begin the hold — `arrowsRepeat` is about the bare arrows and
         // deliberately does not reach these two cases. A second *arrow*

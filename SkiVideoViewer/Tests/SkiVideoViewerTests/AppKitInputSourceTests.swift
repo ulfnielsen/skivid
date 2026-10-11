@@ -607,4 +607,15 @@ final class AppKitInputSourceTests: XCTestCase {
         XCTAssertFalse(source.handle(key(0)), "'a' must pass through to the app")
         XCTAssertTrue(source.handle(key(49)), "space must be consumed")
     }
+
+    func testDTogglesDrawing() {
+        let source = AppKitInputSource()
+        var intents: [PlaybackIntent] = []
+        source.onIntent = { intents.append($0) }
+        XCTAssertTrue(source.handle(key(2)))            // kVK_ANSI_D
+        XCTAssertFalse(source.handle(key(2, modifiers: .command)), "⌘D belongs to menus")
+        _ = source.handle(key(2, isARepeat: true))
+        XCTAssertEqual(intents.count, 1)
+        guard case .toggleDrawing = intents.first else { return XCTFail("expected .toggleDrawing") }
+    }
 }

@@ -9,6 +9,9 @@ import SwiftUI
 struct TimelineScrubber: View {
     let time: Double
     let duration: Double
+    /// Spans of the clip that carry a drawing. A `var` with a default keeps the
+    /// memberwise init source-compatible for the comparison screen's callers.
+    var marks: [ClosedRange<Double>] = []
     let onScrub: (Double) -> Void
 
     @State private var scrubTime = 0.0
@@ -48,6 +51,19 @@ struct TimelineScrubber: View {
             }
         )
         .disabled(duration <= 0)
+        .overlay(alignment: .bottom) {
+            GeometryReader { proxy in
+                ForEach(Array(marks.enumerated()), id: \.offset) { _, span in
+                    let x = proxy.size.width * span.lowerBound / max(duration, 0.0001)
+                    let width = max(4, proxy.size.width * (span.upperBound - span.lowerBound) / max(duration, 0.0001))
+                    Capsule().fill(Color.orange)
+                        .frame(width: width, height: 4)
+                        .position(x: x + width / 2, y: proxy.size.height - 4)
+                        .onTapGesture { onScrub(span.lowerBound) }
+                        .accessibilityLabel("Drawing at \(Timecode.string(span.lowerBound))")
+                }
+            }
+        }
         // Reserves a 44pt row, matching the control bars'. It does not make the
         // slider 44pt: measured, a `Slider` draws over 16pt on macOS whether
         // framed at `height: 44` or left unframed — the frame centres it rather
