@@ -56,23 +56,36 @@ where they were — anchored to the picture, not the screen.
   emit `.seek` (`AppKitInputSource.swift:262`). This design adds a
   frame step for drawing mode.
 - **Existing gestures on the video** (`ViewerPane`): tap toggles playback; a
-  one-finger drag pans while zoomed; pinch zooms.
+  one-finger drag pans while zoomed. **There is no pinch**: zoom is the zoom
+  chip's slider and buttons only.
+- **Keys exist on macOS only.** `AppKitInputSource` turns keys into
+  `PlaybackIntent`s; iOS uses `InertInputSource`, which emits nothing.
+- **Nothing observes `scenePhase` today**, so saving on background is new.
 
 ## Behaviour
 
 ### Drawing mode
 
 - **Enter:** a pencil button in the viewer's control bar, or **D** on macOS.
+  Space on macOS leaves drawing mode and plays.
   Entering pauses playback and shows the palette.
-- **Palette:** pen · line/arrow (with an arrowhead toggle, on by default) ·
-  angle · text · colour (red, yellow, blue, black) · step back one frame ·
+- **Palette:** it takes the control bar's place below the video while drawing
+  (the transport is meaningless in drawing mode, and a phone has no room for
+  both). Move (hand) · pen · line/arrow (with an arrowhead toggle, on by
+  default) · angle · text · colour (red, yellow, blue, black) · step back one frame ·
   step forward one frame · Clear frame · undo · redo · Done.
 - **Gestures in drawing mode:** one finger or the mouse draws with the current
-  tool; pinch still zooms; panning moves to two fingers (iPad/iPhone) or
-  scroll / two-finger trackpad (macOS); a tap does **not** toggle playback.
-- **Frame step:** in drawing mode ←/→ and the palette's step buttons move
-  exactly one frame (`AVPlayerItem.step(byCount:)`). Outside drawing mode
-  the arrows keep their current one-second seek.
+  tool; a tap does **not** toggle playback. Zoom stays on the zoom chip,
+  which remains on screen. Panning while zoomed is the **Move** tool: with it
+  chosen, a drag pans exactly as it does outside drawing mode. (Corrected
+  after reading the code: the conversation assumed pinch and two-finger pan,
+  and neither exists.)
+- **Frame step:** in drawing mode the palette's step buttons, and ←/→ on
+  macOS, move exactly one frame: an exact seek to the neighbouring frame
+  boundary, `(round(t / frame) ± 1) · frame`, clamped to the clip. Not
+  `AVPlayerItem.step(byCount:)`: stretching needs the from and to times at
+  the moment of the step, and `step` reports neither. Outside drawing mode
+  the arrows keep their one-second seek.
 - **Stretching:** a frame step extends every drawing visible on the current
   frame onto the new one — forward extends its end, backward its start.
   Scrubbing or tapping the timeline in drawing mode moves without
