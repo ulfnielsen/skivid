@@ -477,5 +477,32 @@ final class FetchOnSelectTests: XCTestCase {
         XCTAssertNotNil(model.currentPlaybackURL, "the clip must still land after one retry")
         XCTAssertEqual(downloader.requestedFileIDs.filter { $0 == "f5" }.count, 2,
                        "expected exactly two attempts (one refused, one retried), got \(downloader.requestedFileIDs)")
+        // "Fresh" has to mean a refreshed credential, not the same one asked
+        // for twice. On a real phone an hour after sign-in, re-reading the
+        // cached token sent the expired one again: nine 401 bodies saved as
+        // clips, and no video.
+        XCTAssertEqual(provider.refreshCallCount, 1, "the retry must refresh the credential")
+        XCTAssertEqual(downloader.lastHeaders, provider.refreshedHeaders,
+                       "the retry must carry the refreshed credential, not the stale one")
+    }
+
+    /// A clip that cannot be fetched says so. The failure used to be dropped
+    /// by a `try?`, leaving "Fetching …" up forever over an empty player — on
+    /// a phone, indistinguishable from a slow download.
+    func testAFailedDownloadSaysSoInsteadOfFetchingForever() async throws {
+        let (model, provider, cache, downloader) = try remoteModelWithDownloader(files: fiveClips())
+        try await model.openRemoteLibrary(
+            provider: provider, root: RemoteFolder(id: "d1", name: "Club"), cache: cache
+        )
+        try await model.settleFetches()
+
+        downloader.errorToThrow = RemoteLibraryError.unauthorised
+        _ = model.changeVideo(by: 4)
+        try await model.settleFetches()
+
+        XCTAssertNil(model.currentPlaybackURL)
+        XCTAssertFalse(model.status.hasPrefix("Fetching"),
+                       "a failed fetch must not keep promising a download: \(model.status)")
+        XCTAssertTrue(model.status.hasPrefix("Could not load"), "got \(model.status)")
     }
 }

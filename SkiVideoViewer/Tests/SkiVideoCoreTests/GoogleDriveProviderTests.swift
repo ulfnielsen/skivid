@@ -156,6 +156,29 @@ final class GoogleDriveProviderTests: XCTestCase {
         )
     }
 
+    /// The download retry's source must carry a *new* access token. The plain
+    /// `downloadSource` reads the cached one, which is exactly the token the
+    /// download was just refused with — measured on a phone an hour after
+    /// sign-in: every clip fetch a 401, the retry another.
+    @MainActor
+    func testARefreshedDownloadSourceCarriesANewAccessToken() async throws {
+        provider = makeOAuthBackedProvider()
+        let presenter = FakeOAuthPresenter()
+        presenter.callbackToReturn = URL(string: "http://127.0.0.1:1/?code=abc&state=STATE")!
+        transport.responses = [.init(json: #"{"access_token":"at-1","refresh_token":"rt-1"}"#)]
+        try await provider.connect(presenter: presenter)
+        let file = RemoteFile(id: "f1", name: "run.mov", path: [], size: 1, contentVersion: nil, md5: nil)
+
+        let stale = try await provider.downloadSource(for: file)
+        XCTAssertEqual(stale.headers["Authorization"], "Bearer at-1")
+
+        transport.responses = [.init(json: #"{"access_token":"at-2"}"#)]
+        let fresh = try await provider.refreshedDownloadSource(for: file)
+
+        XCTAssertEqual(fresh.headers["Authorization"], "Bearer at-2")
+        XCTAssertEqual(fresh.url, stale.url)
+    }
+
     /// A refresh that fails outright — the refresh token itself revoked, not
     /// merely the access token stale — must surface as `.notSignedIn`, the
     /// same message an actually-unconnected provider gives, rather than a raw

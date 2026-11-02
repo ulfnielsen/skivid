@@ -83,6 +83,11 @@ public protocol RemoteLibraryProvider: Sendable {
     /// Where to fetch this file's bytes. Minted per download and never stored
     /// in the index: any credential in it is short-lived.
     func downloadSource(for file: RemoteFile) async throws -> DownloadSource
+
+    /// A source for a retry after the download was refused as unauthorised:
+    /// the credential is renewed first, so the retry does not carry the very
+    /// one that was just refused. See `ViewerModel.materialise`.
+    func refreshedDownloadSource(for file: RemoteFile) async throws -> DownloadSource
 }
 
 public extension RemoteLibraryProvider {
@@ -92,6 +97,11 @@ public extension RemoteLibraryProvider {
     /// answer either way: it costs one interactive sign-in, where a wrong true
     /// would leave a caller believing it can authorize requests it cannot.
     func resumeSession() async -> Bool { false }
+
+    /// A provider whose credentials do not expire has nothing to renew.
+    func refreshedDownloadSource(for file: RemoteFile) async throws -> DownloadSource {
+        try await downloadSource(for: file)
+    }
 }
 
 public struct RemoteFolder: Hashable, Sendable {

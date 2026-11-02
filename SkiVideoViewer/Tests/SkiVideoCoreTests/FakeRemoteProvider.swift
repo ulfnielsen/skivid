@@ -104,6 +104,19 @@ final class FakeRemoteProvider: RemoteLibraryProvider, @unchecked Sendable {
         downloadSourceCallCount += 1
         return DownloadSource(url: downloadURL, headers: headers)
     }
+
+    /// What a refresh swaps `headers` for — different from them, so a test
+    /// can tell a retry that refreshed from one that re-sent the stale
+    /// credential. That difference is the whole bug this exists to pin: the
+    /// retry used to re-read the same expired token and fail again.
+    var refreshedHeaders: [String: String] = ["Authorization": "Bearer refreshed"]
+    private(set) var refreshCallCount = 0
+
+    func refreshedDownloadSource(for file: RemoteFile) async throws -> DownloadSource {
+        refreshCallCount += 1
+        headers = refreshedHeaders
+        return try await downloadSource(for: file)
+    }
 }
 
 /// The write half. Separate conformance because `ContentReplaceable` is a

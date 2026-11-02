@@ -292,6 +292,19 @@ public struct GoogleDriveProvider: RemoteLibraryProvider {
         }
     }
 
+    /// Exchanges the refresh token for a new access token, then mints the
+    /// source with it. `downloadSource` alone reads the cached token, which
+    /// after Google's one-hour expiry is the one the download was just refused
+    /// with — measured on a phone: every clip a 401, and the retry another.
+    /// API calls never had this problem because `send` refreshes on a 401;
+    /// downloads go through `ClipCache`'s downloader, which cannot.
+    public func refreshedDownloadSource(for file: RemoteFile) async throws -> DownloadSource {
+        if let signIn {
+            _ = try await signIn.refreshedAccessToken()
+        }
+        return try await downloadSource(for: file)
+    }
+
     public func downloadSource(for file: RemoteFile) async throws -> DownloadSource {
         guard let token = token() else { throw RemoteLibraryError.notSignedIn }
         var components = URLComponents(

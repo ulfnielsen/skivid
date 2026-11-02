@@ -1054,6 +1054,14 @@ public final class ViewerModel: ObservableObject {
             // that is never going to start.
             status = file.name
             return
+        } catch {
+            // Said rather than dropped: `fetchCurrentClip` discards what this
+            // throws, so without it "Fetching …" stayed up over an empty
+            // player forever. Same selection guard as the paths around it.
+            if self.currentVideo == videoAtRequest, !(error is CancellationError) {
+                status = "Could not load \(file.name): \(error.localizedDescription)"
+            }
+            throw error
         }
         await clipCache.recordPlayback(
             of: file.identity(inProvider: remoteIndex.providerIdentifier)
@@ -1127,7 +1135,9 @@ public final class ViewerModel: ObservableObject {
         do {
             return try await cache.materialize(file, source: source)
         } catch RemoteLibraryError.unauthorised {
-            let retried = try await provider.downloadSource(for: file)
+            // Refreshed, not merely re-minted: re-minting re-read the expired
+            // token and was refused again.
+            let retried = try await provider.refreshedDownloadSource(for: file)
             return try await cache.materialize(file, source: retried)
         }
     }
