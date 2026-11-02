@@ -576,8 +576,17 @@ public final class ViewerModel: ObservableObject {
     /// compiled-in client — and a model that reached for either would be
     /// reaching across that line. Nil, with no session already open, is simply
     /// "not signed in".
+    ///
+    /// `signingInIfNeeded` is for a coach's own tap on the library: when the
+    /// stored sign-in cannot be resumed, it sends them to Google and then opens
+    /// this drive directly. Off by default because the sorting screen opens a
+    /// library on appearing, and a browser nobody asked for is worse than a
+    /// sentence. Without it a tapped row could only repeat the failed resume —
+    /// which is what a phone restored from another one, holding the library
+    /// list but no usable token, was stuck doing.
     public func open(_ library: Library, cache: ClipCache,
-                     provider: (any RemoteLibraryProvider)? = nil) async -> String? {
+                     provider: (any RemoteLibraryProvider)? = nil,
+                     signingInIfNeeded: Bool = false) async -> String? {
         switch library.kind {
         case let .drive(rootID):
             guard let provider = remoteProvider ?? provider else {
@@ -586,7 +595,14 @@ public final class ViewerModel: ObservableObject {
             // A session resumed from the Keychain, so the coach is not sent to
             // Google for a library they connected weeks ago.
             if remoteProvider == nil, await provider.resumeSession() == false {
-                return "Sign in to open \(library.name)."
+                guard signingInIfNeeded else {
+                    return "Sign in to open \(library.name)."
+                }
+                do {
+                    try await provider.connect(presenter: oauthPresenter)
+                } catch {
+                    return error.localizedDescription
+                }
             }
             do {
                 try await openRemoteLibrary(

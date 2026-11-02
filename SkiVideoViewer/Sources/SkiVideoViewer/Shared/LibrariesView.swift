@@ -243,7 +243,10 @@ struct LibrariesView: View {
         opening = library.id
         failures[library.id] = nil
         Task {
-            let failure = await model.open(library, cache: cache, provider: makeProvider())
+            // A tap is a request, so it may go to Google if the stored sign-in
+            // is gone — otherwise "Sign in to open …" had no way to sign in.
+            let failure = await model.open(library, cache: cache, provider: makeProvider(),
+                                           signingInIfNeeded: true)
             failures[library.id] = failure
             opening = nil
             if failure == nil { onOpened() }
