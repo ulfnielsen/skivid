@@ -19,3 +19,19 @@ extension EnvironmentValues {
         #endif
     }
 }
+
+/// Is this a phone, in either orientation?
+///
+/// Compact in *either* axis: upright a phone is compact width, sideways it is
+/// compact height (and, on the larger models, regular width). An iPad is
+/// regular in both except in narrow multitasking splits, which want the same
+/// economy anyway. Always false on the Mac.
+extension EnvironmentValues {
+    var isPhoneSized: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact || verticalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+}

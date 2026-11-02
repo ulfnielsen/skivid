@@ -71,6 +71,7 @@ struct ViewerPane: View {
     /// `ContentView` because the control lived in the bar; moving the control
     /// onto the video removed the relay along with the layout cost.
     @Environment(\.isShortOnHeight) private var isShortOnHeight
+    @Environment(\.isPhoneSized) private var isPhoneSized
 
     var body: some View {
         GeometryReader { proxy in
@@ -137,7 +138,12 @@ struct ViewerPane: View {
                 // drawing mode too; simultaneous, so it never waits on, or
                 // starves, the tap, the pan or a mark being drawn.
                 .simultaneousGesture(pinch(in: area))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                // Centred on a phone: upright, the spare height splits into a
+                // band above (the banner's) and one below (the zoom chip's), so
+                // neither covers the picture. Elsewhere pinned to the top — see
+                // `videoArea`.
+                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                       alignment: isPhoneSized ? .center : .top)
                 // After the gestures, so the chip is layered above them and
                 // takes its own clicks rather than the video's play/pause —
                 // measured in `ZoomWiringTests`, both directions. On the
@@ -145,8 +151,10 @@ struct ViewerPane: View {
                 .overlay(alignment: .bottomTrailing) { zoomChip(in: area) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottomLeading) { caption }
-        .overlay(alignment: .topTrailing) { statusChip }
+        .overlay(alignment: isPhoneSized ? .top : .bottomLeading) {
+            if isPhoneSized { banner } else { caption }
+        }
+        .overlay(alignment: .topTrailing) { if !isPhoneSized { statusChip } }
         .overlay(alignment: .top) { unsupportedFormatBanner }
         .overlay(alignment: .bottom) {
             if let notice = drawing.notice {
@@ -263,7 +271,7 @@ struct ViewerPane: View {
             onScale: { model.setZoomScale($0, in: paneSize) },
             onReset: { model.resetZoom() }
         )
-        .frame(maxWidth: isShortOnHeight ? 160 : 220)
+        .frame(maxWidth: isPhoneSized ? 160 : 220)
         .padding(.horizontal, isShortOnHeight ? 4 : 8)
         .darkFrostedBacking(in: Capsule())
         .padding(isShortOnHeight ? 6 : 12)
@@ -398,6 +406,44 @@ struct ViewerPane: View {
         .padding(.vertical, 8)
         .darkFrostedBacking(in: Capsule())
         .padding(12)
+        .allowsHitTesting(false)
+    }
+
+    /// The phone's caption and status chip in one line across the top.
+    ///
+    /// The two-line `.title3` caption was sized to be read from a metre away
+    /// on an iPad or a laptop. On a phone it is at arm's length and was a
+    /// third of the screen's width and 45pt tall, overlapping the zoom chip;
+    /// the status chip beside it held a constant 320pt, nearly the full
+    /// width, to say "Paused". One footnote line says all three.
+    ///
+    /// The status is kept rather than dropped: it is where "Fetching …" and a
+    /// failed download are said, and a phone with no visible error was
+    /// exactly the report that found the expired-token bug.
+    ///
+    /// Non-hit-testable for the caption's reason: it floats over the
+    /// play/pause tap target.
+    var banner: some View {
+        HStack(spacing: 6) {
+            Text(athleteName).fontWeight(.semibold)
+            Text(model.clipDescription)
+                .foregroundStyle(.white.opacity(0.8))
+                .truncationMode(.middle)
+                .layoutPriority(-1)
+            Spacer(minLength: 8)
+            Text(model.status)
+                .foregroundStyle(.white.opacity(0.7))
+                .layoutPriority(-2)
+                .accessibilityLabel("Status: \(model.status)")
+        }
+        .font(.footnote)
+        .lineLimit(1)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .darkFrostedBacking(in: Capsule())
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
         .allowsHitTesting(false)
     }
 

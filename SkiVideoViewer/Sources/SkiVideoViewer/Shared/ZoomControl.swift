@@ -23,6 +23,7 @@ struct ZoomControl: View {
     private static let step = 0.5
 
     @Environment(\.isShortOnHeight) private var isShortOnHeight
+    @Environment(\.isPhoneSized) private var isPhoneSized
 
     /// 44 is Apple's touch minimum and the right default. Sideways on a phone
     /// this control floats *over* the video, so every point it takes is a point
@@ -41,7 +42,10 @@ struct ZoomControl: View {
             // convenience, not the capability. Minus, plus and the reset
             // readout still reach every scale in the range, and the chip stops
             // eating a third of a sideways phone's video.
-            if !isShortOnHeight {
+            // Gone on a phone in both orientations: a pinch is the phone's
+            // zoom, and upright the slider made this chip as wide as the name
+            // beside it.
+            if !isShortOnHeight && !isPhoneSized {
                 Slider(
                     value: Binding(get: { zoom.scale }, set: onScale),
                     in: VideoZoom.range
